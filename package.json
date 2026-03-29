@@ -1,0 +1,27 @@
+{
+  "name": "video-pipeline",
+  "version": "1.0.0",
+  "description": "CLI pipeline for downloading videos, transcribing with `vibe`, and summarizing subtitles via either an external command or an OpenAI-compatible `/v1/responses` API.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rquanx/video-pipeline.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/rquanx/video-pipeline/issues"
+  },
+  "homepage": "https://github.com/rquanx/video-pipeline#readme",
+  "dependencies": {
+    "@renmu/bili-api": "^2.12.5"
+  }
+}
