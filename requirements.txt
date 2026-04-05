@@ -1,0 +1,2 @@
+videocaptioner>=1.4.1
+yt-dlp>=2026.3.17
