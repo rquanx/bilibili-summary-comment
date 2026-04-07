@@ -12,11 +12,11 @@ loadDotEnvIfPresent();
 function usage() {
   showUsage([
     "Usage:",
-    "  node scripts/refresh-bili-cookie.mjs [--auth-file work/bili-auth.json] [--cookie-file cookie.txt]",
+    "  node scripts/refresh-bili-cookie.mjs [--auth-file bili-auth.json] [--cookie-file cookie.txt]",
     "  node scripts/refresh-bili-cookie.mjs --access-token <token> --refresh-token <token>",
     "",
     "Options:",
-    "  --auth-file               Optional. TV login payload json path. Default: work/bili-auth.json",
+    "  --auth-file               Optional. TV login payload json path. Default: bili-auth.json",
     "  --cookie-file             Optional. Target cookie text file path. Default: cookie.txt",
     "  --access-token            Optional. Override access_token from CLI.",
     "  --refresh-token           Optional. Override refresh_token from CLI.",

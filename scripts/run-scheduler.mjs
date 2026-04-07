@@ -20,7 +20,7 @@ function usage() {
     "",
     "Options:",
     "  --cookie-file             Optional. Cookie file path. Default: cookie.txt or BILI_COOKIE_FILE",
-    "  --auth-file               Optional. TV auth file path. Default: work/bili-auth.json or BILI_AUTH_FILE",
+    "  --auth-file               Optional. TV auth file path. Default:bili-auth.json or BILI_AUTH_FILE",
     "  --summary-users           Optional. Comma-separated Bilibili space URLs or user ids. Default: SUMMARY_USERS",
     "  --summary-since-hours     Optional. Recent upload window. Default: 24",
     "  --refresh-days            Optional. Refresh auth when older than this many days. Default: 30",

@@ -8,10 +8,10 @@ loadDotEnvIfPresent();
 function usage() {
   showUsage([
     "Usage:",
-    "  node scripts/login-bili-tv.mjs [--auth-file work/bili-auth.json] [--cookie-file cookie.txt]",
+    "  node scripts/login-bili-tv.mjs [--auth-file bili-auth.json] [--cookie-file cookie.txt]",
     "",
     "Options:",
-    "  --auth-file               Optional. Where to save the TV login payload. Default: work/bili-auth.json",
+    "  --auth-file               Optional. Where to save the TV login payload. Default: bili-auth.json",
     "  --cookie-file             Optional. Where to save the refreshed web cookie string. Default: cookie.txt",
     "  --help                    Show this help.",
   ]);
