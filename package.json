@@ -8,9 +8,14 @@
   },
   "scripts": {
     "pipeline": "node scripts/run-video-pipeline.mjs",
+    "login:bili": "node scripts/login-bili-tv.mjs",
+    "refresh:cookie": "node scripts/refresh-bili-cookie.mjs",
     "sync:video": "node scripts/sync-bili-video-state.mjs",
+    "sync:users": "node scripts/sync-summary-users.mjs",
     "import:summary": "node scripts/import-summary-file.mjs",
     "publish:pending": "node scripts/publish-pending-summaries.mjs",
+    "cleanup:work": "node scripts/cleanup-work-files.mjs",
+    "schedule": "node scripts/run-scheduler.mjs",
     "setup:ps": "powershell -ExecutionPolicy Bypass -File scripts/setup-env.ps1",
     "setup:sh": "bash ./scripts/setup-env.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -28,6 +33,7 @@
   },
   "homepage": "https://github.com/rquanx/video-pipeline#readme",
   "dependencies": {
-    "@renmu/bili-api": "^2.12.5"
+    "@renmu/bili-api": "^2.12.5",
+    "node-cron": "^4.2.1"
   }
 }

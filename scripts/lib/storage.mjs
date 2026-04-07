@@ -28,6 +28,19 @@ export function getVideoByIdentity(db, { bvid = null, aid = null }) {
   return null;
 }
 
+export function listVideos(db) {
+  return db.prepare("SELECT * FROM videos ORDER BY updated_at DESC, id DESC").all();
+}
+
+export function listVideosOlderThan(db, cutoffIso) {
+  return db.prepare(`
+    SELECT *
+    FROM videos
+    WHERE COALESCE(last_scan_at, updated_at, created_at) < ?
+    ORDER BY COALESCE(last_scan_at, updated_at, created_at) ASC, id ASC
+  `).all(cutoffIso);
+}
+
 export function upsertVideo(db, video) {
   const now = new Date().toISOString();
   db.prepare(`
