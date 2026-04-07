@@ -1,4 +1,21 @@
-import { createClient, fail, getTopComment, getType, parseArgs, printJson, readCookie, readMessage, resolveOid, showUsage } from './lib/bili-comment-utils.mjs'
+import {
+  createClient,
+  fail,
+  getTopComment,
+  getType,
+  parseArgs,
+  printJson,
+  readCookie,
+  readMessage,
+  resolveOid,
+  showUsage,
+} from './lib/bili-comment-utils.mjs'
+import { openDatabase } from './lib/storage.mjs'
+import { fetchVideoSnapshot, syncVideoSnapshotToDb } from './lib/video-state.mjs'
+import { postSummaryThread } from './lib/comment-thread.mjs'
+import { loadDotEnvIfPresent } from './lib/runtime-tools.mjs'
+
+loadDotEnvIfPresent()
 
 function usage() {
   showUsage([
@@ -11,17 +28,12 @@ function usage() {
     '  --oid / --aid              Video comment oid. For normal videos this is the aid.',
     '  --bvid / --url             Optional. Resolved through @renmu/bili-api video.info().',
     '  --message / --message-file Required. Comment content.',
+    '  --db                       Optional. SQLite path. Default: work/pipeline.sqlite3',
+    '  --root-rpid                Optional. Force replies into the specified root comment.',
     '  --type                     Comment type, default 1.',
     '  --help                     Show this help.',
   ])
 }
-
-const sleep = (timeout) =>
-  new Promise((res, rej) => {
-    setTimeout(() => {
-      res()
-    }, timeout)
-  })
 
 async function main() {
   const args = parseArgs()
@@ -32,73 +44,57 @@ async function main() {
 
   const cookie = readCookie(args)
   const message = readMessage(args)
-  if (!message) {
-    fail('Comment content is empty')
-  }
 
   const client = createClient(cookie)
   const type = getType(args)
   const oid = await resolveOid(client, args)
+  const dbPath = args.db ?? 'work/pipeline.sqlite3'
+  const db = openDatabase(dbPath)
+  const snapshot = await fetchVideoSnapshot(client, args)
+  const state = syncVideoSnapshotToDb(db, snapshot)
   const topCommentState = await getTopComment(client, { oid, type })
-
-  if (!topCommentState.hasTopComment) {
-    const rootRes = await client.reply.add({
-      oid,
-      type,
-      message,
-      plat: 1,
-    })
-    await sleep(1000)
-    await client.reply.top({
-      oid,
-      type,
-      rpid: rootRes.rpid,
-      action: 1,
-    })
-
-    printJson({
-      ok: true,
-      action: 'comment-and-top',
-      oid,
-      type,
-      hasTopComment: false,
-      topCommentRpidBefore: null,
-      createdComment: {
-        rpid: rootRes.rpid,
-        root: rootRes.rpid,
-        parent: rootRes.rpid,
-      },
-    })
-    return
-  }
-
-  const topRpid = topCommentState.topComment.rpid
-  const replyRes = await client.reply.add({
+  const forcedRootRpid = parseOptionalPositiveInteger(args['root-rpid'])
+  const result = await postSummaryThread({
+    client,
     oid,
     type,
-    root: topRpid,
-    parent: topRpid,
     message,
-    plat: 1,
+    db,
+    videoId: state.video.id,
+    topCommentState,
+    existingRootRpid: state.video.root_comment_rpid,
+    forcedRootRpid,
   })
 
   printJson({
     ok: true,
-    action: 'reply-to-top-comment',
+    action: result.action,
+    dbPath,
     oid,
     type,
-    hasTopComment: true,
+    hasTopComment: topCommentState.hasTopComment,
+    rootCommentRpid: result.rootCommentRpid,
     topComment: {
-      rpid: topCommentState.topComment.rpid,
-      uname: topCommentState.topComment.uname,
-      message: topCommentState.topComment.message,
+      rpid: topCommentState.topComment?.rpid ?? null,
+      uname: topCommentState.topComment?.uname ?? null,
+      message: topCommentState.topComment?.message ?? null,
     },
-    createdComment: {
-      rpid: replyRes.rpid,
-      root: topRpid,
-      parent: topRpid,
-    },
+    coveredPagesFromMessage: result.coveredPagesFromMessage,
+    createdComments: result.createdComments,
   })
+}
+
+function parseOptionalPositiveInteger(value) {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    fail('Invalid --root-rpid, expected a positive integer', { received: value })
+  }
+
+  return parsed
 }
 
 main().catch((error) => {

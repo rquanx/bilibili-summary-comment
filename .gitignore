@@ -2,3 +2,5 @@ node_modules
 work
 .3.11
 summary.md
+.env
+cookie.txt
