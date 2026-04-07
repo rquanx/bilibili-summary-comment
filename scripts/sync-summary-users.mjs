@@ -54,6 +54,7 @@ async function main() {
       title: item.title,
       createdAt: item.createdAt,
       generatedPages: item.result?.generatedPages ?? [],
+      reusedSummaryFrom: item.result?.reusedSummaryFrom ?? null,
     })),
     failures: result.failures,
   });

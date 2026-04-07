@@ -3,6 +3,16 @@ import path from "node:path";
 import { getRepoRoot } from "./runtime-tools.mjs";
 import { listPendingPublishParts, listVideoParts } from "./storage.mjs";
 
+export function writePartSummaryArtifact({ bvid, pageNo, summaryText, workRoot = "work" }) {
+  const workDir = path.join(getRepoRoot(), workRoot, bvid);
+  fs.mkdirSync(workDir, { recursive: true });
+
+  const partSummaryPath = path.join(workDir, `summary-p${String(pageNo).padStart(2, "0")}.md`);
+  const normalizedSummary = String(summaryText ?? "").trim();
+  fs.writeFileSync(partSummaryPath, normalizedSummary ? `${normalizedSummary}\n` : "", "utf8");
+  return partSummaryPath;
+}
+
 export function writeSummaryArtifacts(db, video, workRoot = "work") {
   const workDir = path.join(getRepoRoot(), workRoot, video.bvid);
   fs.mkdirSync(workDir, { recursive: true });

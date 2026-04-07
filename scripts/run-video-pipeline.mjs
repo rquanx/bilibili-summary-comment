@@ -13,7 +13,8 @@ import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./lib/video-state.mjs
 import { ensureSubtitleForPart } from "./lib/subtitle-pipeline.mjs";
 import { resolveSummaryConfig, summarizePartFromSubtitle } from "./lib/summarizer.mjs";
 import { postSummaryThread } from "./lib/comment-thread.mjs";
-import { writeSummaryArtifacts } from "./lib/summary-files.mjs";
+import { findReusableSummarySource, reusePartSummaries } from "./lib/live-session-reuse.mjs";
+import { writePartSummaryArtifact, writeSummaryArtifacts } from "./lib/summary-files.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 
 loadDotEnvIfPresent();
@@ -109,12 +110,48 @@ async function main() {
   const forceSummary = Boolean(args["force-summary"]);
 
   const totalParts = state.video.page_count ?? snapshot?.pages?.length ?? 0;
-  const targetParts = listVideoParts(db, state.video.id).filter((part) =>
-    forceSummary || !String(part.summary_text ?? "").trim(),
-  );
+  let currentParts = listVideoParts(db, state.video.id);
+  let reusedSummarySource = null;
+  const hasPendingSummaries = currentParts.some((part) => !String(part.summary_text ?? "").trim());
+
+  if (!forceSummary && hasPendingSummaries) {
+    reusedSummarySource = findReusableSummarySource(db, state.video, currentParts);
+    if (reusedSummarySource) {
+      const reusedPages = reusePartSummaries(db, state.video.id, reusedSummarySource.parts);
+      currentParts = listVideoParts(db, state.video.id);
+      if (reusedPages.length > 0) {
+        reusedSummarySource = {
+          ...reusedSummarySource,
+          reusedPages,
+        };
+
+        for (const part of currentParts) {
+          if (!reusedPages.includes(part.page_no)) {
+            continue;
+          }
+
+          writePartSummaryArtifact({
+            bvid: state.video.bvid,
+            pageNo: part.page_no,
+            summaryText: part.summary_text,
+            workRoot,
+          });
+        }
+      } else {
+        reusedSummarySource = null;
+      }
+    }
+  }
+
+  const targetParts = currentParts.filter((part) => forceSummary || !String(part.summary_text ?? "").trim());
   const progress = createProgressReporter(targetParts.length);
 
   progress.log(`Video synced: ${state.video.title} (total parts: ${totalParts}, pending: ${targetParts.length})`);
+  if (reusedSummarySource) {
+    progress.log(
+      `Reused ${reusedSummarySource.reusedPages.length} summaries from ${reusedSummarySource.video.bvid} (${reusedSummarySource.video.title})`,
+    );
+  }
   if (targetParts.length === 0) {
     progress.log("All parts already have summaries, skipping subtitle and summary generation");
   }
@@ -219,6 +256,13 @@ async function main() {
     generatedPages: summaryResults.map((item) => item.pageNo),
     subtitleResults,
     summaryResults,
+    reusedSummaryFrom: reusedSummarySource
+      ? {
+          bvid: reusedSummarySource.video.bvid,
+          title: reusedSummarySource.video.title,
+          reusedPages: reusedSummarySource.reusedPages,
+        }
+      : null,
     artifacts,
     publishResult,
   });
