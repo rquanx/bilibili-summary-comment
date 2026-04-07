@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   createClient,
   fail,
@@ -9,9 +10,16 @@ import {
   resolveOid,
   showUsage,
 } from "./lib/bili-comment-utils.mjs";
-import { openDatabase, listPendingPublishParts } from "./lib/storage.mjs";
+import {
+  clearVideoPublishRebuildNeeded,
+  listPendingPublishParts,
+  openDatabase,
+  resetPublishedStateForVideo,
+  updateVideoCommentThread,
+} from "./lib/storage.mjs";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./lib/video-state.mjs";
-import { postSummaryThread } from "./lib/comment-thread.mjs";
+import { deleteSummaryThread, postSummaryThread } from "./lib/comment-thread.mjs";
+import { writeSummaryArtifacts } from "./lib/summary-files.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 
 loadDotEnvIfPresent();
@@ -49,8 +57,10 @@ async function main() {
   const snapshot = await fetchVideoSnapshot(client, args);
   const state = syncVideoSnapshotToDb(db, snapshot);
   const pendingParts = listPendingPublishParts(db, state.video.id);
+  const artifacts = writeSummaryArtifacts(db, state.video);
+  const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
 
-  if (pendingParts.length === 0) {
+  if (pendingParts.length === 0 && !needsRebuildPublish) {
     printJson({
       ok: true,
       dbPath,
@@ -59,28 +69,77 @@ async function main() {
       message: "No pending summaries to publish.",
       pendingPublishPages: [],
     });
-    return;
+      return;
   }
 
-  const message = pendingParts.map((part) => part.summary_text).join("\n\n").trim();
-  if (!message) {
-    fail("Pending summary rows do not contain summary_text", {
-      pendingPublishPages: pendingParts.map((part) => part.page_no),
+  const pendingMessage = pendingParts.map((part) => part.summary_text).join("\n\n").trim();
+  const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
+  let result;
+
+  if (needsRebuildPublish) {
+    if (!fullMessage) {
+      fail("Rebuild publish requires full summary content, but summary.md is empty", {
+        summaryPath: artifacts.summaryPath,
+      });
+    }
+
+    const deletedThread = await deleteSummaryThread({
+      client,
+      oid,
+      type,
+      rootRpid: state.video.root_comment_rpid,
     });
-  }
+    resetPublishedStateForVideo(db, state.video.id);
+    updateVideoCommentThread(db, state.video.id, {
+      rootCommentRpid: null,
+      topCommentRpid: null,
+    });
 
-  const topCommentState = await getTopComment(client, { oid, type });
-  const result = await postSummaryThread({
-    client,
-    oid,
-    type,
-    message,
-    db,
-    videoId: state.video.id,
-    topCommentState,
-    existingRootRpid: state.video.root_comment_rpid,
-    forcedRootRpid: parseOptionalPositiveInteger(args["root-rpid"]),
-  });
+    result = await postSummaryThread({
+      client,
+      oid,
+      type,
+      message: fullMessage,
+      db,
+      videoId: state.video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      existingRootRpid: null,
+      forcedRootRpid: null,
+    });
+    clearVideoPublishRebuildNeeded(db, state.video.id);
+    writeSummaryArtifacts(db, {
+      ...state.video,
+      publish_needs_rebuild: 0,
+    });
+    result = {
+      ...result,
+      rebuild: true,
+      deletedThread,
+    };
+  } else {
+    if (!pendingMessage) {
+      fail("Pending summary rows do not contain summary_text", {
+        pendingPublishPages: pendingParts.map((part) => part.page_no),
+      });
+    }
+
+    const topCommentState = await getTopComment(client, { oid, type });
+    result = await postSummaryThread({
+      client,
+      oid,
+      type,
+      message: pendingMessage,
+      db,
+      videoId: state.video.id,
+      topCommentState,
+      existingRootRpid: state.video.root_comment_rpid,
+      forcedRootRpid: parseOptionalPositiveInteger(args["root-rpid"]),
+    });
+    writeSummaryArtifacts(db, state.video);
+  }
 
   printJson({
     ok: true,
@@ -89,6 +148,7 @@ async function main() {
     oid,
     type,
     rootCommentRpid: result.rootCommentRpid,
+    rebuild: Boolean(result.rebuild),
     pendingPublishPages: pendingParts.map((part) => part.page_no),
     coveredPagesFromMessage: result.coveredPagesFromMessage,
     createdComments: result.createdComments,

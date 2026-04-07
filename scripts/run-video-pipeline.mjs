@@ -8,11 +8,17 @@ import {
   readCookie,
   showUsage,
 } from "./lib/bili-comment-utils.mjs";
-import { listVideoParts, openDatabase } from "./lib/storage.mjs";
+import {
+  clearVideoPublishRebuildNeeded,
+  listVideoParts,
+  openDatabase,
+  resetPublishedStateForVideo,
+  updateVideoCommentThread,
+} from "./lib/storage.mjs";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./lib/video-state.mjs";
 import { ensureSubtitleForPart } from "./lib/subtitle-pipeline.mjs";
 import { resolveSummaryConfig, summarizePartFromSubtitle } from "./lib/summarizer.mjs";
-import { postSummaryThread } from "./lib/comment-thread.mjs";
+import { deleteSummaryThread, postSummaryThread } from "./lib/comment-thread.mjs";
 import { findReusableSummarySource, reusePartSummaries } from "./lib/live-session-reuse.mjs";
 import { writePartSummaryArtifact, writeSummaryArtifacts } from "./lib/summary-files.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
@@ -145,12 +151,16 @@ async function main() {
 
   const targetParts = currentParts.filter((part) => forceSummary || !String(part.summary_text ?? "").trim());
   const progress = createProgressReporter(targetParts.length);
+  const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
 
   progress.log(`Video synced: ${state.video.title} (total parts: ${totalParts}, pending: ${targetParts.length})`);
   if (reusedSummarySource) {
     progress.log(
       `Reused ${reusedSummarySource.reusedPages.length} summaries from ${reusedSummarySource.video.bvid} (${reusedSummarySource.video.title})`,
     );
+  }
+  if (needsRebuildPublish) {
+    progress.log(`Publish thread marked for rebuild: ${state.video.publish_rebuild_reason || "structural-part-change"}`);
   }
   if (targetParts.length === 0) {
     progress.log("All parts already have summaries, skipping subtitle and summary generation");
@@ -170,6 +180,7 @@ async function main() {
       bvid: state.video.bvid,
       pageNo: part.page_no,
       cid: part.cid,
+      existingSubtitlePath: part.subtitle_path ?? null,
       cookie,
       cookieFile: args["cookie-file"] ?? null,
       durationSec: part.duration_sec,
@@ -214,9 +225,62 @@ async function main() {
   let publishResult = null;
 
   if (args.publish) {
-    progress.log("Publishing pending summaries");
+    const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
     const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
-    if (pendingMessage) {
+    if (needsRebuildPublish) {
+      progress.log("Rebuilding published summary thread");
+      if (!fullMessage) {
+        publishResult = {
+          action: "skip-rebuild-publish",
+          reason: "No full summary content available for rebuild.",
+        };
+        progress.log("No full summary content available, skipping rebuild publish");
+      } else {
+        const type = getType(args);
+        const deletedThread = await deleteSummaryThread({
+          client,
+          oid: state.video.aid,
+          type,
+          rootRpid: state.video.root_comment_rpid,
+        });
+        resetPublishedStateForVideo(db, state.video.id);
+        updateVideoCommentThread(db, state.video.id, {
+          rootCommentRpid: null,
+          topCommentRpid: null,
+        });
+
+        publishResult = await postSummaryThread({
+          client,
+          oid: state.video.aid,
+          type,
+          message: fullMessage,
+          db,
+          videoId: state.video.id,
+          topCommentState: {
+            hasTopComment: false,
+            topComment: null,
+          },
+          existingRootRpid: null,
+          forcedRootRpid: null,
+        });
+        clearVideoPublishRebuildNeeded(db, state.video.id);
+        writeSummaryArtifacts(
+          db,
+          {
+            ...state.video,
+            publish_needs_rebuild: 0,
+          },
+          workRoot,
+        );
+        publishResult = {
+          ...publishResult,
+          rebuild: true,
+          deletedThread,
+        };
+        progress.log(`Rebuild publish complete, sent ${publishResult.createdComments?.length ?? 0} comments`);
+      }
+    } else if (pendingMessage) {
+      progress.log("Publishing pending summaries");
       const type = getType(args);
       const topCommentState = await getTopComment(client, { oid: state.video.aid, type });
       publishResult = await postSummaryThread({
@@ -242,6 +306,7 @@ async function main() {
   }
 
   progress.log(`Pipeline complete, generated ${summaryResults.length} summaries`);
+  const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
 
   printJson({
     ok: true,
@@ -254,6 +319,9 @@ async function main() {
       pageCount: state.video.page_count,
     },
     generatedPages: summaryResults.map((item) => item.pageNo),
+    changeSet: state.changeSet,
+    publishNeedsRebuild: finalPublishNeedsRebuild,
+    publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,
     subtitleResults,
     summaryResults,
     reusedSummaryFrom: reusedSummarySource

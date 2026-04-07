@@ -31,6 +31,10 @@ function isDeletedCommentThreadError(error) {
   return messages.some((message) => DELETED_COMMENT_PATTERNS.some((pattern) => message.includes(pattern)));
 }
 
+export function isMissingCommentThreadError(error) {
+  return isDeletedCommentThreadError(error);
+}
+
 function buildCreatedCommentRecord({ replyRes, rootRpid, chunk, isRoot }) {
   return {
     rpid: replyRes.rpid,
@@ -181,4 +185,44 @@ export async function postSummaryThread({
     replacedRootCommentRpid,
     createdComments,
   };
+}
+
+export async function deleteSummaryThread({
+  client,
+  oid,
+  type,
+  rootRpid,
+}) {
+  if (!rootRpid) {
+    return {
+      ok: true,
+      deleted: false,
+      reason: "missing-root-rpid",
+    };
+  }
+
+  try {
+    await client.reply.delete({
+      oid,
+      type,
+      rpid: rootRpid,
+    });
+
+    return {
+      ok: true,
+      deleted: true,
+      rootRpid,
+    };
+  } catch (error) {
+    if (isDeletedCommentThreadError(error)) {
+      return {
+        ok: true,
+        deleted: false,
+        rootRpid,
+        alreadyMissing: true,
+      };
+    }
+
+    throw error;
+  }
 }

@@ -10,6 +10,7 @@ export async function ensureSubtitleForPart({
   bvid,
   pageNo,
   cid,
+  existingSubtitlePath = null,
   cookie,
   cookieFile = null,
   durationSec = 0,
@@ -21,9 +22,24 @@ export async function ensureSubtitleForPart({
   const workDir = path.join(getRepoRoot(), workRoot, bvid);
   fs.mkdirSync(workDir, { recursive: true });
 
-  const subtitlePath = path.join(workDir, `p${String(pageNo).padStart(2, "0")}.srt`);
-  const audioTemplate = path.join(workDir, `p${String(pageNo).padStart(2, "0")}.%(ext)s`);
-  const audioPath = path.join(workDir, `p${String(pageNo).padStart(2, "0")}.m4a`);
+  const stableBaseName = `cid-${String(cid)}`;
+  const subtitlePath = path.join(workDir, `${stableBaseName}.srt`);
+  const audioTemplate = path.join(workDir, `${stableBaseName}.%(ext)s`);
+  const audioPath = path.join(workDir, `${stableBaseName}.m4a`);
+
+  if (existingSubtitlePath && fs.existsSync(existingSubtitlePath)) {
+    savePartSubtitle(db, videoId, pageNo, {
+      subtitlePath: existingSubtitlePath,
+      subtitleSource: "local",
+      subtitleLang: null,
+    });
+    return {
+      subtitlePath: existingSubtitlePath,
+      subtitleSource: "local",
+      subtitleLang: null,
+      reused: true,
+    };
+  }
 
   if (fs.existsSync(subtitlePath)) {
     savePartSubtitle(db, videoId, pageNo, {

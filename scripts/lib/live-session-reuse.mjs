@@ -22,7 +22,7 @@ export function buildLiveSessionKey({ title, parts }) {
     return null;
   }
 
-  return `${normalizedTitle}\n${normalizedParts.map((part) => `${part.pageNo}:${part.partTitle}`).join("\n")}`;
+  return `${normalizedTitle}\n${normalizedParts.map((part) => part.partTitle).join("\n")}`;
 }
 
 export function findReusableSummarySource(db, currentVideo, currentParts) {
@@ -68,26 +68,44 @@ export function findReusableSummarySource(db, currentVideo, currentParts) {
 }
 
 export function reusePartSummaries(db, targetVideoId, sourceParts) {
-  const targetParts = new Map(listVideoParts(db, targetVideoId).map((part) => [part.page_no, part]));
+  const targetParts = listVideoParts(db, targetVideoId)
+    .map((part) => ({
+      pageNo: Number(part.page_no),
+      partTitle: normalizeText(part.part_title),
+      summaryText: String(part.summary_text ?? "").trim(),
+    }))
+    .sort((left, right) => left.pageNo - right.pageNo);
+  const sourceActiveParts = [...(Array.isArray(sourceParts) ? sourceParts : [])]
+    .map((part) => ({
+      pageNo: Number(part.page_no),
+      partTitle: normalizeText(part.part_title),
+      summaryText: String(part.summary_text ?? "").trim(),
+      summaryHash: String(part.summary_hash ?? "").trim(),
+    }))
+    .sort((left, right) => left.pageNo - right.pageNo);
   const reusedPages = [];
 
-  for (const part of sourceParts) {
-    const targetPart = targetParts.get(part.page_no);
-    if (String(targetPart?.summary_text ?? "").trim()) {
+  for (const [index, part] of sourceActiveParts.entries()) {
+    const targetPart = targetParts[index];
+    if (!targetPart || targetPart.partTitle !== part.partTitle) {
       continue;
     }
 
-    const summaryText = String(part.summary_text ?? "").trim();
-    const summaryHash = String(part.summary_hash ?? "").trim();
+    if (targetPart.summaryText) {
+      continue;
+    }
+
+    const summaryText = part.summaryText;
+    const summaryHash = part.summaryHash;
     if (!summaryText || !summaryHash) {
       continue;
     }
 
-    savePartSummary(db, targetVideoId, part.page_no, {
+    savePartSummary(db, targetVideoId, targetPart.pageNo, {
       summaryText,
       summaryHash,
     });
-    reusedPages.push(part.page_no);
+    reusedPages.push(targetPart.pageNo);
   }
 
   return reusedPages;

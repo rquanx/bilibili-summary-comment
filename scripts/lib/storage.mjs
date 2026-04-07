@@ -81,11 +81,37 @@ export function updateVideoCommentThread(db, videoId, { rootCommentRpid = null, 
   const now = new Date().toISOString();
   db.prepare(`
     UPDATE videos
-    SET root_comment_rpid = COALESCE(?, root_comment_rpid),
-        top_comment_rpid = COALESCE(?, top_comment_rpid),
+    SET root_comment_rpid = ?,
+        top_comment_rpid = ?,
         updated_at = ?
     WHERE id = ?
   `).run(rootCommentRpid, topCommentRpid, now, videoId);
+
+  return db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) ?? null;
+}
+
+export function markVideoPublishRebuildNeeded(db, videoId, reason) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE videos
+    SET publish_needs_rebuild = 1,
+        publish_rebuild_reason = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(String(reason ?? "").trim() || "structural-part-change", now, videoId);
+
+  return db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) ?? null;
+}
+
+export function clearVideoPublishRebuildNeeded(db, videoId) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE videos
+    SET publish_needs_rebuild = 0,
+        publish_rebuild_reason = NULL,
+        updated_at = ?
+    WHERE id = ?
+  `).run(now, videoId);
 
   return db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) ?? null;
 }
@@ -107,22 +133,26 @@ export function upsertVideoPart(db, part) {
       published,
       published_comment_rpid,
       published_at,
+      is_deleted,
+      deleted_at,
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(video_id, page_no) DO UPDATE SET
-      cid = excluded.cid,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(video_id, cid) DO UPDATE SET
+      page_no = excluded.page_no,
       part_title = excluded.part_title,
       duration_sec = excluded.duration_sec,
-      subtitle_path = COALESCE(excluded.subtitle_path, video_parts.subtitle_path),
-      subtitle_source = COALESCE(excluded.subtitle_source, video_parts.subtitle_source),
-      subtitle_lang = COALESCE(excluded.subtitle_lang, video_parts.subtitle_lang),
-      summary_text = COALESCE(excluded.summary_text, video_parts.summary_text),
-      summary_hash = COALESCE(excluded.summary_hash, video_parts.summary_hash),
+      subtitle_path = excluded.subtitle_path,
+      subtitle_source = excluded.subtitle_source,
+      subtitle_lang = excluded.subtitle_lang,
+      summary_text = excluded.summary_text,
+      summary_hash = excluded.summary_hash,
       published = excluded.published,
-      published_comment_rpid = COALESCE(excluded.published_comment_rpid, video_parts.published_comment_rpid),
-      published_at = COALESCE(excluded.published_at, video_parts.published_at),
+      published_comment_rpid = excluded.published_comment_rpid,
+      published_at = excluded.published_at,
+      is_deleted = excluded.is_deleted,
+      deleted_at = excluded.deleted_at,
       updated_at = excluded.updated_at
   `).run(
     part.videoId,
@@ -138,21 +168,60 @@ export function upsertVideoPart(db, part) {
     part.published ? 1 : 0,
     part.publishedCommentRpid ?? null,
     part.publishedAt ?? null,
+    part.isDeleted ? 1 : 0,
+    part.deletedAt ?? null,
     now,
     now,
   );
 
-  return db.prepare("SELECT * FROM video_parts WHERE video_id = ? AND page_no = ?").get(part.videoId, part.pageNo) ?? null;
+  return getVideoPartByCid(db, part.videoId, part.cid);
 }
 
 export function listVideoParts(db, videoId) {
-  return db.prepare("SELECT * FROM video_parts WHERE video_id = ? ORDER BY page_no ASC").all(videoId);
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+      AND is_deleted = 0
+    ORDER BY page_no ASC, id ASC
+  `).all(videoId);
+}
+
+export function listAllVideoParts(db, videoId) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+    ORDER BY is_deleted ASC, page_no ASC, id ASC
+  `).all(videoId);
+}
+
+export function getVideoPartByCid(db, videoId, cid) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+      AND cid = ?
+    LIMIT 1
+  `).get(videoId, cid) ?? null;
+}
+
+export function getActiveVideoPartByPageNo(db, videoId, pageNo) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+      AND page_no = ?
+      AND is_deleted = 0
+    LIMIT 1
+  `).get(videoId, pageNo) ?? null;
 }
 
 export function listPendingSummaryParts(db, videoId) {
   return db.prepare(`
     SELECT * FROM video_parts
     WHERE video_id = ?
+      AND is_deleted = 0
       AND (summary_text IS NULL OR TRIM(summary_text) = '')
     ORDER BY page_no ASC
   `).all(videoId);
@@ -162,6 +231,7 @@ export function listPendingPublishParts(db, videoId) {
   return db.prepare(`
     SELECT * FROM video_parts
     WHERE video_id = ?
+      AND is_deleted = 0
       AND summary_text IS NOT NULL
       AND TRIM(summary_text) <> ''
       AND published = 0
@@ -190,9 +260,10 @@ export function savePartSummary(db, videoId, pageNo, { summaryText, summaryHash 
         updated_at = ?
     WHERE video_id = ?
       AND page_no = ?
+      AND is_deleted = 0
   `).run(summaryText, summaryHash, summaryHash, summaryHash, summaryHash, now, videoId, pageNo);
 
-  return db.prepare("SELECT * FROM video_parts WHERE video_id = ? AND page_no = ?").get(videoId, pageNo) ?? null;
+  return getActiveVideoPartByPageNo(db, videoId, pageNo);
 }
 
 export function savePartSubtitle(db, videoId, pageNo, { subtitlePath, subtitleSource, subtitleLang = null }) {
@@ -205,9 +276,10 @@ export function savePartSubtitle(db, videoId, pageNo, { subtitlePath, subtitleSo
         updated_at = ?
     WHERE video_id = ?
       AND page_no = ?
+      AND is_deleted = 0
   `).run(subtitlePath, subtitleSource, subtitleLang, now, videoId, pageNo);
 
-  return db.prepare("SELECT * FROM video_parts WHERE video_id = ? AND page_no = ?").get(videoId, pageNo) ?? null;
+  return getActiveVideoPartByPageNo(db, videoId, pageNo);
 }
 
 export function markPartsPublished(db, videoId, pageNos, publishedCommentRpid) {
@@ -224,6 +296,7 @@ export function markPartsPublished(db, videoId, pageNos, publishedCommentRpid) {
         updated_at = ?
     WHERE video_id = ?
       AND page_no = ?
+      AND is_deleted = 0
   `);
 
   db.exec("BEGIN");
@@ -238,6 +311,18 @@ export function markPartsPublished(db, videoId, pageNos, publishedCommentRpid) {
   }
 }
 
+export function resetPublishedStateForVideo(db, videoId) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE video_parts
+    SET published = 0,
+        published_comment_rpid = NULL,
+        published_at = NULL,
+        updated_at = ?
+    WHERE video_id = ?
+  `).run(now, videoId);
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS videos (
@@ -248,11 +333,121 @@ function migrate(db) {
       page_count INTEGER NOT NULL DEFAULT 0,
       root_comment_rpid INTEGER,
       top_comment_rpid INTEGER,
+      publish_needs_rebuild INTEGER NOT NULL DEFAULT 0,
+      publish_rebuild_reason TEXT,
       last_scan_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+  `);
 
+  ensureVideoColumn(db, "publish_needs_rebuild", "INTEGER NOT NULL DEFAULT 0");
+  ensureVideoColumn(db, "publish_rebuild_reason", "TEXT");
+
+  migrateVideoPartsTable(db);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_video_parts_video_id ON video_parts(video_id);
+    CREATE INDEX IF NOT EXISTS idx_video_parts_video_page ON video_parts(video_id, page_no);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_video_parts_video_cid ON video_parts(video_id, cid);
+  `);
+  db.exec("DROP INDEX IF EXISTS idx_video_parts_video_active_page");
+}
+
+function ensureVideoColumn(db, columnName, definition) {
+  const columns = db.prepare("PRAGMA table_info(videos)").all();
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE videos ADD COLUMN ${columnName} ${definition}`);
+}
+
+function migrateVideoPartsTable(db) {
+  const table = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'video_parts'
+  `).get();
+
+  if (!table) {
+    createVideoPartsTable(db);
+    return;
+  }
+
+  const columns = db.prepare("PRAGMA table_info(video_parts)").all();
+  const hasDeletedColumns = columns.some((column) => column.name === "is_deleted");
+  const indexes = db.prepare("PRAGMA index_list(video_parts)").all();
+  const hasCidUniqueIndex = indexes.some((index) => {
+    if (!index.unique) {
+      return false;
+    }
+
+    const indexColumns = db.prepare(`PRAGMA index_info(${quoteSqlLiteral(index.name)})`).all();
+    return indexColumns.length === 2 && indexColumns[0]?.name === "video_id" && indexColumns[1]?.name === "cid";
+  });
+
+  if (hasDeletedColumns && hasCidUniqueIndex) {
+    return;
+  }
+
+  db.exec("BEGIN");
+  try {
+    db.exec("ALTER TABLE video_parts RENAME TO video_parts_legacy");
+    createVideoPartsTable(db);
+    db.exec(`
+      INSERT INTO video_parts (
+        id,
+        video_id,
+        page_no,
+        cid,
+        part_title,
+        duration_sec,
+        subtitle_path,
+        subtitle_source,
+        subtitle_lang,
+        summary_text,
+        summary_hash,
+        published,
+        published_comment_rpid,
+        published_at,
+        is_deleted,
+        deleted_at,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        video_id,
+        page_no,
+        cid,
+        part_title,
+        duration_sec,
+        subtitle_path,
+        subtitle_source,
+        subtitle_lang,
+        summary_text,
+        summary_hash,
+        published,
+        published_comment_rpid,
+        published_at,
+        0,
+        NULL,
+        created_at,
+        updated_at
+      FROM video_parts_legacy
+    `);
+    db.exec("DROP TABLE video_parts_legacy");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function createVideoPartsTable(db) {
+  db.exec(`
     CREATE TABLE IF NOT EXISTS video_parts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       video_id INTEGER NOT NULL,
@@ -268,13 +463,15 @@ function migrate(db) {
       published INTEGER NOT NULL DEFAULT 0,
       published_comment_rpid INTEGER,
       published_at TEXT,
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      deleted_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      UNIQUE(video_id, page_no),
       FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_video_parts_video_id ON video_parts(video_id);
-    CREATE INDEX IF NOT EXISTS idx_video_parts_video_page ON video_parts(video_id, page_no);
+    )
   `);
+}
+
+function quoteSqlLiteral(value) {
+  return `'${String(value ?? "").replace(/'/g, "''")}'`;
 }

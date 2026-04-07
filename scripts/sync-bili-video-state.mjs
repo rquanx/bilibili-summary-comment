@@ -50,6 +50,8 @@ async function main() {
       pageCount: state.video.page_count,
       rootCommentRpid: state.video.root_comment_rpid,
       topCommentRpid: state.video.top_comment_rpid,
+      publishNeedsRebuild: Boolean(state.video.publish_needs_rebuild),
+      publishRebuildReason: state.video.publish_rebuild_reason ?? null,
     },
     parts: state.parts.map((part) => ({
       pageNo: part.page_no,
@@ -61,6 +63,7 @@ async function main() {
     })),
     pendingSummaryPages: state.pendingSummaryParts.map((part) => part.page_no),
     pendingPublishPages: state.pendingPublishParts.map((part) => part.page_no),
+    changeSet: state.changeSet,
   });
 }
 
