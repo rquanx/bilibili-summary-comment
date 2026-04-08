@@ -58,6 +58,15 @@ export function getVenvExecutable(name, venvPath = ".3.11") {
   return path.join(getVenvBinDir(venvPath), executableName);
 }
 
+export function getVenvPython(venvPath = ".3.11") {
+  return getVenvExecutable("python", venvPath);
+}
+
+export async function runVenvModule(moduleName, args = [], options = {}) {
+  const { venvPath = ".3.11", ...commandOptions } = options;
+  return runCommand(getVenvPython(venvPath), ["-m", moduleName, ...args], commandOptions);
+}
+
 export async function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const outputStream = options.outputStream ?? process.stderr;

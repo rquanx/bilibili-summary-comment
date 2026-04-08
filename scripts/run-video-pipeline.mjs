@@ -340,7 +340,22 @@ main().catch((error) => {
   printJson({
     ok: false,
     message: error?.message ?? "Unknown error",
+    stderr: trimCommandOutput(error?.stderr),
+    stdout: trimCommandOutput(error?.stdout),
     stack: error?.stack,
   });
   process.exitCode = 1;
 });
+
+function trimCommandOutput(output, maxLength = 4000) {
+  if (typeof output !== "string") {
+    return undefined;
+  }
+
+  const trimmed = output.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed;
+}

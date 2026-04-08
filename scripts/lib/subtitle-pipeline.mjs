@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot, getVenvExecutable, runCommand } from "./runtime-tools.mjs";
+import { getRepoRoot, runCommand, runVenvModule } from "./runtime-tools.mjs";
 import { savePartSubtitle } from "./storage.mjs";
 
 export async function ensureSubtitleForPart({
@@ -56,13 +56,22 @@ export async function ensureSubtitleForPart({
   }
 
   progress?.logPartStage?.(pageNo, "Subtitle", "Trying Bilibili subtitle");
-  const biliSubtitle = await tryDownloadBiliSubtitle({
-    client,
-    bvid,
-    cid,
-    subtitlePath,
-    cookie,
-  });
+  let biliSubtitle = null;
+  try {
+    biliSubtitle = await tryDownloadBiliSubtitle({
+      client,
+      bvid,
+      cid,
+      subtitlePath,
+      cookie,
+    });
+  } catch (error) {
+    progress?.logPartStage?.(
+      pageNo,
+      "Subtitle",
+      `Bilibili subtitle unavailable (${formatErrorMessage(error)}), falling back to ASR`,
+    );
+  }
 
   if (biliSubtitle) {
     savePartSubtitle(db, videoId, pageNo, {
@@ -80,7 +89,6 @@ export async function ensureSubtitleForPart({
 
   if (!fs.existsSync(audioPath)) {
     progress?.logPartStage?.(pageNo, "Subtitle", "Downloading audio via yt-dlp");
-    const ytDlp = getVenvExecutable("yt-dlp", venvPath);
     const targetUrl = `https://www.bilibili.com/video/${bvid}?p=${pageNo}`;
     const args = [
       "--no-playlist",
@@ -93,20 +101,25 @@ export async function ensureSubtitleForPart({
       audioTemplate,
     ];
 
-    if (cookieFile) {
-      args.push("--cookies", path.resolve(cookieFile));
+    const ytDlpCookieFile = ensureYtDlpCookieFile({
+      workDir,
+      cookie,
+      cookieFile,
+    });
+    if (ytDlpCookieFile) {
+      args.push("--cookies", ytDlpCookieFile);
     }
 
     args.push(targetUrl);
-    await runCommand(ytDlp, args, {
+    await runVenvModule("yt_dlp", args, {
+      venvPath,
       streamOutput: true,
       outputStream: progress?.outputStream,
     });
   }
 
-  const videoCaptioner = getVenvExecutable("videocaptioner", venvPath);
   progress?.logPartStage?.(pageNo, "Subtitle", `Running transcription with ASR ${asr}`);
-  await runCommand(videoCaptioner, [
+  await runVenvModule("videocaptioner", [
     "transcribe",
     audioPath,
     "--asr",
@@ -118,6 +131,7 @@ export async function ensureSubtitleForPart({
     "-o",
     subtitlePath,
   ], {
+    venvPath,
     streamOutput: true,
     outputStream: progress?.outputStream,
   });
@@ -135,6 +149,28 @@ export async function ensureSubtitleForPart({
     reused: false,
     durationSec,
   };
+}
+
+function ensureYtDlpCookieFile({ workDir, cookie, cookieFile }) {
+  const resolvedCookieFile = resolveCookieFile(cookieFile);
+  if (resolvedCookieFile) {
+    const rawCookieFile = fs.readFileSync(resolvedCookieFile, "utf8").replace(/^\uFEFF/, "").trim();
+    if (isNetscapeCookieJar(rawCookieFile)) {
+      return resolvedCookieFile;
+    }
+  }
+
+  const cookieHeader = firstNonEmptyString(
+    cookie,
+    resolvedCookieFile ? fs.readFileSync(resolvedCookieFile, "utf8") : null,
+  );
+  if (!cookieHeader) {
+    return null;
+  }
+
+  const cookieJarPath = path.join(workDir, "yt-dlp-cookies.txt");
+  fs.writeFileSync(cookieJarPath, convertCookieHeaderToNetscape(cookieHeader), "utf8");
+  return cookieJarPath;
 }
 
 async function tryDownloadBiliSubtitle({ client, bvid, cid, subtitlePath, cookie }) {
@@ -213,6 +249,61 @@ function convertBiliSubtitleJsonToSrt(data) {
   }
 
   return lines.join("\n");
+}
+
+function resolveCookieFile(cookieFile) {
+  if (typeof cookieFile !== "string" || !cookieFile.trim()) {
+    return null;
+  }
+
+  const resolvedPath = path.resolve(cookieFile);
+  return fs.existsSync(resolvedPath) ? resolvedPath : null;
+}
+
+function isNetscapeCookieJar(content) {
+  const trimmed = String(content ?? "").trim();
+  return trimmed.startsWith("# Netscape HTTP Cookie File");
+}
+
+function convertCookieHeaderToNetscape(cookieHeader) {
+  const lines = ["# Netscape HTTP Cookie File", "# This file is generated from the project's cookie header."];
+
+  for (const part of String(cookieHeader ?? "").split(";")) {
+    const trimmedPart = part.trim();
+    if (!trimmedPart) {
+      continue;
+    }
+
+    const separatorIndex = trimmedPart.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const name = trimmedPart.slice(0, separatorIndex).trim();
+    const value = trimmedPart.slice(separatorIndex + 1).trim();
+    if (!name) {
+      continue;
+    }
+
+    lines.push([".bilibili.com", "TRUE", "/", "FALSE", "2147483647", name, value].join("\t"));
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function formatErrorMessage(error) {
+  const message = String(error?.message ?? "Unknown error").trim();
+  return message || "Unknown error";
 }
 
 function formatSrtTimestamp(seconds) {
