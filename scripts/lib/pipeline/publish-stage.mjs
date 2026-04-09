@@ -8,6 +8,14 @@ import {
   updateVideoCommentThread,
 } from "../db/index.mjs";
 
+function collectRebuildDeleteCandidates(video, topCommentState) {
+  return [...new Set([
+    Number(video.root_comment_rpid ?? 0),
+    Number(video.top_comment_rpid ?? 0),
+    Number(topCommentState?.topComment?.rpid ?? 0),
+  ].filter((rpid) => Number.isInteger(rpid) && rpid > 0))];
+}
+
 export async function runPublishStage({
   client,
   db,
@@ -56,12 +64,9 @@ export async function runPublishStage({
       return skipped;
     }
 
-    const deletedThread = await deleteSummaryThread({
-      client,
-      oid,
-      type,
-      rootRpid: video.root_comment_rpid,
-    });
+    const topCommentState = await getTopComment(client, { oid, type });
+    const deleteCandidates = collectRebuildDeleteCandidates(video, topCommentState);
+
     resetPublishedStateForVideo(db, video.id);
     updateVideoCommentThread(db, video.id, {
       rootCommentRpid: null,
@@ -82,6 +87,21 @@ export async function runPublishStage({
       existingRootRpid: null,
       forcedRootRpid: null,
     });
+
+    const deletedThreads = [];
+    for (const rootRpid of deleteCandidates) {
+      if (rootRpid === rebuilt.rootCommentRpid) {
+        continue;
+      }
+
+      deletedThreads.push(await deleteSummaryThread({
+        client,
+        oid,
+        type,
+        rootRpid,
+      }));
+    }
+
     clearVideoPublishRebuildNeeded(db, video.id);
     writeSummaryArtifacts(
       db,
@@ -95,7 +115,12 @@ export async function runPublishStage({
     const result = {
       ...rebuilt,
       rebuild: true,
-      deletedThread,
+      deletedThread: deletedThreads[0] ?? {
+        ok: true,
+        deleted: false,
+        reason: "no-previous-thread",
+      },
+      deletedThreads,
     };
     eventLogger?.log({
       scope: "publish",
@@ -106,7 +131,7 @@ export async function runPublishStage({
         publishMode: "rebuild",
         rootCommentRpid: result.rootCommentRpid,
         createdComments: result.createdComments?.length ?? 0,
-        deletedThread,
+        deletedThreads,
       },
     });
     progress?.log(`Rebuild publish complete, sent ${result.createdComments?.length ?? 0} comments`);
