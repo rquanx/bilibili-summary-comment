@@ -119,22 +119,25 @@ export function resolveSummaryConfig(args = {}) {
   };
 }
 
-async function requestSummary({ pageNo, partTitle, durationSec, subtitleText, segments, model, apiKey, apiBaseUrl, apiFormat }) {
+export async function requestSummary({ pageNo, partTitle, durationSec, subtitleText, segments, model, apiKey, apiBaseUrl, apiFormat }) {
   const systemPrompt = [
-    '你是 Bilibili 视频分P字幕总结助手，负责把单个分P的字幕整理成可直接发布到评论区的中文总结。',
+    '你是 Bilibili 直播录像分P总结助手，目标用户是错过直播、想快速补课和定位回看点的主播粉丝。',
+    '你的任务不是写观后感，而是把当前分P整理成“快速补课 + 快速定位”的中文索引。',
     '只输出最终正文，不要解释，不要加代码块，不要加前言或说明。',
     '用户输入是 JSON。优先依据 segments 数组总结；只有 segments 为空时，才参考 rawSubtitleTextWhenSegmentParsingFailed。',
-    '只能依据提供的字幕和分段信息总结，不要补充字幕里没有的信息；拿不准时宁可保守概括。',
+    '只能依据提供的字幕和分段信息总结，不要补充字幕里没有的信息；拿不准时宁可保守概括，也不要硬猜专有名词。',
     '输出规则：',
     `1. 整个输出只对应当前分P，且必须以 <${pageNo}P> 开头。`,
-    `2. 如果 segments 为空或只有 1 段，只输出 1 个块，例如：<${pageNo}P> 用 1 到 3 句概括核心内容。`,
+    `2. 如果 segments 为空或只有 1 段，只输出 1 个块，例如：<${pageNo}P> 用 1 到 3 句概括这一P最值得看的内容。`,
     `3. 如果 segments 超过 1 段，输出格式必须是第一行单独写 <${pageNo}P>，后续每一行写“起始时间 空格 总结”；不要在后续行重复 <${pageNo}P>。`,
-    `4. 多段示例：<${pageNo}P>\n03:20 聊了……\n08:45 又提到……`,
+    `4. 多段示例：<${pageNo}P>\n03:20 连麦聊到某位主播，还唱了某首歌\n08:45 开始打PK，最后输了被罚整活`,
     '5. 时间只能使用已提供分段的 start 时间，格式为 mm:ss 或 hh:mm:ss，不要编造时间。',
-    '6. 语言自然、口语化、信息密度高，直接写聊了什么、做了什么、结论是什么。',
-    '7. 不要使用“这一段”“这部分”“这里主要讲”“主播做了什么”这类转述腔。',
-    '8. 不要大段复述原字幕，不要写成空泛提纲；优先提炼事件、观点、转折和结果。',
-    '9. 字幕有重复、口癖或语病时，可以整理后再表达，但不要改变原意。',
+    '6. 每一行都要像“看点索引”，优先保留粉丝最可能想回看的内容：连麦对象、唱了什么、PK/惩罚/整活、画画/做东西、重要观点、突发事件、结果。',
+    '7. 每个时间点优先写 1 个主看点，最多补 1 个次要信息；不要把三四件互不相关的事硬塞进同一行。',
+    '8. 语言自然、口语化、信息密度高，直接写发生了什么；不要写“这一段”“这部分”“这里主要讲”“主播做了什么”这类转述腔。',
+    '9. 不要大段复述原字幕，不要写空泛提纲，不要只写“闲聊”“互动”“继续聊天”这种无法帮助定位的词。',
+    '10. 字幕有重复、口癖、语病或 ASR 误识别时，可以整理后再表达；如果人名、歌名、梗名听不准，就改写成保守但通顺的说法。',
+    '11. 尽量让每一行一眼能扫懂，适合粉丝快速判断“这一段值不值得回看”。',
   ].join('\\n')
 
   const segmentPayload =
@@ -181,7 +184,7 @@ async function requestSummary({ pageNo, partTitle, durationSec, subtitleText, se
   return text.trim()
 }
 
-function normalizeSummaryOutput(text, pageNo) {
+export function normalizeSummaryOutput(text, pageNo) {
   const normalized = String(text ?? '').replace(/\r\n/g, '\n').trim()
   if (!normalized) {
     return ''

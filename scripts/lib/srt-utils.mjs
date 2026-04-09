@@ -116,15 +116,19 @@ function parseSrtTimestamp(value) {
 }
 
 function chooseWindowSize(durationSec, cueCount) {
-  if (durationSec < 6 * 60 || cueCount < 25) {
+  if (durationSec < 4 * 60 || cueCount < 18) {
     return null;
   }
 
-  if (durationSec <= 20 * 60) {
-    return 5 * 60;
+  if (durationSec <= 12 * 60) {
+    return 3 * 60;
   }
 
-  return 8 * 60;
+  if (durationSec <= 45 * 60) {
+    return 4 * 60;
+  }
+
+  return 5 * 60;
 }
 
 function createSegment(cue) {

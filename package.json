@@ -8,6 +8,7 @@
   },
   "scripts": {
     "pipeline": "node scripts/run-video-pipeline.mjs",
+    "test:prompt": "node scripts/test-summary-prompt.mjs",
     "login:bili": "node scripts/login-bili-tv.mjs",
     "refresh:cookie": "node scripts/refresh-bili-cookie.mjs",
     "sync:video": "node scripts/sync-bili-video-state.mjs",

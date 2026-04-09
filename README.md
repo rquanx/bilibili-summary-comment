@@ -481,4 +481,3 @@ work/pipeline.sqlite3
 
 - [SETUP.md](./SETUP.md)：环境准备与安装说明
 - [SCHEDULE.md](./SCHEDULE.md)：定时任务与部署方式
-- [prompt.md](./prompt.md)：需求背景与提示词上下文
