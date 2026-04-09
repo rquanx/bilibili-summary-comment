@@ -1,6 +1,6 @@
-import { getBvid } from "../bili/comment-utils.js";
+import { getBvid } from "../bili/comment-utils.ts";
 import type { Client } from "@renmu/bili-api";
-import type { VideoSnapshot } from "../db/types.js";
+import type { VideoSnapshot } from "../db/types.ts";
 
 export async function fetchVideoSnapshot(client: Client, args: Record<string, unknown>): Promise<VideoSnapshot> {
   const directAid = args.oid ?? args.aid;

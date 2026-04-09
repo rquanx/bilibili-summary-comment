@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SnapshotChangeSet, VideoPartRecord, VideoSnapshotPage } from "../db/types.js";
+import type { SnapshotChangeSet, VideoPartRecord, VideoSnapshotPage } from "../db/types.ts";
 
 export function detectSnapshotChanges(
   previousActiveParts: Array<Pick<VideoPartRecord, "cid" | "page_no">>,

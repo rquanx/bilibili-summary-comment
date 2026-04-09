@@ -1,2 +1,2 @@
-export { fetchVideoSnapshot } from "./snapshot.js";
-export { getVideoStateFromDb, syncVideoSnapshotToDb } from "./state-sync.js";
+export { fetchVideoSnapshot } from "./snapshot.ts";
+export { getVideoStateFromDb, syncVideoSnapshotToDb } from "./state-sync.ts";

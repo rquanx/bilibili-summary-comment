@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { migrateDatabase } from "./migrations.js";
+import { migrateDatabase } from "./migrations.ts";
 
 export function openDatabase(databasePath: string): DatabaseSync {
   const resolvedPath = path.resolve(databasePath);

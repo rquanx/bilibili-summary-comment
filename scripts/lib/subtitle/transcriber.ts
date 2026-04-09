@@ -1,13 +1,13 @@
 import fs from "node:fs";
-import { runVenvModule } from "../shared/runtime-tools.js";
+import { runVenvModule } from "../shared/runtime-tools.ts";
 import {
   prependPathEntries,
   resolveLocalFasterWhisperConfig,
   resolveLocalFasterWhisperExecutableConfig,
-} from "./faster-whisper-config.js";
-import { notifyTranscriptionFailure } from "./notifier.js";
-import { withTranscriptionQueueLock } from "./queue.js";
-import { delay, formatErrorMessage, formatTranscriptionTarget } from "./utils.js";
+} from "./faster-whisper-config.ts";
+import { notifyTranscriptionFailure } from "./notifier.ts";
+import { withTranscriptionQueueLock } from "./queue.ts";
+import { delay, formatErrorMessage, formatTranscriptionTarget } from "./utils.ts";
 const TRANSCRIPTION_RETRY_LIMIT = 3;
 const TRANSCRIPTION_RETRY_DELAY_MS = 10_000;
 

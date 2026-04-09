@@ -1,4 +1,4 @@
-export { resolveSummaryConfig } from "./config.js";
-export { normalizeSummaryOutput } from "./output.js";
-export { requestSummary } from "./client.js";
-export { summarizePartFromSubtitle } from "./service.js";
+export { resolveSummaryConfig } from "./config.ts";
+export { normalizeSummaryOutput } from "./output.ts";
+export { requestSummary } from "./client.ts";
+export { summarizePartFromSubtitle } from "./service.ts";

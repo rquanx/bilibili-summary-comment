@@ -1,8 +1,8 @@
 import { Command, InvalidArgumentError } from "commander";
 import type { Command as CommanderCommand } from "commander";
 import { z } from "zod";
-import { errorToJson } from "./errors.js";
-import { loadDotEnvIfPresent } from "../shared/runtime-tools.js";
+import { errorToJson } from "./errors.ts";
+import { loadDotEnvIfPresent } from "../shared/runtime-tools.ts";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const positiveIntegerSchema = z.coerce.number().int().positive();

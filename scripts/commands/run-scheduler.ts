@@ -1,20 +1,20 @@
 import cron from "node-cron";
-import { resolveSchedulerConfig } from "../lib/config/app-config.js";
+import { resolveSchedulerConfig } from "../lib/config/app-config.ts";
 import {
   addDatabaseOption,
   addWorkRootOption,
   createCliCommand,
   parsePositiveIntegerArg,
   runCli,
-} from "../lib/cli/tools.js";
+} from "../lib/cli/tools.ts";
 import {
   getLastAuthUpdateAt,
   loadBiliAuthBundle,
   refreshBiliCookie,
   resolveBiliAuthFile,
   resolveBiliCookieFile,
-} from "../lib/bili/auth.js";
-import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "../lib/scheduler/index.js";
+} from "../lib/bili/auth.ts";
+import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "../lib/scheduler/index.ts";
 
 const command = addWorkRootOption(
   addDatabaseOption(

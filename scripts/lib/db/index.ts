@@ -1,4 +1,4 @@
-export { openDatabase } from "./database.js";
+export { openDatabase } from "./database.ts";
 export type {
   Db,
   PipelineEventInput,
@@ -14,7 +14,7 @@ export type {
   VideoSnapshot,
   VideoSnapshotPage,
   VideoState,
-} from "./types.js";
+} from "./types.ts";
 export {
   clearVideoPublishRebuildNeeded,
   getActiveVideoPartByPageNo,
@@ -34,8 +34,8 @@ export {
   updateVideoCommentThread,
   upsertVideo,
   upsertVideoPart,
-} from "./video-storage.js";
+} from "./video-storage.ts";
 export {
   insertPipelineEvent,
   listPipelineEvents,
-} from "./pipeline-event-storage.js";
+} from "./pipeline-event-storage.ts";

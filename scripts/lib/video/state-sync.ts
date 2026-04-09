@@ -8,9 +8,9 @@ import {
   markVideoPublishRebuildNeeded,
   upsertVideo,
   upsertVideoPart,
-} from "../db/index.js";
-import type { Db, VideoIdentity, VideoPartRecord, VideoSnapshot, VideoState } from "../db/index.js";
-import { createSummaryHash, detectSnapshotChanges, reindexSummaryText } from "./change-detection.js";
+} from "../db/index.ts";
+import type { Db, VideoIdentity, VideoPartRecord, VideoSnapshot, VideoState } from "../db/index.ts";
+import { createSummaryHash, detectSnapshotChanges, reindexSummaryText } from "./change-detection.ts";
 
 export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoState {
   const video = upsertVideo(db, snapshot);

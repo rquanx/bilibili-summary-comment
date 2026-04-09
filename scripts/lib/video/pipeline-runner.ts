@@ -3,16 +3,16 @@ import {
   getType,
   printJson,
   readCookie,
-} from "../bili/comment-utils.js";
-import { createPipelineEventLogger } from "../pipeline/event-logger.js";
-import { runGenerationStage } from "../pipeline/generation-stage.js";
-import { createProgressReporter, trimCommandOutput } from "../pipeline/progress.js";
-import { runPublishStage } from "../pipeline/publish-stage.js";
-import { resolveSummaryConfig } from "../summary/index.js";
-import { openDatabase } from "../db/index.js";
-import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index.js";
-import type { PipelineEventLogger } from "../db/index.js";
-import type { CommandError } from "../shared/runtime-tools.js";
+} from "../bili/comment-utils.ts";
+import { createPipelineEventLogger } from "../pipeline/event-logger.ts";
+import { runGenerationStage } from "../pipeline/generation-stage.ts";
+import { createProgressReporter, trimCommandOutput } from "../pipeline/progress.ts";
+import { runPublishStage } from "../pipeline/publish-stage.ts";
+import { resolveSummaryConfig } from "../summary/index.ts";
+import { openDatabase } from "../db/index.ts";
+import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index.ts";
+import type { PipelineEventLogger } from "../db/index.ts";
+import type { CommandError } from "../shared/runtime-tools.ts";
 
 interface VideoPipelineArgs extends Record<string, unknown> {
   db?: string;

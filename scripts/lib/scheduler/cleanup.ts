@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { openDatabase } from "../db/database.js";
-import { listVideosOlderThan } from "../db/video-storage.js";
-import { getRepoRoot } from "../shared/runtime-tools.js";
-import type { VideoRecord } from "../db/types.js";
+import { openDatabase } from "../db/database.ts";
+import { listVideosOlderThan } from "../db/video-storage.ts";
+import { getRepoRoot } from "../shared/runtime-tools.ts";
+import type { VideoRecord } from "../db/types.ts";
 
 type CleanupCandidate = Pick<VideoRecord, "bvid" | "title" | "last_scan_at" | "updated_at">;
 

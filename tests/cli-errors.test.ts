@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CliError, createCliError, errorToJson } from "../scripts/lib/cli/errors.js";
+import { CliError, createCliError, errorToJson } from "../scripts/lib/cli/errors.ts";
 
 test("createCliError returns a typed error with normalized details", () => {
   const error = createCliError("Bad input", {

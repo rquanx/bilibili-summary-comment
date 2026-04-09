@@ -4,14 +4,14 @@ import {
   getType,
   readCookie,
   resolveOid,
-} from "../lib/bili/comment-utils.js";
+} from "../lib/bili/comment-utils.ts";
 import {
   addCommentTypeOption,
   addCookieOptions,
   addVideoIdentityOptions,
   createCliCommand,
   runCli,
-} from "../lib/cli/tools.js";
+} from "../lib/cli/tools.ts";
 
 const command = addCommentTypeOption(
   addVideoIdentityOptions(

@@ -1,13 +1,13 @@
-import { resolveSummaryUsersConfig } from "../lib/config/app-config.js";
+import { resolveSummaryUsersConfig } from "../lib/config/app-config.ts";
 import {
   addDatabaseOption,
   addWorkRootOption,
   createCliCommand,
   parsePositiveIntegerArg,
   runCli,
-} from "../lib/cli/tools.js";
-import { syncSummaryUsersRecentVideos } from "../lib/scheduler/index.js";
-import type { PipelineProcessResult } from "../lib/scheduler/pipeline-runner.js";
+} from "../lib/cli/tools.ts";
+import { syncSummaryUsersRecentVideos } from "../lib/scheduler/index.ts";
+import type { PipelineProcessResult } from "../lib/scheduler/pipeline-runner.ts";
 
 const command = addWorkRootOption(
   addDatabaseOption(

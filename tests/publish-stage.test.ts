@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database.js";
-import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage.js";
-import { createSummaryHash } from "../scripts/lib/video/change-detection.js";
-import { runPublishStage } from "../scripts/lib/pipeline/publish-stage.js";
+import { openDatabase } from "../scripts/lib/db/database.ts";
+import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage.ts";
+import { createSummaryHash } from "../scripts/lib/video/change-detection.ts";
+import { runPublishStage } from "../scripts/lib/pipeline/publish-stage.ts";
 
 test("runPublishStage rebuild posts a new pinned root before deleting stale old threads", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-"));

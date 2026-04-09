@@ -1,4 +1,4 @@
-import { parseSummaryBlocks } from "./format.js";
+import { parseSummaryBlocks } from "./format.ts";
 
 export function normalizeSummaryOutput(text, pageNo) {
   const normalized = String(text ?? "").replace(/\r\n/g, "\n").trim();

@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot, runVenvModule } from "../shared/runtime-tools.js";
-import { savePartSubtitle } from "../db/index.js";
-import type { Db } from "../db/index.js";
-import { tryDownloadBiliSubtitle } from "./bili.js";
-import { ensureYtDlpCookieFile } from "./cookie-file.js";
-import { transcribeWithRetries } from "./transcriber.js";
-import { formatErrorMessage } from "./utils.js";
+import { getRepoRoot, runVenvModule } from "../shared/runtime-tools.ts";
+import { savePartSubtitle } from "../db/index.ts";
+import type { Db } from "../db/index.ts";
+import { tryDownloadBiliSubtitle } from "./bili.ts";
+import { ensureYtDlpCookieFile } from "./cookie-file.ts";
+import { transcribeWithRetries } from "./transcriber.ts";
+import { formatErrorMessage } from "./utils.ts";
 
 interface SubtitleFinalizeInput {
   db: Db;

@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { buildSummarySegmentsFromSrt } from "../subtitle/srt-utils.js";
-import { savePartSummary } from "../db/index.js";
-import { writePartSummaryArtifact } from "./files.js";
-import { requestSummary } from "./client.js";
-import { normalizeSummaryOutput } from "./output.js";
+import { buildSummarySegmentsFromSrt } from "../subtitle/srt-utils.ts";
+import { savePartSummary } from "../db/index.ts";
+import { writePartSummaryArtifact } from "./files.ts";
+import { requestSummary } from "./client.ts";
+import { normalizeSummaryOutput } from "./output.ts";
 
 export async function summarizePartFromSubtitle({
   db,

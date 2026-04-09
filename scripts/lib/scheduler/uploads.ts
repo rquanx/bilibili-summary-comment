@@ -1,11 +1,11 @@
-import { createClient } from "../bili/comment-utils.js";
-import { runPipelinesWithConcurrency, SUMMARY_PIPELINE_MAX_CONCURRENCY } from "./concurrency.js";
-import { runPipelineForBvid, readCookieString } from "./pipeline-runner.js";
-import { parseSummaryUsers } from "./user-targets.js";
-import type { PipelineUpload } from "./concurrency.js";
-import type { PipelineRunResult, PipelineFailureResult } from "./concurrency.js";
-import type { PipelineProcessResult } from "./pipeline-runner.js";
-import type { SummaryUserTarget } from "./user-targets.js";
+import { createClient } from "../bili/comment-utils.ts";
+import { runPipelinesWithConcurrency, SUMMARY_PIPELINE_MAX_CONCURRENCY } from "./concurrency.ts";
+import { runPipelineForBvid, readCookieString } from "./pipeline-runner.ts";
+import { parseSummaryUsers } from "./user-targets.ts";
+import type { PipelineUpload } from "./concurrency.ts";
+import type { PipelineRunResult, PipelineFailureResult } from "./concurrency.ts";
+import type { PipelineProcessResult } from "./pipeline-runner.ts";
+import type { SummaryUserTarget } from "./user-targets.ts";
 
 export interface RecentUpload extends PipelineUpload {
   mid: number;

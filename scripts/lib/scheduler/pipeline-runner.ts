@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot, runCommand } from "../shared/runtime-tools.js";
-import type { CommandResult, RunCommandOptions } from "../shared/runtime-tools.js";
+import { getRepoRoot, runCommand } from "../shared/runtime-tools.ts";
+import type { CommandResult, RunCommandOptions } from "../shared/runtime-tools.ts";
 
 export interface PipelineProcessResult extends Record<string, unknown> {
   ok?: boolean;

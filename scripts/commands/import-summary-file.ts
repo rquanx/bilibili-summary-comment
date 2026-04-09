@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import {
   createClient,
   readCookie,
-} from "../lib/bili/comment-utils.js";
-import { createCliError } from "../lib/cli/errors.js";
+} from "../lib/bili/comment-utils.ts";
+import { createCliError } from "../lib/cli/errors.ts";
 import {
   addCookieOptions,
   addDatabaseOption,
@@ -12,10 +12,10 @@ import {
   createCliCommand,
   requireNonEmptyString,
   runCli,
-} from "../lib/cli/tools.js";
-import { groupSummaryBlocksByPage, normalizeSummaryMarkers } from "../lib/summary/format.js";
-import { openDatabase, savePartSummary } from "../lib/db/index.js";
-import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index.js";
+} from "../lib/cli/tools.ts";
+import { groupSummaryBlocksByPage, normalizeSummaryMarkers } from "../lib/summary/format.ts";
+import { openDatabase, savePartSummary } from "../lib/db/index.ts";
+import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index.ts";
 
 const command = addDatabaseOption(
   addVideoIdentityOptions(

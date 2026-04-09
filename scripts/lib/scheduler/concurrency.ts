@@ -1,4 +1,4 @@
-import { normalizePipelineUserKey } from "./user-targets.js";
+import { normalizePipelineUserKey } from "./user-targets.ts";
 
 export const SUMMARY_PIPELINE_MAX_CONCURRENCY = 3;
 

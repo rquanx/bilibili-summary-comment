@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { firstNonEmptyString } from "./utils.js";
+import { firstNonEmptyString } from "./utils.ts";
 
 export const DEFAULT_FASTER_WHISPER_MODEL_NAME = "large-v3-turbo";
 

@@ -1,8 +1,8 @@
-import { findReusableSummarySource, reusePartSummaries } from "../summary/live-session-reuse.js";
-import { writePartSummaryArtifact, writeSummaryArtifacts } from "../summary/files.js";
-import { ensureSubtitleForPart } from "../subtitle/pipeline.js";
-import { summarizePartFromSubtitle } from "../summary/index.js";
-import { listVideoParts } from "../db/index.js";
+import { findReusableSummarySource, reusePartSummaries } from "../summary/live-session-reuse.ts";
+import { writePartSummaryArtifact, writeSummaryArtifacts } from "../summary/files.ts";
+import { ensureSubtitleForPart } from "../subtitle/pipeline.ts";
+import { summarizePartFromSubtitle } from "../summary/index.ts";
+import { listVideoParts } from "../db/index.ts";
 
 export async function runGenerationStage({
   client,

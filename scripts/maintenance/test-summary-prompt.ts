@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { buildSummarySegmentsFromSrt, formatSummaryTime, parseSrt } from "../lib/subtitle/srt-utils.js";
-import { getRepoRoot, loadDotEnvIfPresent } from "../lib/shared/runtime-tools.js";
-import { normalizeSummaryOutput, requestSummary, resolveSummaryConfig } from "../lib/summary/index.js";
+import { buildSummarySegmentsFromSrt, formatSummaryTime, parseSrt } from "../lib/subtitle/srt-utils.ts";
+import { getRepoRoot, loadDotEnvIfPresent } from "../lib/shared/runtime-tools.ts";
+import { normalizeSummaryOutput, requestSummary, resolveSummaryConfig } from "../lib/summary/index.ts";
 
 const SHORT_TARGET_SEC = 60;
 const SHORT_MIN_SEC = 20;

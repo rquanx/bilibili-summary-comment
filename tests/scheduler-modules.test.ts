@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency.js";
-import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets.js";
-import * as schedulerTasks from "../scripts/lib/scheduler/index.js";
-import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup.js";
-import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner.js";
-import { syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads.js";
+import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency.ts";
+import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets.ts";
+import * as schedulerTasks from "../scripts/lib/scheduler/index.ts";
+import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup.ts";
+import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner.ts";
+import { syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads.ts";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");

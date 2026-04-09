@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { firstNonEmptyString } from "./utils.js";
+import { firstNonEmptyString } from "./utils.ts";
 
 export function ensureYtDlpCookieFile({ workDir, cookie, cookieFile }) {
   const resolvedCookieFile = resolveCookieFile(cookieFile);

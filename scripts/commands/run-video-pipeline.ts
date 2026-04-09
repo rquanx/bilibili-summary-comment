@@ -6,8 +6,8 @@ import {
   addWorkRootOption,
   createCliCommand,
   runCli,
-} from "../lib/cli/tools.js";
-import { printPipelineFailure, runVideoPipeline } from "../lib/video/pipeline-runner.js";
+} from "../lib/cli/tools.ts";
+import { printPipelineFailure, runVideoPipeline } from "../lib/video/pipeline-runner.ts";
 
 let activeEventLogger = null;
 
