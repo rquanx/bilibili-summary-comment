@@ -1,9 +1,8 @@
-import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import {
   addDatabaseOption,
   createCliCommand,
-  parseCliArgs,
   parsePositiveIntegerArg,
+  runCli,
 } from "./lib/cli-tools.mjs";
 import { listPipelineEvents, openDatabase } from "./lib/storage.mjs";
 
@@ -18,52 +17,54 @@ const command = addDatabaseOption(
     .option("--json", "Optional. Print JSON instead of text report."),
 );
 
-async function main() {
-  const args = parseCliArgs(command);
+await runCli({
+  command,
+  loadEnv: false,
+  async handler(args) {
+    const dbPath = args.db ?? "work/pipeline.sqlite3";
+    const db = openDatabase(dbPath);
 
-  const dbPath = args.db ?? "work/pipeline.sqlite3";
-  const db = openDatabase(dbPath);
-
-  try {
-    const bvid = normalizeNullableText(args.bvid);
-    const sinceHours = Math.max(1, Number(args["since-hours"] ?? 72) || 72);
-    const sinceIso = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
-    const limit = Math.max(1, Number(args.limit) || 200);
-    const events = listPipelineEvents(db, {
-      bvid,
-      sinceIso,
-      limit,
-    }).map(parseEventRow);
-    const pendingParts = listPendingParts(db, bvid);
-    const duplicateSuccesses = buildDuplicateSuccesses(events);
-    const publishStats = buildPublishStats(events);
-
-    const report = {
-      ok: true,
-      dbPath,
-      filter: {
+    try {
+      const bvid = normalizeNullableText(args.bvid);
+      const sinceHours = Math.max(1, Number(args["since-hours"] ?? 72) || 72);
+      const sinceIso = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+      const limit = Math.max(1, Number(args.limit) || 200);
+      const events = listPipelineEvents(db, {
         bvid,
-        sinceHours,
         sinceIso,
         limit,
-      },
-      nextPendingPart: pendingParts[0] ?? null,
-      pendingParts,
-      recentEvents: events,
-      duplicateSuccesses,
-      publishStats,
-    };
+      }).map(parseEventRow);
+      const pendingParts = listPendingParts(db, bvid);
+      const duplicateSuccesses = buildDuplicateSuccesses(events);
+      const publishStats = buildPublishStats(events);
 
-    if (args.json) {
-      printJson(report);
-      return;
+      const report = {
+        ok: true,
+        dbPath,
+        filter: {
+          bvid,
+          sinceHours,
+          sinceIso,
+          limit,
+        },
+        nextPendingPart: pendingParts[0] ?? null,
+        pendingParts,
+        recentEvents: events,
+        duplicateSuccesses,
+        publishStats,
+      };
+
+      if (args.json) {
+        return report;
+      }
+
+      printTextReport(report);
+      return undefined;
+    } finally {
+      db.close?.();
     }
-
-    printTextReport(report);
-  } finally {
-    db.close?.();
-  }
-}
+  },
+});
 
 function listPendingParts(db, bvid) {
   return db.prepare(`
@@ -255,7 +256,3 @@ function normalizeNullableText(value) {
 function hasPageNo(value) {
   return value !== null && value !== undefined && Number.isInteger(Number(value));
 }
-
-main().catch((error) => {
-  printErrorJson(error);
-});

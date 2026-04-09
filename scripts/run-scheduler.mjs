@@ -1,12 +1,11 @@
 import cron from "node-cron";
 import { resolveSchedulerConfig } from "./lib/app-config.mjs";
-import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import {
   addDatabaseOption,
   addWorkRootOption,
   createCliCommand,
-  parseCliArgs,
   parsePositiveIntegerArg,
+  runCli,
 } from "./lib/cli-tools.mjs";
 import {
   getLastAuthUpdateAt,
@@ -15,10 +14,7 @@ import {
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "./lib/bili-auth.mjs";
-import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "./lib/scheduler-tasks.mjs";
-
-loadDotEnvIfPresent();
 
 const command = addWorkRootOption(
   addDatabaseOption(
@@ -38,161 +34,162 @@ const command = addWorkRootOption(
   ),
 );
 
-async function main() {
-  const args = parseCliArgs(command);
-  const config = resolveSchedulerConfig(args);
-  config.authFile = resolveBiliAuthFile(config.authFile);
-  const resolvedCookieFile = resolveBiliCookieFile(config.cookieFile);
-  const runningTasks = new Set();
+await runCli({
+  command,
+  async handler(args) {
+    const config = resolveSchedulerConfig(args);
+    config.authFile = resolveBiliAuthFile(config.authFile);
+    const resolvedCookieFile = resolveBiliCookieFile(config.cookieFile);
+    const runningTasks = new Set();
 
-  function log(message) {
-    process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
-  }
+    function log(message) {
+      process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
+    }
 
-  async function runRefreshTask({ force = false } = {}) {
-    const bundle = loadBiliAuthBundle(config.authFile);
-    if (!bundle) {
-      log(`Skip cookie refresh: auth file not found at ${config.authFile}`);
+    async function runRefreshTask({ force = false } = {}) {
+      const bundle = loadBiliAuthBundle(config.authFile);
+      if (!bundle) {
+        log(`Skip cookie refresh: auth file not found at ${config.authFile}`);
+        return {
+          action: "skip-refresh",
+          reason: "auth-file-missing",
+        };
+      }
+
+      const lastUpdatedAt = getLastAuthUpdateAt(bundle);
+      const refreshDue = force || isOlderThanDays(lastUpdatedAt, config.refreshDays);
+      if (!refreshDue) {
+        log(`Skip cookie refresh: auth bundle is newer than ${config.refreshDays} days`);
+        return {
+          action: "skip-refresh",
+          reason: "not-due",
+          lastUpdatedAt,
+        };
+      }
+
+      log("Refreshing Bilibili cookie via TV refresh token");
+      const result = await refreshBiliCookie({
+        authFile: config.authFile,
+        cookieFile: resolvedCookieFile,
+      });
+      log(`Cookie refresh completed: ${result.bundle.updatedAt}`);
       return {
-        action: "skip-refresh",
-        reason: "auth-file-missing",
+        action: "refresh",
+        updatedAt: result.bundle.updatedAt,
       };
     }
 
-    const lastUpdatedAt = getLastAuthUpdateAt(bundle);
-    const refreshDue = force || isOlderThanDays(lastUpdatedAt, config.refreshDays);
-    if (!refreshDue) {
-      log(`Skip cookie refresh: auth bundle is newer than ${config.refreshDays} days`);
+    async function runSummaryTask() {
+      log("Scanning SUMMARY_USERS recent uploads");
+      const result = await syncSummaryUsersRecentVideos({
+        summaryUsers: config.summaryUsers,
+        cookieFile: resolvedCookieFile,
+        sinceHours: config.summarySinceHours,
+        dbPath: config.dbPath,
+        workRoot: config.workRoot,
+        onLog(message) {
+          log(`[summary] ${message}`);
+        },
+      });
+      log(`Summary sweep finished: uploads=${result.uploads.length}, failures=${result.failures.length}`);
       return {
-        action: "skip-refresh",
-        reason: "not-due",
-        lastUpdatedAt,
+        action: "summary",
+        uploads: result.uploads.length,
+        runs: result.runs.length,
+        failures: result.failures.length,
       };
     }
 
-    log("Refreshing Bilibili cookie via TV refresh token");
-    const result = await refreshBiliCookie({
-      authFile: config.authFile,
-      cookieFile: resolvedCookieFile,
-    });
-    log(`Cookie refresh completed: ${result.bundle.updatedAt}`);
-    return {
-      action: "refresh",
-      updatedAt: result.bundle.updatedAt,
+    async function runCleanupTask() {
+      if (runningTasks.has("summary")) {
+        log("Skip work cleanup: summary task is still running");
+        return {
+          action: "skip-cleanup",
+          reason: "summary-running",
+        };
+      }
+
+      log("Cleaning old work directories");
+      const result = await cleanupOldWorkDirectories({
+        dbPath: config.dbPath,
+        workRoot: config.workRoot,
+        olderThanDays: config.cleanupDays,
+        onLog(message) {
+          log(`[cleanup] ${message}`);
+        },
+      });
+      log(`Work cleanup finished: removed=${result.removedDirectories.length}`);
+      return {
+        action: "cleanup",
+        removed: result.removedDirectories.length,
+      };
+    }
+
+    const runExclusive = (name, task) => async () => {
+      if (runningTasks.has(name)) {
+        log(`Skip ${name}: previous run still in progress`);
+        return null;
+      }
+
+      runningTasks.add(name);
+      try {
+        return await task();
+      } catch (error) {
+        log(`${name} failed: ${error?.message ?? "Unknown error"}`);
+        return {
+          action: `${name}-failed`,
+          message: error?.message ?? "Unknown error",
+        };
+      } finally {
+        runningTasks.delete(name);
+      }
     };
-  }
 
-  async function runSummaryTask() {
-    log("Scanning SUMMARY_USERS recent uploads");
-    const result = await syncSummaryUsersRecentVideos({
-      summaryUsers: config.summaryUsers,
-      cookieFile: resolvedCookieFile,
-      sinceHours: config.summarySinceHours,
-      dbPath: config.dbPath,
-      workRoot: config.workRoot,
-      onLog(message) {
-        log(`[summary] ${message}`);
-      },
-    });
-    log(`Summary sweep finished: uploads=${result.uploads.length}, failures=${result.failures.length}`);
-    return {
-      action: "summary",
-      uploads: result.uploads.length,
-      runs: result.runs.length,
-      failures: result.failures.length,
-    };
-  }
+    const refreshRunner = runExclusive("refresh", runRefreshTask);
+    const summaryRunner = runExclusive("summary", runSummaryTask);
+    const cleanupRunner = runExclusive("cleanup", runCleanupTask);
 
-  async function runCleanupTask() {
-    if (runningTasks.has("summary")) {
-      log("Skip work cleanup: summary task is still running");
+    if (args.once) {
+      const result = await runOnce(args.once, {
+        refreshRunner,
+        summaryRunner,
+        cleanupRunner,
+      });
       return {
-        action: "skip-cleanup",
-        reason: "summary-running",
+        ok: true,
+        mode: "once",
+        task: args.once,
+        result,
       };
     }
 
-    log("Cleaning old work directories");
-    const result = await cleanupOldWorkDirectories({
-      dbPath: config.dbPath,
-      workRoot: config.workRoot,
-      olderThanDays: config.cleanupDays,
-      onLog(message) {
-        log(`[cleanup] ${message}`);
-      },
-    });
-    log(`Work cleanup finished: removed=${result.removedDirectories.length}`);
+    if (args["run-on-start"]) {
+      await refreshRunner();
+      await summaryRunner();
+      await cleanupRunner();
+    }
+
+    const scheduledTasks = [
+      cron.schedule("0 * * * *", summaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
+      cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
+    ];
+
+    log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
+    log("Cron plan: summary=hourly@minute0, refresh=daily@03:15 when due, cleanup=daily@03:45");
+
+    attachSignalHandlers(scheduledTasks, log);
+
     return {
-      action: "cleanup",
-      removed: result.removedDirectories.length,
-    };
-  }
-
-  const runExclusive = (name, task) => async () => {
-    if (runningTasks.has(name)) {
-      log(`Skip ${name}: previous run still in progress`);
-      return null;
-    }
-
-    runningTasks.add(name);
-    try {
-      return await task();
-    } catch (error) {
-      log(`${name} failed: ${error?.message ?? "Unknown error"}`);
-      return {
-        action: `${name}-failed`,
-        message: error?.message ?? "Unknown error",
-      };
-    } finally {
-      runningTasks.delete(name);
-    }
-  };
-
-  const refreshRunner = runExclusive("refresh", runRefreshTask);
-  const summaryRunner = runExclusive("summary", runSummaryTask);
-  const cleanupRunner = runExclusive("cleanup", runCleanupTask);
-
-  if (args.once) {
-    const result = await runOnce(args.once, {
-      refreshRunner,
-      summaryRunner,
-      cleanupRunner,
-    });
-    printJson({
       ok: true,
-      mode: "once",
-      task: args.once,
-      result,
-    });
-    return;
-  }
-
-  if (args["run-on-start"]) {
-    await refreshRunner();
-    await summaryRunner();
-    await cleanupRunner();
-  }
-
-  const scheduledTasks = [
-    cron.schedule("0 * * * *", summaryRunner, buildCronOptions(config.timezone)),
-    cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
-    cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
-  ];
-
-  log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-  log("Cron plan: summary=hourly@minute0, refresh=daily@03:15 when due, cleanup=daily@03:45");
-
-  attachSignalHandlers(scheduledTasks, log);
-
-  printJson({
-    ok: true,
-    mode: "daemon",
-    timezone: config.timezone ?? "system",
-    summaryUsers: config.summaryUsers,
-    refreshDays: config.refreshDays,
-    cleanupDays: config.cleanupDays,
-  });
-}
+      mode: "daemon",
+      timezone: config.timezone ?? "system",
+      summaryUsers: config.summaryUsers,
+      refreshDays: config.refreshDays,
+      cleanupDays: config.cleanupDays,
+    };
+  },
+});
 
 function buildCronOptions(timezone) {
   return timezone ? { timezone } : undefined;
@@ -243,7 +240,3 @@ function attachSignalHandlers(scheduledTasks, log) {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
-
-main().catch((error) => {
-  printErrorJson(error);
-});

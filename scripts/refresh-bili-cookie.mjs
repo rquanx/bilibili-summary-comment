@@ -1,14 +1,10 @@
-import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import {
   extractBiliAuthState,
   refreshBiliCookie,
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "./lib/bili-auth.mjs";
-import { createCliCommand, parseCliArgs } from "./lib/cli-tools.mjs";
-import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
-
-loadDotEnvIfPresent();
+import { createCliCommand, runCli } from "./lib/cli-tools.mjs";
 
 const command = createCliCommand({
   name: "refresh-bili-cookie",
@@ -19,29 +15,26 @@ const command = createCliCommand({
   .option("--access-token <token>", "Optional. Override access token from CLI.")
   .option("--refresh-token <token>", "Optional. Override refresh token from CLI.");
 
-async function main() {
-  const args = parseCliArgs(command);
+await runCli({
+  command,
+  async handler(args) {
+    const authFile = resolveBiliAuthFile(args["auth-file"]);
+    const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
+    const result = await refreshBiliCookie({
+      authFile,
+      cookieFile,
+      accessToken: args["access-token"] ?? null,
+      refreshToken: args["refresh-token"] ?? null,
+    });
+    const authState = extractBiliAuthState(result.bundle);
 
-  const authFile = resolveBiliAuthFile(args["auth-file"]);
-  const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
-  const result = await refreshBiliCookie({
-    authFile,
-    cookieFile,
-    accessToken: args["access-token"] ?? null,
-    refreshToken: args["refresh-token"] ?? null,
-  });
-  const authState = extractBiliAuthState(result.bundle);
-
-  printJson({
-    ok: true,
-    authFile: result.authFile,
-    cookieFile: result.cookieFile,
-    updatedAt: result.bundle.updatedAt,
-    mid: authState.mid,
-    cookieNames: result.bundle.cookieInfo.cookies.map((item) => item.name),
-  });
-}
-
-main().catch((error) => {
-  printErrorJson(error);
+    return {
+      ok: true,
+      authFile: result.authFile,
+      cookieFile: result.cookieFile,
+      updatedAt: result.bundle.updatedAt,
+      mid: authState.mid,
+      cookieNames: result.bundle.cookieInfo.cookies.map((item) => item.name),
+    };
+  },
 });

@@ -2,8 +2,6 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import {
   createClient,
-  printErrorJson,
-  printJson,
   readCookie,
 } from "./lib/bili-comment-utils.mjs";
 import { createCliError } from "./lib/cli-errors.mjs";
@@ -12,15 +10,12 @@ import {
   addDatabaseOption,
   addVideoIdentityOptions,
   createCliCommand,
-  parseCliArgs,
   requireNonEmptyString,
+  runCli,
 } from "./lib/cli-tools.mjs";
-import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { groupSummaryBlocksByPage, normalizeSummaryMarkers } from "./lib/summary-format.mjs";
 import { openDatabase, savePartSummary } from "./lib/storage.mjs";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./lib/video-state.mjs";
-
-loadDotEnvIfPresent();
 
 const command = addDatabaseOption(
   addVideoIdentityOptions(
@@ -35,48 +30,46 @@ const command = addDatabaseOption(
   ),
 );
 
-async function main() {
-  const args = parseCliArgs(command);
-  const summaryFile = requireNonEmptyString(args["summary-file"], "--summary-file");
+await runCli({
+  command,
+  async handler(args) {
+    const summaryFile = requireNonEmptyString(args["summary-file"], "--summary-file");
 
-  const cookie = readCookie(args);
-  const client = createClient(cookie);
-  const db = openDatabase(args.db ?? "work/pipeline.sqlite3");
-  const snapshot = await fetchVideoSnapshot(client, args);
-  const state = syncVideoSnapshotToDb(db, snapshot);
+    const cookie = readCookie(args);
+    const client = createClient(cookie);
+    const db = openDatabase(args.db ?? "work/pipeline.sqlite3");
+    const snapshot = await fetchVideoSnapshot(client, args);
+    const state = syncVideoSnapshotToDb(db, snapshot);
 
-  const summaryText = normalizeSummaryMarkers(fs.readFileSync(summaryFile, "utf8"));
-  const pageGroups = groupSummaryBlocksByPage(summaryText);
-  if (pageGroups.length === 0) {
-    throw createCliError("No page markers found in summary file", { summaryFile });
-  }
-
-  const savedPages = [];
-  for (const group of pageGroups) {
-    const saved = savePartSummary(db, state.video.id, group.page, {
-      summaryText: group.text,
-      summaryHash: createHash("sha1").update(group.text).digest("hex"),
-    });
-
-    if (saved) {
-      savedPages.push(group.page);
+    const summaryText = normalizeSummaryMarkers(fs.readFileSync(summaryFile, "utf8"));
+    const pageGroups = groupSummaryBlocksByPage(summaryText);
+    if (pageGroups.length === 0) {
+      throw createCliError("No page markers found in summary file", { summaryFile });
     }
-  }
 
-  printJson({
-    ok: true,
-    dbPath: args.db ?? "work/pipeline.sqlite3",
-    summaryFile,
-    video: {
-      id: state.video.id,
-      bvid: state.video.bvid,
-      aid: state.video.aid,
-      title: state.video.title,
-    },
-    savedPages,
-  });
-}
+    const savedPages = [];
+    for (const group of pageGroups) {
+      const saved = savePartSummary(db, state.video.id, group.page, {
+        summaryText: group.text,
+        summaryHash: createHash("sha1").update(group.text).digest("hex"),
+      });
 
-main().catch((error) => {
-  printErrorJson(error);
+      if (saved) {
+        savedPages.push(group.page);
+      }
+    }
+
+    return {
+      ok: true,
+      dbPath: args.db ?? "work/pipeline.sqlite3",
+      summaryFile,
+      video: {
+        id: state.video.id,
+        bvid: state.video.bvid,
+        aid: state.video.aid,
+        title: state.video.title,
+      },
+      savedPages,
+    };
+  },
 });

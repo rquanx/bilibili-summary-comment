@@ -1,5 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod";
+import { errorToJson } from "./cli-errors.mjs";
+import { loadDotEnvIfPresent } from "./runtime-tools.mjs";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const positiveIntegerSchema = z.coerce.number().int().positive();
@@ -60,6 +62,32 @@ export function parseCliArgs(command, argv = process.argv) {
   return normalizeCommanderOptions(command.opts());
 }
 
+export async function runCli({
+  command,
+  handler,
+  argv = process.argv,
+  loadEnv = true,
+  loadEnvFn = loadDotEnvIfPresent,
+  printResult = true,
+  printFn = defaultPrintJson,
+  onError = defaultCliErrorHandler,
+} = {}) {
+  try {
+    if (loadEnv) {
+      await loadEnvFn();
+    }
+
+    const args = parseCliArgs(command, argv);
+    const result = await handler(args);
+    if (printResult && result !== undefined) {
+      await printFn(result);
+    }
+    return result;
+  } catch (error) {
+    return await onError(error);
+  }
+}
+
 export function parsePositiveIntegerArg(value) {
   return parseArgWithSchema(positiveIntegerSchema, value, "Expected a positive integer");
 }
@@ -105,4 +133,14 @@ function parseArgWithSchema(schema, value, message) {
   } catch {
     throw new InvalidArgumentError(message);
   }
+}
+
+function defaultPrintJson(data) {
+  console.log(JSON.stringify(data, null, 2));
+}
+
+function defaultCliErrorHandler(error) {
+  defaultPrintJson(errorToJson(error));
+  process.exitCode = 1;
+  return undefined;
 }

@@ -1,0 +1,309 @@
+export function getVideoByIdentity(db, { bvid = null, aid = null }) {
+  if (bvid) {
+    const row = db.prepare("SELECT * FROM videos WHERE bvid = ?").get(bvid);
+    if (row) {
+      return row;
+    }
+  }
+
+  if (aid) {
+    return db.prepare("SELECT * FROM videos WHERE aid = ?").get(aid) ?? null;
+  }
+
+  return null;
+}
+
+export function listVideos(db) {
+  return db.prepare("SELECT * FROM videos ORDER BY updated_at DESC, id DESC").all();
+}
+
+export function listVideosOlderThan(db, cutoffIso) {
+  return db.prepare(`
+    SELECT *
+    FROM videos
+    WHERE COALESCE(last_scan_at, updated_at, created_at) < ?
+    ORDER BY COALESCE(last_scan_at, updated_at, created_at) ASC, id ASC
+  `).all(cutoffIso);
+}
+
+export function upsertVideo(db, video) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO videos (
+      bvid,
+      aid,
+      title,
+      page_count,
+      root_comment_rpid,
+      top_comment_rpid,
+      last_scan_at,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(bvid) DO UPDATE SET
+      aid = excluded.aid,
+      title = excluded.title,
+      page_count = excluded.page_count,
+      updated_at = excluded.updated_at,
+      last_scan_at = excluded.last_scan_at
+  `).run(
+    video.bvid,
+    video.aid,
+    video.title,
+    video.pageCount,
+    video.rootCommentRpid ?? null,
+    video.topCommentRpid ?? null,
+    now,
+    now,
+    now,
+  );
+
+  return getVideoByIdentity(db, { bvid: video.bvid, aid: video.aid });
+}
+
+export function updateVideoCommentThread(db, videoId, { rootCommentRpid = null, topCommentRpid = null }) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE videos
+    SET root_comment_rpid = ?,
+        top_comment_rpid = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(rootCommentRpid, topCommentRpid, now, videoId);
+
+  return db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) ?? null;
+}
+
+export function markVideoPublishRebuildNeeded(db, videoId, reason) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE videos
+    SET publish_needs_rebuild = 1,
+        publish_rebuild_reason = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(String(reason ?? "").trim() || "structural-part-change", now, videoId);
+
+  return db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) ?? null;
+}
+
+export function clearVideoPublishRebuildNeeded(db, videoId) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE videos
+    SET publish_needs_rebuild = 0,
+        publish_rebuild_reason = NULL,
+        updated_at = ?
+    WHERE id = ?
+  `).run(now, videoId);
+
+  return db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) ?? null;
+}
+
+export function upsertVideoPart(db, part) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO video_parts (
+      video_id,
+      page_no,
+      cid,
+      part_title,
+      duration_sec,
+      subtitle_path,
+      subtitle_source,
+      subtitle_lang,
+      summary_text,
+      summary_hash,
+      published,
+      published_comment_rpid,
+      published_at,
+      is_deleted,
+      deleted_at,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(video_id, cid) DO UPDATE SET
+      page_no = excluded.page_no,
+      part_title = excluded.part_title,
+      duration_sec = excluded.duration_sec,
+      subtitle_path = excluded.subtitle_path,
+      subtitle_source = excluded.subtitle_source,
+      subtitle_lang = excluded.subtitle_lang,
+      summary_text = excluded.summary_text,
+      summary_hash = excluded.summary_hash,
+      published = excluded.published,
+      published_comment_rpid = excluded.published_comment_rpid,
+      published_at = excluded.published_at,
+      is_deleted = excluded.is_deleted,
+      deleted_at = excluded.deleted_at,
+      updated_at = excluded.updated_at
+  `).run(
+    part.videoId,
+    part.pageNo,
+    part.cid,
+    part.partTitle,
+    part.durationSec,
+    part.subtitlePath ?? null,
+    part.subtitleSource ?? null,
+    part.subtitleLang ?? null,
+    part.summaryText ?? null,
+    part.summaryHash ?? null,
+    part.published ? 1 : 0,
+    part.publishedCommentRpid ?? null,
+    part.publishedAt ?? null,
+    part.isDeleted ? 1 : 0,
+    part.deletedAt ?? null,
+    now,
+    now,
+  );
+
+  return getVideoPartByCid(db, part.videoId, part.cid);
+}
+
+export function listVideoParts(db, videoId) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+      AND is_deleted = 0
+    ORDER BY page_no ASC, id ASC
+  `).all(videoId);
+}
+
+export function listAllVideoParts(db, videoId) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+    ORDER BY is_deleted ASC, page_no ASC, id ASC
+  `).all(videoId);
+}
+
+export function getVideoPartByCid(db, videoId, cid) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+      AND cid = ?
+    LIMIT 1
+  `).get(videoId, cid) ?? null;
+}
+
+export function getActiveVideoPartByPageNo(db, videoId, pageNo) {
+  return db.prepare(`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ?
+      AND page_no = ?
+      AND is_deleted = 0
+    LIMIT 1
+  `).get(videoId, pageNo) ?? null;
+}
+
+export function listPendingSummaryParts(db, videoId) {
+  return db.prepare(`
+    SELECT * FROM video_parts
+    WHERE video_id = ?
+      AND is_deleted = 0
+      AND (summary_text IS NULL OR TRIM(summary_text) = '')
+    ORDER BY page_no ASC
+  `).all(videoId);
+}
+
+export function listPendingPublishParts(db, videoId) {
+  return db.prepare(`
+    SELECT * FROM video_parts
+    WHERE video_id = ?
+      AND is_deleted = 0
+      AND summary_text IS NOT NULL
+      AND TRIM(summary_text) <> ''
+      AND published = 0
+    ORDER BY page_no ASC
+  `).all(videoId);
+}
+
+export function savePartSummary(db, videoId, pageNo, { summaryText, summaryHash }) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE video_parts
+    SET summary_text = ?,
+        summary_hash = ?,
+        published = CASE
+          WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN 0
+          ELSE published
+        END,
+        published_comment_rpid = CASE
+          WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN NULL
+          ELSE published_comment_rpid
+        END,
+        published_at = CASE
+          WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN NULL
+          ELSE published_at
+        END,
+        updated_at = ?
+    WHERE video_id = ?
+      AND page_no = ?
+      AND is_deleted = 0
+  `).run(summaryText, summaryHash, summaryHash, summaryHash, summaryHash, now, videoId, pageNo);
+
+  return getActiveVideoPartByPageNo(db, videoId, pageNo);
+}
+
+export function savePartSubtitle(db, videoId, pageNo, { subtitlePath, subtitleSource, subtitleLang = null }) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE video_parts
+    SET subtitle_path = ?,
+        subtitle_source = ?,
+        subtitle_lang = ?,
+        updated_at = ?
+    WHERE video_id = ?
+      AND page_no = ?
+      AND is_deleted = 0
+  `).run(subtitlePath, subtitleSource, subtitleLang, now, videoId, pageNo);
+
+  return getActiveVideoPartByPageNo(db, videoId, pageNo);
+}
+
+export function markPartsPublished(db, videoId, pageNos, publishedCommentRpid) {
+  if (!Array.isArray(pageNos) || pageNos.length === 0) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const update = db.prepare(`
+    UPDATE video_parts
+    SET published = 1,
+        published_comment_rpid = COALESCE(?, published_comment_rpid),
+        published_at = ?,
+        updated_at = ?
+    WHERE video_id = ?
+      AND page_no = ?
+      AND is_deleted = 0
+  `);
+
+  db.exec("BEGIN");
+  try {
+    for (const pageNo of pageNos) {
+      update.run(publishedCommentRpid ?? null, now, now, videoId, pageNo);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function resetPublishedStateForVideo(db, videoId) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE video_parts
+    SET published = 0,
+        published_comment_rpid = NULL,
+        published_at = NULL,
+        updated_at = ?
+    WHERE video_id = ?
+  `).run(now, videoId);
+}

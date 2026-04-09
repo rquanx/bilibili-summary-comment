@@ -1,4 +1,3 @@
-import { printJson } from "./lib/bili-comment-utils.mjs";
 import {
   addCookieOptions,
   addDatabaseOption,
@@ -6,12 +5,9 @@ import {
   addVideoIdentityOptions,
   addWorkRootOption,
   createCliCommand,
-  parseCliArgs,
+  runCli,
 } from "./lib/cli-tools.mjs";
-import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { printPipelineFailure, runVideoPipeline } from "./lib/video-pipeline-runner.mjs";
-
-loadDotEnvIfPresent();
 
 let activeEventLogger = null;
 
@@ -35,17 +31,18 @@ const command = addSummaryApiOptions(
   ),
 );
 
-async function main() {
-  const args = parseCliArgs(command);
-  const result = await runVideoPipeline(args, {
-    onEventLogger(eventLogger) {
-      activeEventLogger = eventLogger;
-    },
-  });
-  printJson(result);
-}
-
-main().catch((error) => {
-  printPipelineFailure(error, activeEventLogger);
-  process.exitCode = 1;
+await runCli({
+  command,
+  async handler(args) {
+    return runVideoPipeline(args, {
+      onEventLogger(eventLogger) {
+        activeEventLogger = eventLogger;
+      },
+    });
+  },
+  onError(error) {
+    printPipelineFailure(error, activeEventLogger);
+    process.exitCode = 1;
+    return undefined;
+  },
 });

@@ -1,16 +1,12 @@
-import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import { resolveSummaryUsersConfig } from "./lib/app-config.mjs";
 import {
   addDatabaseOption,
   addWorkRootOption,
   createCliCommand,
-  parseCliArgs,
   parsePositiveIntegerArg,
+  runCli,
 } from "./lib/cli-tools.mjs";
-import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { syncSummaryUsersRecentVideos } from "./lib/scheduler-tasks.mjs";
-
-loadDotEnvIfPresent();
 
 const command = addWorkRootOption(
   addDatabaseOption(
@@ -24,43 +20,41 @@ const command = addWorkRootOption(
   ),
 );
 
-async function main() {
-  const args = parseCliArgs(command);
-  const config = resolveSummaryUsersConfig(args);
+await runCli({
+  command,
+  async handler(args) {
+    const config = resolveSummaryUsersConfig(args);
 
-  const result = await syncSummaryUsersRecentVideos({
-    summaryUsers: config.summaryUsers,
-    cookieFile: config.cookieFile,
-    sinceHours: config.sinceHours,
-    dbPath: config.dbPath,
-    workRoot: config.workRoot,
-    onLog(message) {
-      process.stderr.write(`[sync-summary-users] ${message}\n`);
-    },
-  });
+    const result = await syncSummaryUsersRecentVideos({
+      summaryUsers: config.summaryUsers,
+      cookieFile: config.cookieFile,
+      sinceHours: config.sinceHours,
+      dbPath: config.dbPath,
+      workRoot: config.workRoot,
+      onLog(message) {
+        process.stderr.write(`[sync-summary-users] ${message}\n`);
+      },
+    });
 
-  if (result.failures.length > 0) {
-    process.exitCode = 1;
-  }
+    if (result.failures.length > 0) {
+      process.exitCode = 1;
+    }
 
-  printJson({
-    ok: result.failures.length === 0,
-    summaryUsers: result.summaryUsers,
-    uploadCount: result.uploads.length,
-    successCount: result.runs.length,
-    failureCount: result.failures.length,
-    runs: result.runs.map((item) => ({
-      mid: item.mid,
-      bvid: item.bvid,
-      title: item.title,
-      createdAt: item.createdAt,
-      generatedPages: item.result?.generatedPages ?? [],
-      reusedSummaryFrom: item.result?.reusedSummaryFrom ?? null,
-    })),
-    failures: result.failures,
-  });
-}
-
-main().catch((error) => {
-  printErrorJson(error);
+    return {
+      ok: result.failures.length === 0,
+      summaryUsers: result.summaryUsers,
+      uploadCount: result.uploads.length,
+      successCount: result.runs.length,
+      failureCount: result.failures.length,
+      runs: result.runs.map((item) => ({
+        mid: item.mid,
+        bvid: item.bvid,
+        title: item.title,
+        createdAt: item.createdAt,
+        generatedPages: item.result?.generatedPages ?? [],
+        reusedSummaryFrom: item.result?.reusedSummaryFrom ?? null,
+      })),
+      failures: result.failures,
+    };
+  },
 });

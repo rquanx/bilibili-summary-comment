@@ -1,10 +1,6 @@
 import { TvQrcodeLogin } from "@renmu/bili-api";
-import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import { saveBiliAuthBundle, resolveBiliAuthFile, resolveBiliCookieFile } from "./lib/bili-auth.mjs";
-import { createCliCommand, parseCliArgs } from "./lib/cli-tools.mjs";
-import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
-
-loadDotEnvIfPresent();
+import { createCliCommand, runCli } from "./lib/cli-tools.mjs";
 
 const command = createCliCommand({
   name: "login-bili-tv",
@@ -13,42 +9,43 @@ const command = createCliCommand({
   .option("--auth-file <path>", "Optional. Where to save the TV login payload.")
   .option("--cookie-file <path>", "Optional. Where to save the refreshed web cookie string.");
 
-async function main() {
-  const args = parseCliArgs(command);
+await runCli({
+  command,
+  async handler(args) {
+    const authFile = resolveBiliAuthFile(args["auth-file"]);
+    const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
+    const client = new TvQrcodeLogin();
 
-  const authFile = resolveBiliAuthFile(args["auth-file"]);
-  const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
-  const client = new TvQrcodeLogin();
+    client.on("scan", () => {
+      process.stderr.write("[bili-login] QR code scanned, waiting for confirmation\n");
+    });
+    client.on("error", (response) => {
+      process.stderr.write(`[bili-login] login failed: ${response?.message ?? "unknown error"}\n`);
+    });
 
-  client.on("scan", () => {
-    process.stderr.write("[bili-login] QR code scanned, waiting for confirmation\n");
-  });
-  client.on("error", (response) => {
-    process.stderr.write(`[bili-login] login failed: ${response?.message ?? "unknown error"}\n`);
-  });
+    const completionPromise = waitForLoginCompletion(client);
+    const url = await client.login();
 
-  const completionPromise = waitForLoginCompletion(client);
-  const url = await client.login();
+    process.stderr.write("[bili-login] Open the URL below as a QR code and scan it with the Bilibili app:\n");
+    process.stderr.write(`${url}\n`);
 
-  process.stderr.write("[bili-login] Open the URL below as a QR code and scan it with the Bilibili app:\n");
-  process.stderr.write(`${url}\n`);
+    const rawData = await completionPromise;
+    const saved = saveBiliAuthBundle({
+      rawData,
+      source: "tv_qrcode_login",
+      authFile,
+      cookieFile,
+    });
 
-  const rawData = await completionPromise;
-  const saved = saveBiliAuthBundle({
-    rawData,
-    source: "tv_qrcode_login",
-    authFile,
-    cookieFile,
-  });
-
-  printJson({
-    ok: true,
-    authFile: saved.authFile,
-    cookieFile: saved.cookieFile,
-    updatedAt: saved.bundle.updatedAt,
-    mid: saved.bundle.tokenInfo.mid,
-  });
-}
+    return {
+      ok: true,
+      authFile: saved.authFile,
+      cookieFile: saved.cookieFile,
+      updatedAt: saved.bundle.updatedAt,
+      mid: saved.bundle.tokenInfo.mid,
+    };
+  },
+});
 
 function waitForLoginCompletion(client) {
   return new Promise((resolve, reject) => {
@@ -61,7 +58,3 @@ function waitForLoginCompletion(client) {
     });
   });
 }
-
-main().catch((error) => {
-  printErrorJson(error);
-});

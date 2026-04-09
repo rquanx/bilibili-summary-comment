@@ -2,8 +2,6 @@ import {
   createClient,
   getTopComment,
   getType,
-  printErrorJson,
-  printJson,
   readCookie,
   resolveOid,
 } from "./lib/bili-comment-utils.mjs";
@@ -12,7 +10,7 @@ import {
   addCookieOptions,
   addVideoIdentityOptions,
   createCliCommand,
-  parseCliArgs,
+  runCli,
 } from "./lib/cli-tools.mjs";
 
 const command = addCommentTypeOption(
@@ -27,24 +25,22 @@ const command = addCommentTypeOption(
   ),
 );
 
-async function main() {
-  const args = parseCliArgs(command);
+await runCli({
+  command,
+  loadEnv: false,
+  async handler(args) {
+    const cookie = readCookie(args);
+    const client = createClient(cookie);
+    const type = getType(args);
+    const oid = await resolveOid(client, args);
+    const result = await getTopComment(client, { oid, type });
 
-  const cookie = readCookie(args);
-  const client = createClient(cookie);
-  const type = getType(args);
-  const oid = await resolveOid(client, args);
-  const result = await getTopComment(client, { oid, type });
-
-  printJson({
-    ok: true,
-    oid,
-    type,
-    hasTopComment: result.hasTopComment,
-    topComment: result.topComment,
-  });
-}
-
-main().catch((error) => {
-  printErrorJson(error);
+    return {
+      ok: true,
+      oid,
+      type,
+      hasTopComment: result.hasTopComment,
+      topComment: result.topComment,
+    };
+  },
 });
