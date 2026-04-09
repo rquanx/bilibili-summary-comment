@@ -20,28 +20,33 @@ import { ensureSubtitleForPart } from "./lib/subtitle-pipeline.mjs";
 import { resolveSummaryConfig, summarizePartFromSubtitle } from "./lib/summarizer.mjs";
 import { deleteSummaryThread, postSummaryThread } from "./lib/comment-thread.mjs";
 import { findReusableSummarySource, reusePartSummaries } from "./lib/live-session-reuse.mjs";
+import { createPipelineEventLogger } from "./lib/pipeline-event-logger.mjs";
 import { writePartSummaryArtifact, writeSummaryArtifacts } from "./lib/summary-files.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 
 loadDotEnvIfPresent();
+let activeEventLogger = null;
 
-function createProgressReporter(totalParts) {
+function createProgressReporter(video, totalParts) {
   const outputStream = process.stderr;
   const safeTotalParts = Math.max(totalParts, 1);
+  const videoPrefix = formatVideoPrefix(video);
 
   return {
     outputStream,
     log(message) {
-      outputStream.write(`[${formatProgressTime()}] ${message}\n`);
+      outputStream.write(`[${formatProgressTime()}] ${videoPrefix} ${message}\n`);
     },
     logPart(index, part, stage, detail = "") {
       const partLabel = formatPartLabel(part.page_no, part.part_title);
       const suffix = detail ? `: ${detail}` : "";
-      outputStream.write(`[${formatProgressTime()}] [${index}/${safeTotalParts}] ${partLabel} ${stage}${suffix}\n`);
+      outputStream.write(
+        `[${formatProgressTime()}] ${videoPrefix} [${index}/${safeTotalParts}] ${partLabel} ${stage}${suffix}\n`,
+      );
     },
     logPartStage(pageNo, stage, detail = "") {
       const suffix = detail ? `: ${detail}` : "";
-      outputStream.write(`[${formatProgressTime()}] [P${pageNo}] ${stage}${suffix}\n`);
+      outputStream.write(`[${formatProgressTime()}] ${videoPrefix} [P${pageNo}] ${stage}${suffix}\n`);
     },
   };
 }
@@ -53,6 +58,13 @@ function formatProgressTime(date = new Date()) {
 function formatPartLabel(pageNo, partTitle) {
   const normalizedTitle = String(partTitle ?? "").trim();
   return normalizedTitle ? `P${pageNo} ${normalizedTitle}` : `P${pageNo}`;
+}
+
+function formatVideoPrefix(video) {
+  const bvid = String(video?.bvid ?? "").trim();
+  const title = String(video?.title ?? "").trim();
+  const label = [bvid, title].filter(Boolean).join(" | ");
+  return label ? `[${label}]` : "[video]";
 }
 
 function describeSubtitleResult(result) {
@@ -84,7 +96,7 @@ function usage() {
     "  --db                       Optional. SQLite path. Default: work/pipeline.sqlite3",
     "  --work-root                Optional. Work root. Default: work",
     "  --venv-path                Optional. Python venv path. Default: .3.11",
-    "  --asr                      Optional. VideoCaptioner ASR engine. Default: bijian",
+    "  --asr                      Optional. VideoCaptioner ASR engine. Default: faster-whisper (local model first)",
     "  --model                    Optional. Summary model. Default: env or gpt-4o-mini",
     "  --api-key                  Optional. Summary API key. Default: SUMMARY_API_KEY / OPENAI_API_KEY",
     "  --api-base-url             Optional. Summary API base url. Default: SUMMARY_API_BASE_URL / OPENAI_BASE_URL / https://api.openai.com/v1",
@@ -107,11 +119,16 @@ async function main() {
   const dbPath = args.db ?? "work/pipeline.sqlite3";
   const workRoot = args["work-root"] ?? "work";
   const venvPath = args["venv-path"] ?? ".3.11";
-  const asr = args.asr ?? "bijian";
+  const asr = args.asr ?? "faster-whisper";
   const db = openDatabase(dbPath);
 
   const snapshot = await fetchVideoSnapshot(client, args);
   const state = syncVideoSnapshotToDb(db, snapshot);
+  const eventLogger = createPipelineEventLogger({
+    db,
+    video: state.video,
+  });
+  activeEventLogger = eventLogger;
   const summaryConfig = resolveSummaryConfig(args);
   const forceSummary = Boolean(args["force-summary"]);
 
@@ -150,19 +167,59 @@ async function main() {
   }
 
   const targetParts = currentParts.filter((part) => forceSummary || !String(part.summary_text ?? "").trim());
-  const progress = createProgressReporter(targetParts.length);
+  const progress = createProgressReporter(state.video, targetParts.length);
   const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
+
+  eventLogger.log({
+    scope: "pipeline",
+    action: "run",
+    status: "started",
+    message: `Pipeline started for ${state.video.bvid}`,
+    details: {
+      totalParts,
+      pendingParts: targetParts.length,
+      forceSummary,
+      publishRequested: Boolean(args.publish),
+      changeSet: state.changeSet,
+    },
+  });
 
   progress.log(`Video synced: ${state.video.title} (total parts: ${totalParts}, pending: ${targetParts.length})`);
   if (reusedSummarySource) {
+    eventLogger.log({
+      scope: "summary",
+      action: "reuse",
+      status: "succeeded",
+      message: `Reused summaries from ${reusedSummarySource.video.bvid}`,
+      details: {
+        sourceBvid: reusedSummarySource.video.bvid,
+        sourceTitle: reusedSummarySource.video.title,
+        reusedPages: reusedSummarySource.reusedPages,
+      },
+    });
     progress.log(
       `Reused ${reusedSummarySource.reusedPages.length} summaries from ${reusedSummarySource.video.bvid} (${reusedSummarySource.video.title})`,
     );
   }
   if (needsRebuildPublish) {
+    eventLogger.log({
+      scope: "publish",
+      action: "rebuild-flag",
+      status: "started",
+      message: "Publish thread is marked for rebuild",
+      details: {
+        reason: state.video.publish_rebuild_reason || "structural-part-change",
+      },
+    });
     progress.log(`Publish thread marked for rebuild: ${state.video.publish_rebuild_reason || "structural-part-change"}`);
   }
   if (targetParts.length === 0) {
+    eventLogger.log({
+      scope: "pipeline",
+      action: "generation",
+      status: "skipped",
+      message: "All parts already have summaries",
+    });
     progress.log("All parts already have summaries, skipping subtitle and summary generation");
   }
 
@@ -171,6 +228,19 @@ async function main() {
 
   for (const [index, part] of targetParts.entries()) {
     const currentIndex = index + 1;
+    eventLogger.log({
+      scope: "pipeline",
+      action: "part",
+      status: "started",
+      pageNo: part.page_no,
+      cid: part.cid,
+      partTitle: part.part_title,
+      message: `Starting work for P${part.page_no}`,
+      details: {
+        index: currentIndex,
+        totalPendingParts: targetParts.length,
+      },
+    });
     progress.logPart(currentIndex, part, "Started");
 
     const subtitleResult = await ensureSubtitleForPart({
@@ -178,8 +248,10 @@ async function main() {
       db,
       videoId: state.video.id,
       bvid: state.video.bvid,
+      videoTitle: state.video.title,
       pageNo: part.page_no,
       cid: part.cid,
+      partTitle: part.part_title,
       existingSubtitlePath: part.subtitle_path ?? null,
       cookie,
       cookieFile: args["cookie-file"] ?? null,
@@ -188,6 +260,7 @@ async function main() {
       venvPath,
       asr,
       progress,
+      eventLogger,
     });
     progress.logPart(currentIndex, part, "Subtitle ready", describeSubtitleResult(subtitleResult));
     subtitleResults.push({
@@ -211,6 +284,8 @@ async function main() {
       apiBaseUrl: summaryConfig.apiBaseUrl,
       apiFormat: summaryConfig.apiFormat,
       workRoot,
+      cid: part.cid,
+      eventLogger,
     });
     progress.logPart(currentIndex, part, "Summary ready", summaryResult.summaryPath);
     summaryResults.push({
@@ -222,91 +297,194 @@ async function main() {
 
   progress.log("Writing summary artifacts");
   const artifacts = writeSummaryArtifacts(db, state.video, workRoot);
+  eventLogger.log({
+    scope: "pipeline",
+    action: "artifacts",
+    status: "succeeded",
+    message: "Summary artifacts written",
+    details: {
+      summaryPath: artifacts.summaryPath,
+      pendingSummaryPath: artifacts.pendingSummaryPath,
+    },
+  });
   let publishResult = null;
 
   if (args.publish) {
-    const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
-    const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
-    if (needsRebuildPublish) {
-      progress.log("Rebuilding published summary thread");
-      if (!fullMessage) {
-        publishResult = {
-          action: "skip-rebuild-publish",
-          reason: "No full summary content available for rebuild.",
-        };
-        progress.log("No full summary content available, skipping rebuild publish");
-      } else {
-        const type = getType(args);
-        const deletedThread = await deleteSummaryThread({
-          client,
-          oid: state.video.aid,
-          type,
-          rootRpid: state.video.root_comment_rpid,
+    try {
+      const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
+      const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
+      if (needsRebuildPublish) {
+        eventLogger.log({
+          scope: "publish",
+          action: "comment-thread",
+          status: "started",
+          message: "Starting publish rebuild",
+          details: {
+            publishMode: "rebuild",
+            pendingLength: pendingMessage.length,
+            fullLength: fullMessage.length,
+          },
         });
-        resetPublishedStateForVideo(db, state.video.id);
-        updateVideoCommentThread(db, state.video.id, {
-          rootCommentRpid: null,
-          topCommentRpid: null,
-        });
+        progress.log("Rebuilding published summary thread");
+        if (!fullMessage) {
+          publishResult = {
+            action: "skip-rebuild-publish",
+            reason: "No full summary content available for rebuild.",
+          };
+          eventLogger.log({
+            scope: "publish",
+            action: "comment-thread",
+            status: "skipped",
+            message: publishResult.reason,
+            details: {
+              publishMode: "rebuild",
+            },
+          });
+          progress.log("No full summary content available, skipping rebuild publish");
+        } else {
+          const type = getType(args);
+          const deletedThread = await deleteSummaryThread({
+            client,
+            oid: state.video.aid,
+            type,
+            rootRpid: state.video.root_comment_rpid,
+          });
+          resetPublishedStateForVideo(db, state.video.id);
+          updateVideoCommentThread(db, state.video.id, {
+            rootCommentRpid: null,
+            topCommentRpid: null,
+          });
 
+          publishResult = await postSummaryThread({
+            client,
+            oid: state.video.aid,
+            type,
+            message: fullMessage,
+            db,
+            videoId: state.video.id,
+            topCommentState: {
+              hasTopComment: false,
+              topComment: null,
+            },
+            existingRootRpid: null,
+            forcedRootRpid: null,
+          });
+          clearVideoPublishRebuildNeeded(db, state.video.id);
+          writeSummaryArtifacts(
+            db,
+            {
+              ...state.video,
+              publish_needs_rebuild: 0,
+            },
+            workRoot,
+          );
+          publishResult = {
+            ...publishResult,
+            rebuild: true,
+            deletedThread,
+          };
+          eventLogger.log({
+            scope: "publish",
+            action: "comment-thread",
+            status: "succeeded",
+            message: "Publish rebuild complete",
+            details: {
+              publishMode: "rebuild",
+              rootCommentRpid: publishResult.rootCommentRpid,
+              createdComments: publishResult.createdComments?.length ?? 0,
+              deletedThread,
+            },
+          });
+          progress.log(`Rebuild publish complete, sent ${publishResult.createdComments?.length ?? 0} comments`);
+        }
+      } else if (pendingMessage) {
+        eventLogger.log({
+          scope: "publish",
+          action: "comment-thread",
+          status: "started",
+          message: "Starting publish append",
+          details: {
+            publishMode: "append",
+            pendingLength: pendingMessage.length,
+          },
+        });
+        progress.log("Publishing pending summaries");
+        const type = getType(args);
+        const topCommentState = await getTopComment(client, { oid: state.video.aid, type });
         publishResult = await postSummaryThread({
           client,
           oid: state.video.aid,
           type,
-          message: fullMessage,
+          message: pendingMessage,
           db,
           videoId: state.video.id,
-          topCommentState: {
-            hasTopComment: false,
-            topComment: null,
-          },
-          existingRootRpid: null,
+          topCommentState,
+          existingRootRpid: state.video.root_comment_rpid,
           forcedRootRpid: null,
         });
-        clearVideoPublishRebuildNeeded(db, state.video.id);
-        writeSummaryArtifacts(
-          db,
-          {
-            ...state.video,
-            publish_needs_rebuild: 0,
+        writeSummaryArtifacts(db, state.video, workRoot);
+        eventLogger.log({
+          scope: "publish",
+          action: "comment-thread",
+          status: "succeeded",
+          message: "Publish append complete",
+          details: {
+            publishMode: "append",
+            rootCommentRpid: publishResult.rootCommentRpid,
+            createdComments: publishResult.createdComments?.length ?? 0,
           },
-          workRoot,
-        );
+        });
+        progress.log(`Publish complete, sent ${publishResult.createdComments?.length ?? 0} comments`);
+      } else {
         publishResult = {
-          ...publishResult,
-          rebuild: true,
-          deletedThread,
+          action: "skip-publish",
+          reason: "No pending summaries to publish.",
         };
-        progress.log(`Rebuild publish complete, sent ${publishResult.createdComments?.length ?? 0} comments`);
+        eventLogger.log({
+          scope: "publish",
+          action: "comment-thread",
+          status: "skipped",
+          message: publishResult.reason,
+          details: {
+            publishMode: "append",
+          },
+        });
+        progress.log("No pending content to publish, skipping publish step");
       }
-    } else if (pendingMessage) {
-      progress.log("Publishing pending summaries");
-      const type = getType(args);
-      const topCommentState = await getTopComment(client, { oid: state.video.aid, type });
-      publishResult = await postSummaryThread({
-        client,
-        oid: state.video.aid,
-        type,
-        message: pendingMessage,
-        db,
-        videoId: state.video.id,
-        topCommentState,
-        existingRootRpid: state.video.root_comment_rpid,
-        forcedRootRpid: null,
+    } catch (error) {
+      eventLogger.log({
+        scope: "publish",
+        action: "comment-thread",
+        status: "failed",
+        message: error?.message ?? "Unknown publish error",
+        details: {
+          publishMode: needsRebuildPublish ? "rebuild" : "append",
+        },
       });
-      writeSummaryArtifacts(db, state.video, workRoot);
-      progress.log(`Publish complete, sent ${publishResult.createdComments?.length ?? 0} comments`);
-    } else {
-      publishResult = {
-        action: "skip-publish",
-        reason: "No pending summaries to publish.",
-      };
-      progress.log("No pending content to publish, skipping publish step");
+      throw error;
     }
+  } else {
+    eventLogger.log({
+      scope: "publish",
+      action: "comment-thread",
+      status: "skipped",
+      message: "Publish step was not requested",
+    });
   }
 
   progress.log(`Pipeline complete, generated ${summaryResults.length} summaries`);
   const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
+  eventLogger.log({
+    scope: "pipeline",
+    action: "run",
+    status: "succeeded",
+    message: `Pipeline completed for ${state.video.bvid}`,
+    details: {
+      generatedPages: summaryResults.map((item) => item.pageNo),
+      publishRequested: Boolean(args.publish),
+      publishNeedsRebuild: finalPublishNeedsRebuild,
+    },
+  });
 
   printJson({
     ok: true,
@@ -337,6 +515,18 @@ async function main() {
 }
 
 main().catch((error) => {
+  if (activeEventLogger) {
+    activeEventLogger.log({
+      scope: "pipeline",
+      action: "run",
+      status: "failed",
+      message: error?.message ?? "Unknown error",
+      details: {
+        stderr: trimCommandOutput(error?.stderr),
+        stdout: trimCommandOutput(error?.stdout),
+      },
+    });
+  }
   printJson({
     ok: false,
     message: error?.message ?? "Unknown error",

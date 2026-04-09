@@ -14,8 +14,10 @@
     "sync:users": "node scripts/sync-summary-users.mjs",
     "import:summary": "node scripts/import-summary-file.mjs",
     "publish:pending": "node scripts/publish-pending-summaries.mjs",
+    "inspect:events": "node scripts/inspect-pipeline-events.mjs",
     "cleanup:work": "node scripts/cleanup-work-files.mjs",
     "schedule": "node scripts/run-scheduler.mjs",
+    "start": "node scripts/run-scheduler.mjs --run-on-start",
     "setup:ps": "powershell -ExecutionPolicy Bypass -File scripts/setup-env.ps1",
     "setup:sh": "bash ./scripts/setup-env.sh",
     "test": "echo \"Error: no test specified\" && exit 1"

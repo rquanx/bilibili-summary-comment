@@ -3,6 +3,8 @@ import path from "node:path";
 import { createClient } from "./bili-comment-utils.mjs";
 import { getRepoRoot, runCommand } from "./runtime-tools.mjs";
 
+const SUMMARY_PIPELINE_MAX_CONCURRENCY = 3;
+
 export function parseSummaryUsers(summaryUsers) {
   const raw = String(summaryUsers ?? "");
   if (!raw.trim()) {
@@ -99,6 +101,7 @@ export async function syncSummaryUsersRecentVideos({
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
   sinceHours = 24,
+  publish = true,
   onLog = () => {},
 } = {}) {
   const collected = await collectRecentUploadsFromUsers({
@@ -125,35 +128,115 @@ export async function syncSummaryUsersRecentVideos({
     };
   }
 
-  const runs = [];
-  const failures = [];
-
-  for (const upload of collected.uploads) {
-    onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"})`);
-    try {
-      const result = await runPipelineForBvid({
+  onLog(
+    `Running up to ${SUMMARY_PIPELINE_MAX_CONCURRENCY} pipelines concurrently with per-user concurrency capped at 1`,
+  );
+  const { runs, failures } = await runPipelinesWithConcurrency({
+    uploads: collected.uploads,
+    maxConcurrent: SUMMARY_PIPELINE_MAX_CONCURRENCY,
+    userKeyForUpload(upload) {
+      return String(upload.mid ?? "");
+    },
+    async runUpload(upload) {
+      onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"}) [user ${upload.mid}]`);
+      return runPipelineForBvid({
         cookieFile,
         dbPath,
         workRoot,
         bvid: upload.bvid,
+        publish,
       });
-      runs.push({
-        ...upload,
-        result,
-      });
-    } catch (error) {
-      failures.push({
-        ...upload,
-        message: error?.message ?? "Unknown error",
-      });
-    }
-  }
+    },
+  });
 
   return {
     ...collected,
     runs,
     failures,
   };
+}
+
+export async function runPipelinesWithConcurrency({
+  uploads,
+  maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
+  userKeyForUpload = (upload) => String(upload?.mid ?? ""),
+  runUpload,
+} = {}) {
+  const queue = Array.isArray(uploads)
+    ? uploads.map((upload, index) => ({
+        upload,
+        index,
+      }))
+    : [];
+  const safeMaxConcurrent = Math.max(1, Number(maxConcurrent) || SUMMARY_PIPELINE_MAX_CONCURRENCY);
+  const runResults = new Array(queue.length);
+  const failureResults = new Array(queue.length);
+  const activeUsers = new Set();
+  let activeCount = 0;
+
+  if (typeof runUpload !== "function" || queue.length === 0) {
+    return {
+      runs: [],
+      failures: [],
+    };
+  }
+
+  return new Promise((resolve) => {
+    const maybeResolve = () => {
+      if (queue.length > 0 || activeCount > 0) {
+        return false;
+      }
+
+      resolve({
+        runs: runResults.filter(Boolean),
+        failures: failureResults.filter(Boolean),
+      });
+      return true;
+    };
+
+    const scheduleNext = () => {
+      while (activeCount < safeMaxConcurrent) {
+        const nextIndex = queue.findIndex((item) => {
+          const userKey = normalizePipelineUserKey(userKeyForUpload(item.upload));
+          return !activeUsers.has(userKey);
+        });
+        if (nextIndex === -1) {
+          break;
+        }
+
+        const [{ upload, index }] = queue.splice(nextIndex, 1);
+        const userKey = normalizePipelineUserKey(userKeyForUpload(upload));
+        activeCount += 1;
+        activeUsers.add(userKey);
+
+        Promise.resolve()
+          .then(() => runUpload(upload))
+          .then((result) => {
+            runResults[index] = {
+              ...upload,
+              result,
+            };
+          })
+          .catch((error) => {
+            failureResults[index] = {
+              ...upload,
+              message: error?.message ?? "Unknown error",
+            };
+          })
+          .finally(() => {
+            activeCount -= 1;
+            activeUsers.delete(userKey);
+            if (!maybeResolve()) {
+              scheduleNext();
+            }
+          });
+      }
+
+      maybeResolve();
+    };
+
+    scheduleNext();
+  });
 }
 
 export async function cleanupOldWorkDirectories({
@@ -208,6 +291,7 @@ async function runPipelineForBvid({
   dbPath,
   workRoot,
   bvid,
+  publish = true,
 }) {
   const scriptPath = path.join(getRepoRoot(), "scripts", "run-video-pipeline.mjs");
   const args = [
@@ -221,6 +305,9 @@ async function runPipelineForBvid({
     "--work-root",
     workRoot,
   ];
+  if (publish) {
+    args.push("--publish");
+  }
   const result = await runCommand(process.execPath, args, {
     streamOutput: true,
     outputStream: process.stderr,
@@ -239,6 +326,11 @@ async function runPipelineForBvid({
 function readCookieString(cookieFile) {
   const resolvedPath = path.resolve(getRepoRoot(), cookieFile);
   return fs.readFileSync(resolvedPath, "utf8").trim();
+}
+
+function normalizePipelineUserKey(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized || "__default__";
 }
 
 function extractBiliMid(input) {

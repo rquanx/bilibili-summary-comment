@@ -1,59 +1,122 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { createHash } from 'node:crypto'
-import { buildSummarySegmentsFromSrt, formatSummaryTime } from './srt-utils.mjs'
-import { getRepoRoot } from './runtime-tools.mjs'
-import { savePartSummary } from './storage.mjs'
-import { parseSummaryBlocks } from './summary-format.mjs'
+import fs from "node:fs";
+import path from "node:path";
+import { createHash } from "node:crypto";
+import { buildSummarySegmentsFromSrt, formatSummaryTime } from "./srt-utils.mjs";
+import { getRepoRoot } from "./runtime-tools.mjs";
+import { savePartSummary } from "./storage.mjs";
+import { parseSummaryBlocks } from "./summary-format.mjs";
 
-export async function summarizePartFromSubtitle({ db, videoId, bvid, pageNo, partTitle, durationSec, subtitlePath, model, apiKey, apiBaseUrl, apiFormat, workRoot = 'work' }) {
+export async function summarizePartFromSubtitle({
+  db,
+  videoId,
+  bvid,
+  pageNo,
+  cid = null,
+  partTitle,
+  durationSec,
+  subtitlePath,
+  model,
+  apiKey,
+  apiBaseUrl,
+  apiFormat,
+  workRoot = "work",
+  eventLogger = null,
+}) {
   if (!apiKey) {
-    throw new Error('Missing summary API key. Set SUMMARY_API_KEY or OPENAI_API_KEY.')
+    throw new Error("Missing summary API key. Set SUMMARY_API_KEY or OPENAI_API_KEY.");
   }
 
-  const subtitleText = fs.readFileSync(subtitlePath, 'utf8')
-  const segments = buildSummarySegmentsFromSrt(subtitleText, durationSec)
-  const pageSummary = await requestSummary({
+  eventLogger?.log({
+    scope: "summary",
+    action: "llm",
+    status: "started",
     pageNo,
+    cid,
     partTitle,
-    durationSec,
-    subtitleText,
-    segments,
-    model,
-    apiKey,
-    apiBaseUrl,
-    apiFormat,
-  })
+    message: `Starting LLM summary for P${pageNo}`,
+    details: {
+      model,
+      apiFormat,
+      subtitlePath,
+    },
+  });
 
-  const normalizedSummary = normalizeSummaryOutput(pageSummary, pageNo)
-  const normalized = `${normalizedSummary}\n`
-  const summaryHash = createHash('sha1').update(normalized).digest('hex')
-  const saved = savePartSummary(db, videoId, pageNo, {
-    summaryText: normalized.trim(),
-    summaryHash,
-  })
+  try {
+    const subtitleText = fs.readFileSync(subtitlePath, "utf8");
+    const segments = buildSummarySegmentsFromSrt(subtitleText, durationSec);
+    const pageSummary = await requestSummary({
+      pageNo,
+      partTitle,
+      durationSec,
+      subtitleText,
+      segments,
+      model,
+      apiKey,
+      apiBaseUrl,
+      apiFormat,
+    });
 
-  const workDir = path.join(getRepoRoot(), workRoot, bvid)
-  fs.mkdirSync(workDir, { recursive: true })
-  const partSummaryPath = path.join(workDir, `summary-p${String(pageNo).padStart(2, '0')}.md`)
-  fs.writeFileSync(partSummaryPath, normalized, 'utf8')
+    const normalizedSummary = normalizeSummaryOutput(pageSummary, pageNo);
+    const normalized = `${normalizedSummary}\n`;
+    const summaryHash = createHash("sha1").update(normalized).digest("hex");
+    const saved = savePartSummary(db, videoId, pageNo, {
+      summaryText: normalized.trim(),
+      summaryHash,
+    });
 
-  return {
-    pageNo,
-    summaryText: normalized.trim(),
-    summaryHash,
-    summaryPath: partSummaryPath,
-    dbRow: saved,
+    const workDir = path.join(getRepoRoot(), workRoot, bvid);
+    fs.mkdirSync(workDir, { recursive: true });
+    const partSummaryPath = path.join(workDir, `summary-p${String(pageNo).padStart(2, "0")}.md`);
+    fs.writeFileSync(partSummaryPath, normalized, "utf8");
+
+    eventLogger?.log({
+      scope: "summary",
+      action: "llm",
+      status: "succeeded",
+      pageNo,
+      cid,
+      partTitle,
+      message: `LLM summary ready for P${pageNo}`,
+      details: {
+        model,
+        segmentCount: segments.length,
+        summaryHash,
+        summaryPath: partSummaryPath,
+      },
+    });
+
+    return {
+      pageNo,
+      summaryText: normalized.trim(),
+      summaryHash,
+      summaryPath: partSummaryPath,
+      dbRow: saved,
+    };
+  } catch (error) {
+    eventLogger?.log({
+      scope: "summary",
+      action: "llm",
+      status: "failed",
+      pageNo,
+      cid,
+      partTitle,
+      message: error?.message ?? "Unknown summary error",
+      details: {
+        model,
+        subtitlePath,
+      },
+    });
+    throw error;
   }
 }
 
 export function resolveSummaryConfig(args = {}) {
   return {
-    model: args.model ?? process.env.SUMMARY_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
-    apiKey: args['api-key'] ?? process.env.SUMMARY_API_KEY ?? process.env.OPENAI_API_KEY ?? '',
-    apiBaseUrl: normalizeApiBaseUrl(args['api-base-url'] ?? process.env.SUMMARY_API_BASE_URL ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'),
-    apiFormat: normalizeApiFormat(args['api-format'] ?? process.env.SUMMARY_API_FORMAT ?? process.env.OPENAI_API_FORMAT ?? 'auto'),
-  }
+    model: args.model ?? process.env.SUMMARY_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    apiKey: args["api-key"] ?? process.env.SUMMARY_API_KEY ?? process.env.OPENAI_API_KEY ?? "",
+    apiBaseUrl: normalizeApiBaseUrl(args["api-base-url"] ?? process.env.SUMMARY_API_BASE_URL ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"),
+    apiFormat: normalizeApiFormat(args["api-format"] ?? process.env.SUMMARY_API_FORMAT ?? process.env.OPENAI_API_FORMAT ?? "auto"),
+  };
 }
 
 async function requestSummary({ pageNo, partTitle, durationSec, subtitleText, segments, model, apiKey, apiBaseUrl, apiFormat }) {

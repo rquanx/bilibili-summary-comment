@@ -323,6 +323,62 @@ export function resetPublishedStateForVideo(db, videoId) {
   `).run(now, videoId);
 }
 
+export function insertPipelineEvent(db, event) {
+  const createdAt = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO pipeline_events (
+      run_id,
+      video_id,
+      bvid,
+      video_title,
+      page_no,
+      cid,
+      part_title,
+      scope,
+      action,
+      status,
+      message,
+      details_json,
+      created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    normalizeNullableText(event.runId),
+    normalizeNullableInteger(event.videoId),
+    normalizeNullableText(event.bvid),
+    normalizeNullableText(event.videoTitle),
+    normalizeNullableInteger(event.pageNo),
+    normalizeNullableInteger(event.cid),
+    normalizeNullableText(event.partTitle),
+    requirePipelineEventField(event.scope, "scope"),
+    requirePipelineEventField(event.action, "action"),
+    requirePipelineEventField(event.status, "status"),
+    normalizeNullableText(event.message),
+    serializePipelineEventDetails(event.details),
+    createdAt,
+  );
+
+  return db.prepare("SELECT * FROM pipeline_events WHERE id = last_insert_rowid()").get() ?? null;
+}
+
+export function listPipelineEvents(db, { bvid = null, sinceIso = null, limit = 100 } = {}) {
+  const safeLimit = Math.max(1, Number(limit) || 100);
+  return db.prepare(`
+    SELECT *
+    FROM pipeline_events
+    WHERE (? IS NULL OR bvid = ?)
+      AND (? IS NULL OR created_at >= ?)
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(
+    normalizeNullableText(bvid),
+    normalizeNullableText(bvid),
+    normalizeNullableText(sinceIso),
+    normalizeNullableText(sinceIso),
+    safeLimit,
+  );
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS videos (
@@ -345,11 +401,15 @@ function migrate(db) {
   ensureVideoColumn(db, "publish_rebuild_reason", "TEXT");
 
   migrateVideoPartsTable(db);
+  createPipelineEventsTable(db);
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_video_parts_video_id ON video_parts(video_id);
     CREATE INDEX IF NOT EXISTS idx_video_parts_video_page ON video_parts(video_id, page_no);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_video_parts_video_cid ON video_parts(video_id, cid);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_events_created_at ON pipeline_events(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_events_bvid_created_at ON pipeline_events(bvid, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_events_run_id ON pipeline_events(run_id, created_at DESC, id DESC);
   `);
   db.exec("DROP INDEX IF EXISTS idx_video_parts_video_active_page");
 }
@@ -470,6 +530,55 @@ function createVideoPartsTable(db) {
       FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
     )
   `);
+}
+
+function createPipelineEventsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT,
+      video_id INTEGER,
+      bvid TEXT,
+      video_title TEXT,
+      page_no INTEGER,
+      cid INTEGER,
+      part_title TEXT,
+      scope TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      details_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+function requirePipelineEventField(value, fieldName) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    throw new Error(`Missing required pipeline event field: ${fieldName}`);
+  }
+
+  return normalized;
+}
+
+function normalizeNullableText(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function normalizeNullableInteger(value) {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) ? normalized : null;
+}
+
+function serializePipelineEventDetails(details) {
+  if (details === undefined || details === null) {
+    return null;
+  }
+
+  return `${JSON.stringify(details)}\n`;
 }
 
 function quoteSqlLiteral(value) {
