@@ -7,6 +7,9 @@ const sleep = (timeout) =>
     setTimeout(resolve, timeout);
   });
 
+const ROOT_TOP_DELAY_MS = 1000;
+const REPLY_POST_DELAY_MS = 1500;
+
 const DELETED_COMMENT_PATTERNS = [
   "\u5df2\u7ecf\u88ab\u5220\u9664",
   "\u5df2\u88ab\u5220\u9664",
@@ -54,7 +57,7 @@ async function createRootComment({ client, oid, type, chunk }) {
     plat: 1,
   });
 
-  await sleep(1000);
+  await sleep(ROOT_TOP_DELAY_MS);
   await client.reply.top({
     oid,
     type,
@@ -120,7 +123,7 @@ export async function postSummaryThread({
       .catch(() => null);
   }
 
-  for (const chunk of chunks) {
+  for (const [index, chunk] of chunks.entries()) {
     try {
       const replyRes = await client.reply.add({
         oid,
@@ -139,6 +142,12 @@ export async function postSummaryThread({
           isRoot: false,
         }),
       );
+
+      // Bilibili child replies can appear out of order when they land too close together.
+      // Spacing out posts makes the visible thread order match the summary page order more reliably.
+      if (index < chunks.length - 1) {
+        await sleep(REPLY_POST_DELAY_MS);
+      }
     } catch (error) {
       if (createdComments.length === 0 && rootRpid && isDeletedCommentThreadError(error)) {
         const rootRes = await createRootComment({
