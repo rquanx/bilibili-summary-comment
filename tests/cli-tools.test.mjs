@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createCliCommand, runCli } from "../scripts/lib/cli-tools.mjs";
-import { CliError } from "../scripts/lib/cli-errors.mjs";
+import { createCliCommand, runCli } from "../scripts/lib/cli/tools.mjs";
+import { CliError } from "../scripts/lib/cli/errors.mjs";
 
 test("runCli loads env, parses args, and prints JSON result by default", async () => {
   const command = createCliCommand({ name: "demo-cli" })

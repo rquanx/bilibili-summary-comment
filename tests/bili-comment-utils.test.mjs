@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getType, readCookie, resolveOid } from "../scripts/lib/bili-comment-utils.mjs";
-import { CliError } from "../scripts/lib/cli-errors.mjs";
+import { getType, readCookie, resolveOid } from "../scripts/lib/bili/comment-utils.mjs";
+import { CliError } from "../scripts/lib/cli/errors.mjs";
 
 test("readCookie throws CliError when cookie inputs are missing", () => {
   assert.throws(

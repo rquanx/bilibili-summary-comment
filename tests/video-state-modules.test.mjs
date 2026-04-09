@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/database.mjs";
-import { listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/video-storage.mjs";
-import { createSummaryHash, detectSnapshotChanges, reindexSummaryText } from "../scripts/lib/video-change-detection.mjs";
-import { syncVideoSnapshotToDb } from "../scripts/lib/video-state-sync.mjs";
-import * as videoState from "../scripts/lib/video-state.mjs";
-import { fetchVideoSnapshot } from "../scripts/lib/video-snapshot.mjs";
+import { openDatabase } from "../scripts/lib/db/database.mjs";
+import { listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage.mjs";
+import { createSummaryHash, detectSnapshotChanges, reindexSummaryText } from "../scripts/lib/video/change-detection.mjs";
+import { syncVideoSnapshotToDb } from "../scripts/lib/video/state-sync.mjs";
+import * as videoState from "../scripts/lib/video/index.mjs";
+import { fetchVideoSnapshot } from "../scripts/lib/video/snapshot.mjs";
 
 test("detectSnapshotChanges identifies reorders that require rebuild", () => {
   const previousActiveParts = [

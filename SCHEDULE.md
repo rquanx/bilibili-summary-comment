@@ -113,10 +113,10 @@ npm run cleanup:work
 只执行一次调度任务，不常驻：
 
 ```bash
-node scripts/run-scheduler.mjs --once summary
-node scripts/run-scheduler.mjs --once refresh
-node scripts/run-scheduler.mjs --once cleanup
-node scripts/run-scheduler.mjs --once all
+node scripts/commands/run-scheduler.mjs --once summary
+node scripts/commands/run-scheduler.mjs --once refresh
+node scripts/commands/run-scheduler.mjs --once cleanup
+node scripts/commands/run-scheduler.mjs --once all
 ```
 
 启动后先立刻跑一轮，再进入常驻：

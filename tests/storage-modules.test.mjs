@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/database.mjs";
-import { insertPipelineEvent, listPipelineEvents } from "../scripts/lib/pipeline-event-storage.mjs";
+import { openDatabase } from "../scripts/lib/db/database.mjs";
+import { insertPipelineEvent, listPipelineEvents } from "../scripts/lib/db/pipeline-event-storage.mjs";
 import {
   getVideoByIdentity,
   listPendingPublishParts,
@@ -12,8 +12,8 @@ import {
   savePartSummary,
   upsertVideo,
   upsertVideoPart,
-} from "../scripts/lib/video-storage.mjs";
-import * as storage from "../scripts/lib/storage.mjs";
+} from "../scripts/lib/db/video-storage.mjs";
+import * as storage from "../scripts/lib/db/index.mjs";
 
 test("storage modules preserve video and event workflows after the split", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-storage-"));

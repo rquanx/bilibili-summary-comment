@@ -8,7 +8,7 @@ import {
   prependPathEntries,
   resolveLocalFasterWhisperConfig,
   resolveLocalFasterWhisperExecutableConfig,
-} from "../scripts/lib/faster-whisper-config.mjs";
+} from "../scripts/lib/subtitle/faster-whisper-config.mjs";
 
 test("model path candidates prefer explicit env config before LocalAppData fallback", () => {
   const env = {

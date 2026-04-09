@@ -17,19 +17,19 @@ npm run setup:ps
 Optional flags:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup-env.ps1 -VenvPath .3.11 -PreferredPython 3.11
+powershell -ExecutionPolicy Bypass -File scripts/setup/setup-env.ps1 -VenvPath .3.11 -PreferredPython 3.11
 ```
 
 ## macOS / Linux
 
 ```bash
-bash ./scripts/setup-env.sh
+bash ./scripts/setup/setup-env.sh
 ```
 
 Optional environment variables:
 
 ```bash
-VENV_PATH=.3.11 PREFERRED_PYTHON=python3.11 bash ./scripts/setup-env.sh
+VENV_PATH=.3.11 PREFERRED_PYTHON=python3.11 bash ./scripts/setup/setup-env.sh
 ```
 
 ## What the scripts do
