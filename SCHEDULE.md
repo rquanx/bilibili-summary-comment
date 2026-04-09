@@ -81,7 +81,7 @@ CRON_TIMEZONE=Asia/Shanghai
 
 - “每 30 天刷新一次”是通过“每日检查 + 超过 30 天才执行”实现的，这样比单纯写一个月度 cron 更接近真实的 30 天周期。
 - 清理时不会删除数据库记录，只会删除 `work` 目录中的文件。
-- 按用户扫描时会复用现有 `run-video-pipeline.mjs`，所以已经做过总结的分 P 会自动跳过。
+- 按用户扫描时会复用现有 `run-video-pipeline.ts`，所以已经做过总结的分 P 会自动跳过。
 - 按用户扫描触发的流水线默认会追加 `--publish`，因此有待发布内容时会直接发到投稿评论区并尝试置顶根评论。
 
 ## 4. 常用命令
@@ -113,10 +113,10 @@ npm run cleanup:work
 只执行一次调度任务，不常驻：
 
 ```bash
-node scripts/commands/run-scheduler.mjs --once summary
-node scripts/commands/run-scheduler.mjs --once refresh
-node scripts/commands/run-scheduler.mjs --once cleanup
-node scripts/commands/run-scheduler.mjs --once all
+tsx scripts/commands/run-scheduler.ts --once summary
+tsx scripts/commands/run-scheduler.ts --once refresh
+tsx scripts/commands/run-scheduler.ts --once cleanup
+tsx scripts/commands/run-scheduler.ts --once all
 ```
 
 启动后先立刻跑一轮，再进入常驻：

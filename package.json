@@ -7,21 +7,22 @@
     "doc": "docs"
   },
   "scripts": {
-    "pipeline": "node scripts/commands/run-video-pipeline.mjs",
-    "test:prompt": "node scripts/maintenance/test-summary-prompt.mjs",
-    "login:bili": "node scripts/commands/login-bili-tv.mjs",
-    "refresh:cookie": "node scripts/commands/refresh-bili-cookie.mjs",
-    "sync:video": "node scripts/commands/sync-bili-video-state.mjs",
-    "sync:users": "node scripts/commands/sync-summary-users.mjs",
-    "import:summary": "node scripts/commands/import-summary-file.mjs",
-    "publish:pending": "node scripts/commands/publish-pending-summaries.mjs",
-    "inspect:events": "node scripts/maintenance/inspect-pipeline-events.mjs",
-    "cleanup:work": "node scripts/maintenance/cleanup-work-files.mjs",
-    "schedule": "node scripts/commands/run-scheduler.mjs",
-    "start": "node scripts/commands/run-scheduler.mjs --run-on-start",
+    "pipeline": "tsx scripts/commands/run-video-pipeline.ts",
+    "test:prompt": "tsx scripts/maintenance/test-summary-prompt.ts",
+    "login:bili": "tsx scripts/commands/login-bili-tv.ts",
+    "refresh:cookie": "tsx scripts/commands/refresh-bili-cookie.ts",
+    "sync:video": "tsx scripts/commands/sync-bili-video-state.ts",
+    "sync:users": "tsx scripts/commands/sync-summary-users.ts",
+    "import:summary": "tsx scripts/commands/import-summary-file.ts",
+    "publish:pending": "tsx scripts/commands/publish-pending-summaries.ts",
+    "inspect:events": "tsx scripts/maintenance/inspect-pipeline-events.ts",
+    "cleanup:work": "tsx scripts/maintenance/cleanup-work-files.ts",
+    "schedule": "tsx scripts/commands/run-scheduler.ts",
+    "start": "tsx scripts/commands/run-scheduler.ts --run-on-start",
     "setup:ps": "powershell -ExecutionPolicy Bypass -File scripts/setup/setup-env.ps1",
     "setup:sh": "bash ./scripts/setup/setup-env.sh",
-    "test": "node --test tests/*.test.mjs"
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -30,7 +31,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/rquanx/video-pipeline/issues"
   },
@@ -41,5 +42,10 @@
     "dotenv": "^17.4.1",
     "node-cron": "^4.2.1",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   }
 }

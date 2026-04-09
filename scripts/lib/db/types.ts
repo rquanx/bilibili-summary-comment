@@ -1,0 +1,148 @@
+import type { DatabaseSync } from "node:sqlite";
+
+export type Db = DatabaseSync;
+
+export interface VideoIdentity {
+  bvid?: string | null;
+  aid?: number | null;
+}
+
+export interface VideoRecord {
+  id: number;
+  bvid: string;
+  aid: number;
+  title: string;
+  page_count: number;
+  root_comment_rpid: number | null;
+  top_comment_rpid: number | null;
+  publish_needs_rebuild: number;
+  publish_rebuild_reason: string | null;
+  last_scan_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VideoInsert {
+  bvid: string;
+  aid: number;
+  title: string;
+  pageCount: number;
+  rootCommentRpid?: number | null;
+  topCommentRpid?: number | null;
+}
+
+export interface VideoPartRecord {
+  id: number;
+  video_id: number;
+  page_no: number;
+  cid: number;
+  part_title: string;
+  duration_sec: number;
+  subtitle_path: string | null;
+  subtitle_source: string | null;
+  subtitle_lang: string | null;
+  summary_text: string | null;
+  summary_hash: string | null;
+  published: number;
+  published_comment_rpid: number | null;
+  published_at: string | null;
+  is_deleted: number;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VideoPartUpsert {
+  videoId: number;
+  pageNo: number;
+  cid: number;
+  partTitle: string;
+  durationSec: number;
+  subtitlePath?: string | null;
+  subtitleSource?: string | null;
+  subtitleLang?: string | null;
+  summaryText?: string | null;
+  summaryHash?: string | null;
+  published?: boolean | number;
+  publishedCommentRpid?: number | null;
+  publishedAt?: string | null;
+  isDeleted?: boolean | number;
+  deletedAt?: string | null;
+}
+
+export interface VideoSnapshotPage {
+  pageNo: number;
+  cid: number;
+  partTitle: string;
+  durationSec: number;
+}
+
+export interface VideoSnapshot {
+  bvid: string;
+  aid: number;
+  title: string;
+  pageCount: number;
+  pages: VideoSnapshotPage[];
+}
+
+export interface SnapshotChangeSet {
+  inserted: Array<{ cid: number; pageNo: number }>;
+  deleted: Array<{ cid: number; pageNo: number }>;
+  moved: Array<{ cid: number; fromPageNo: number; toPageNo: number }>;
+  previousCids: number[];
+  nextCids: number[];
+  sameSequence: boolean;
+  appendOnly: boolean;
+  requiresRebuild: boolean;
+  rebuildReason: string | null;
+}
+
+export interface VideoState {
+  video: VideoRecord;
+  parts: VideoPartRecord[];
+  pendingSummaryParts: VideoPartRecord[];
+  pendingPublishParts: VideoPartRecord[];
+  changeSet?: SnapshotChangeSet;
+}
+
+export interface SummaryArtifacts {
+  summaryPath: string;
+  pendingSummaryPath: string;
+}
+
+export interface PipelineEventInput {
+  runId?: string | null;
+  videoId?: number | null;
+  bvid?: string | null;
+  videoTitle?: string | null;
+  pageNo?: number | null;
+  cid?: number | null;
+  partTitle?: string | null;
+  scope: string;
+  action: string;
+  status: string;
+  message?: string | null;
+  details?: unknown;
+}
+
+export interface PipelineEventRecord {
+  id: number;
+  run_id: string | null;
+  video_id: number | null;
+  bvid: string | null;
+  video_title: string | null;
+  page_no: number | null;
+  cid: number | null;
+  part_title: string | null;
+  scope: string;
+  action: string;
+  status: string;
+  message: string | null;
+  details_json: string | null;
+  created_at: string;
+}
+
+export interface PipelineEventLogger {
+  runId: string;
+  log(event: PipelineEventInput): PipelineEventRecord | null;
+}
