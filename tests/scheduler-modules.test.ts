@@ -6,7 +6,7 @@ import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets.ts";
 import * as schedulerTasks from "../scripts/lib/scheduler/index.ts";
 import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup.ts";
 import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner.ts";
-import { syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads.ts";
+import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads.ts";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");
@@ -63,6 +63,59 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
     runs: [],
     failures: [],
   });
+});
+
+test("collectRecentUploadsFromUsers skips only-self-visible videos", async () => {
+  const logMessages: string[] = [];
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  const result = await collectRecentUploadsFromUsers({
+    summaryUsers: "123",
+    readCookieStringImpl: () => "SESSDATA=fake",
+    createClientImpl: (() => ({
+      user: {
+        async getVideos() {
+          return {
+            list: {
+              vlist: [
+                {
+                  aid: 1,
+                  bvid: "BVVISIBLE",
+                  title: "Visible",
+                  created: nowUnix,
+                  is_self_view: false,
+                },
+                {
+                  aid: 2,
+                  bvid: "BVPRIVATE",
+                  title: "Private",
+                  created: nowUnix,
+                  is_self_view: true,
+                },
+                {
+                  aid: 3,
+                  bvid: "BVPRIVATE2",
+                  title: "Private Legacy",
+                  created: nowUnix,
+                  is_only_self: 1,
+                },
+              ],
+            },
+          };
+        },
+      },
+    })) as any,
+    onLog(message) {
+      logMessages.push(message);
+    },
+  });
+
+  assert.deepEqual(result.uploads.map((item) => item.bvid), ["BVVISIBLE"]);
+  assert.deepEqual(logMessages, [
+    "Fetching recent uploads for uid 123",
+    "Skip only-self-visible video BVPRIVATE (Private)",
+    "Skip only-self-visible video BVPRIVATE2 (Private Legacy)",
+  ]);
 });
 
 test("createCoalescedRunner reruns once after overlapping triggers while work is in progress", async () => {

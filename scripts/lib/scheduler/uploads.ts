@@ -83,6 +83,11 @@ export async function collectRecentUploadsFromUsers({
         continue;
       }
 
+      if (isOnlySelfVisibleVideo(video)) {
+        onLog(`Skip only-self-visible video ${bvid} (${String(video?.title ?? "").trim() || "untitled"})`);
+        continue;
+      }
+
       const existing = uploadMap.get(bvid);
       if (existing && existing.createdAtUnix >= createdAtUnix) {
         continue;
@@ -169,4 +174,13 @@ export async function syncSummaryUsersRecentVideos({
     runs,
     failures,
   };
+}
+
+function isOnlySelfVisibleVideo(video: unknown): boolean {
+  if (!video || typeof video !== "object") {
+    return false;
+  }
+
+  const candidate = video as Record<string, unknown>;
+  return candidate.is_self_view === true || Number(candidate.is_only_self ?? 0) === 1;
 }
