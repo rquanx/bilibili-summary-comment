@@ -14,6 +14,7 @@ import {
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "../lib/bili/auth.ts";
+import { createCoalescedRunner } from "../lib/scheduler/coalesced-runner.ts";
 import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "../lib/scheduler/index.ts";
 
 const command = addWorkRootOption(
@@ -40,7 +41,11 @@ await runCli({
     const config = resolveSchedulerConfig(args);
     config.authFile = resolveBiliAuthFile(config.authFile);
     const resolvedCookieFile = resolveBiliCookieFile(config.cookieFile);
-    const runningTasks = new Set();
+    const runningTasks = new Set<string>();
+
+    function getErrorMessage(error: unknown) {
+      return error instanceof Error ? error.message : "Unknown error";
+    }
 
     function log(message) {
       process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
@@ -135,10 +140,10 @@ await runCli({
       try {
         return await task();
       } catch (error) {
-        log(`${name} failed: ${error?.message ?? "Unknown error"}`);
+        log(`${name} failed: ${getErrorMessage(error)}`);
         return {
           action: `${name}-failed`,
-          message: error?.message ?? "Unknown error",
+          message: getErrorMessage(error),
         };
       } finally {
         runningTasks.delete(name);
@@ -146,7 +151,25 @@ await runCli({
     };
 
     const refreshRunner = runExclusive("refresh", runRefreshTask);
-    const summaryRunner = runExclusive("summary", runSummaryTask);
+    const summaryRunner = createCoalescedRunner({
+      name: "summary",
+      runningTasks,
+      task: runSummaryTask,
+      onLog(message) {
+        log(message);
+      },
+      onFailure(error) {
+        const message = getErrorMessage(error);
+        log(`summary failed: ${message}`);
+        return {
+          action: "summary-failed",
+          uploads: 0,
+          runs: 0,
+          failures: 1,
+          message,
+        };
+      },
+    });
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
 
     if (args.once) {

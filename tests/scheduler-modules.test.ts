@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner.ts";
 import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency.ts";
 import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets.ts";
 import * as schedulerTasks from "../scripts/lib/scheduler/index.ts";
@@ -62,6 +63,102 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
     runs: [],
     failures: [],
   });
+});
+
+test("createCoalescedRunner reruns once after overlapping triggers while work is in progress", async () => {
+  const runningTasks = new Set<string>();
+  const logMessages: string[] = [];
+  const waiters: Array<() => void> = [];
+  let runCount = 0;
+
+  const runner = createCoalescedRunner({
+    name: "summary",
+    runningTasks,
+    onLog(message) {
+      logMessages.push(message);
+    },
+    async task() {
+      runCount += 1;
+      const currentRun = runCount;
+      if (currentRun === 1) {
+        await new Promise<void>((resolve) => {
+          waiters.push(resolve);
+        });
+      }
+
+      return {
+        runCount: currentRun,
+      };
+    },
+  });
+
+  const firstRun = runner();
+  const queuedRunA = runner();
+  const queuedRunB = runner();
+
+  assert.equal(runningTasks.has("summary"), true);
+  waiters.shift()?.();
+
+  assert.equal(await queuedRunA, null);
+  assert.equal(await queuedRunB, null);
+  assert.deepEqual(await firstRun, { runCount: 2 });
+  assert.equal(runCount, 2);
+  assert.equal(runningTasks.has("summary"), false);
+  assert.deepEqual(logMessages, [
+    "Queue summary: previous run still in progress; will rerun immediately after completion",
+    "Queue summary: previous run still in progress; will rerun immediately after completion",
+    "Running queued summary rerun",
+  ]);
+});
+
+test("createCoalescedRunner can queue another rerun while the queued rerun is running", async () => {
+  const runningTasks = new Set<string>();
+  let runCount = 0;
+  let resolveFirstRun: (() => void) | null = null;
+  let resolveSecondRun: (() => void) | null = null;
+  let markSecondRunStarted: (() => void) | null = null;
+  const firstRunGate = new Promise<void>((resolve) => {
+    resolveFirstRun = resolve;
+  });
+  const secondRunGate = new Promise<void>((resolve) => {
+    resolveSecondRun = resolve;
+  });
+  const secondRunStarted = new Promise<void>((resolve) => {
+    markSecondRunStarted = resolve;
+  });
+
+  const runner = createCoalescedRunner({
+    name: "summary",
+    runningTasks,
+    async task() {
+      runCount += 1;
+      const currentRun = runCount;
+      if (currentRun === 1) {
+        await firstRunGate;
+      }
+
+      if (currentRun === 2) {
+        markSecondRunStarted?.();
+        await secondRunGate;
+      }
+
+      return currentRun;
+    },
+  });
+
+  const firstRun = runner();
+  await Promise.resolve();
+  const queuedRun = runner();
+
+  resolveFirstRun?.();
+  await secondRunStarted;
+  const queuedDuringRerun = runner();
+  resolveSecondRun?.();
+
+  assert.equal(await queuedRun, null);
+  assert.equal(await queuedDuringRerun, null);
+  assert.equal(await firstRun, 3);
+  assert.equal(runCount, 3);
 });
 
 test("cleanupOldWorkDirectories removes only safe candidate directories", async () => {
