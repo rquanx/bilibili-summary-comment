@@ -1,28 +1,20 @@
 import { TvQrcodeLogin } from "@renmu/bili-api";
-import { fail, parseArgs, printJson, showUsage } from "./lib/bili-comment-utils.mjs";
+import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import { saveBiliAuthBundle, resolveBiliAuthFile, resolveBiliCookieFile } from "./lib/bili-auth.mjs";
+import { createCliCommand, parseCliArgs } from "./lib/cli-tools.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/login-bili-tv.mjs [--auth-file bili-auth.json] [--cookie-file cookie.txt]",
-    "",
-    "Options:",
-    "  --auth-file               Optional. Where to save the TV login payload. Default: bili-auth.json",
-    "  --cookie-file             Optional. Where to save the refreshed web cookie string. Default: cookie.txt",
-    "  --help                    Show this help.",
-  ]);
-}
+const command = createCliCommand({
+  name: "login-bili-tv",
+  description: "Log in to Bilibili TV via QR code and persist auth artifacts.",
+})
+  .option("--auth-file <path>", "Optional. Where to save the TV login payload.")
+  .option("--cookie-file <path>", "Optional. Where to save the refreshed web cookie string.");
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
 
   const authFile = resolveBiliAuthFile(args["auth-file"]);
   const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
@@ -71,7 +63,5 @@ function waitForLoginCompletion(client) {
 }
 
 main().catch((error) => {
-  fail(error?.message ?? "Unknown error", {
-    stack: error?.stack,
-  });
+  printErrorJson(error);
 });

@@ -2,34 +2,33 @@ import {
   createClient,
   getTopComment,
   getType,
-  parseArgs,
+  printErrorJson,
   printJson,
   readCookie,
   resolveOid,
-  showUsage,
 } from "./lib/bili-comment-utils.mjs";
+import {
+  addCommentTypeOption,
+  addCookieOptions,
+  addVideoIdentityOptions,
+  createCliCommand,
+  parseCliArgs,
+} from "./lib/cli-tools.mjs";
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/get-bili-top-comment.mjs --cookie-file cookie.txt --oid 123",
-    "  node scripts/get-bili-top-comment.mjs --cookie-file cookie.txt --aid 123",
-    "",
-    "Options:",
-    "  --cookie / --cookie-file   Required. Bilibili cookie string or cookie file path.",
-    "  --oid / --aid              Video comment oid. For normal videos this is the aid.",
-    "  --bvid / --url             Optional. Resolved through @renmu/bili-api video.info().",
-    "  --type                     Comment type, default 1.",
-    "  --help                     Show this help.",
-  ]);
-}
+const command = addCommentTypeOption(
+  addVideoIdentityOptions(
+    addCookieOptions(
+      createCliCommand({
+        name: "get-bili-top-comment",
+        description: "Inspect the current pinned Bilibili comment for a video.",
+      }),
+      { required: true },
+    ),
+  ),
+);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
 
   const cookie = readCookie(args);
   const client = createClient(cookie);
@@ -47,10 +46,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  printJson({
-    ok: false,
-    message: error?.message ?? "Unknown error",
-    stack: error?.stack,
-  });
-  process.exitCode = 1;
+  printErrorJson(error);
 });

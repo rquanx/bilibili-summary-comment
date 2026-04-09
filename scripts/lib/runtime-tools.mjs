@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { config as loadDotEnvConfig } from "dotenv";
 
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -14,33 +15,11 @@ export function loadDotEnvIfPresent(envPath = path.join(getRepoRoot(), ".env")) 
     return false;
   }
 
-  const raw = fs.readFileSync(envPath, "utf8").replace(/^\uFEFF/, "");
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const equalsIndex = trimmed.indexOf("=");
-    if (equalsIndex <= 0) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, equalsIndex).trim();
-    if (!key || Object.prototype.hasOwnProperty.call(process.env, key)) {
-      continue;
-    }
-
-    let value = trimmed.slice(equalsIndex + 1).trim();
-    if (
-      value.length >= 2
-      && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    process.env[key] = value;
-  }
+  loadDotEnvConfig({
+    path: envPath,
+    override: false,
+    quiet: true,
+  });
 
   return true;
 }

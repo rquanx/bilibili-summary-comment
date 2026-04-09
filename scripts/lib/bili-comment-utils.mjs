@@ -1,60 +1,18 @@
 import fs from "node:fs";
 import { Client } from "@renmu/bili-api";
+import { createCliError, errorToJson } from "./cli-errors.mjs";
 
 function readTextFile(filePath) {
   return fs.readFileSync(filePath, "utf8");
-}
-
-export function parseArgs(argv = process.argv.slice(2)) {
-  const args = {};
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
-    if (!token.startsWith("--")) {
-      continue;
-    }
-
-    const body = token.slice(2);
-    if (!body) {
-      continue;
-    }
-
-    const equalIndex = body.indexOf("=");
-    if (equalIndex >= 0) {
-      const key = body.slice(0, equalIndex);
-      const value = body.slice(equalIndex + 1);
-      args[key] = value;
-      continue;
-    }
-
-    const next = argv[i + 1];
-    if (next && !next.startsWith("--")) {
-      args[body] = next;
-      i += 1;
-      continue;
-    }
-
-    args[body] = true;
-  }
-
-  return args;
 }
 
 export function printJson(data) {
   console.log(JSON.stringify(data, null, 2));
 }
 
-export function fail(message, extra = {}) {
-  printJson({
-    ok: false,
-    message,
-    ...extra,
-  });
-  process.exit(1);
-}
-
-export function showUsage(lines) {
-  console.log(lines.join("\n"));
+export function printErrorJson(error, fallbackMessage = "Unknown error") {
+  printJson(errorToJson(error, fallbackMessage));
+  process.exitCode = 1;
 }
 
 export function readCookie(args) {
@@ -66,7 +24,7 @@ export function readCookie(args) {
     return readTextFile(args["cookie-file"]).trim();
   }
 
-  fail("Missing required option: --cookie or --cookie-file");
+  throw createCliError("Missing required option: --cookie or --cookie-file");
 }
 
 export function readMessage(args) {
@@ -78,7 +36,7 @@ export function readMessage(args) {
     return readTextFile(args["message-file"]).trim();
   }
 
-  fail("Missing required option: --message or --message-file");
+  throw createCliError("Missing required option: --message or --message-file");
 }
 
 export function createClient(cookie) {
@@ -93,7 +51,7 @@ export function getType(args) {
   const value = args.type ?? "1";
   const type = Number(value);
   if (!Number.isInteger(type) || type <= 0) {
-    fail("Invalid --type, expected a positive integer", { received: value });
+    throw createCliError("Invalid --type, expected a positive integer", { received: value });
   }
   return type;
 }
@@ -103,7 +61,7 @@ export async function resolveOid(client, args) {
   if (directValue !== undefined) {
     const oid = Number(directValue);
     if (!Number.isInteger(oid) || oid <= 0) {
-      fail("Invalid --oid/--aid, expected a positive integer", {
+      throw createCliError("Invalid --oid/--aid, expected a positive integer", {
         received: directValue,
       });
     }
@@ -112,13 +70,13 @@ export async function resolveOid(client, args) {
 
   const bvid = getBvid(args);
   if (!bvid) {
-    fail("Missing required option: one of --oid, --aid, --bvid, --url");
+    throw createCliError("Missing required option: one of --oid, --aid, --bvid, --url");
   }
 
   const info = await client.video.info({ bvid });
   const oid = Number(info?.aid);
   if (!Number.isInteger(oid) || oid <= 0) {
-    fail("Failed to resolve oid from bvid", { bvid, info });
+    throw createCliError("Failed to resolve oid from bvid", { bvid, info });
   }
   return oid;
 }

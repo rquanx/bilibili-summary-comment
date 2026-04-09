@@ -1,4 +1,4 @@
-import { fail } from "./bili-comment-utils.mjs";
+import { createCliError } from "./cli-errors.mjs";
 import { extractCoveredPages, normalizeSummaryMarkers, splitSummaryForComments } from "./summary-format.mjs";
 import { markPartsPublished, updateVideoCommentThread } from "./storage.mjs";
 
@@ -81,12 +81,12 @@ export async function postSummaryThread({
 }) {
   const normalizedMessage = normalizeSummaryMarkers(message);
   if (!normalizedMessage) {
-    fail("Comment content is empty");
+    throw createCliError("Comment content is empty");
   }
 
   const chunks = splitSummaryForComments(normalizedMessage, 1000);
   if (chunks.length === 0) {
-    fail("No comment chunks generated from summary");
+    throw createCliError("No comment chunks generated from summary");
   }
 
   let rootRpid = forcedRootRpid ?? existingRootRpid ?? topCommentState.topComment?.rpid ?? null;

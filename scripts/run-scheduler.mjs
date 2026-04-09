@@ -1,5 +1,13 @@
 import cron from "node-cron";
-import { fail, parseArgs, printJson, showUsage } from "./lib/bili-comment-utils.mjs";
+import { resolveSchedulerConfig } from "./lib/app-config.mjs";
+import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
+import {
+  addDatabaseOption,
+  addWorkRootOption,
+  createCliCommand,
+  parseCliArgs,
+  parsePositiveIntegerArg,
+} from "./lib/cli-tools.mjs";
 import {
   getLastAuthUpdateAt,
   loadBiliAuthBundle,
@@ -12,46 +20,28 @@ import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "./lib/s
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/run-scheduler.mjs [--run-on-start]",
-    "  node scripts/run-scheduler.mjs --once summary",
-    "",
-    "Options:",
-    "  --cookie-file             Optional. Cookie file path. Default: cookie.txt or BILI_COOKIE_FILE",
-    "  --auth-file               Optional. TV auth file path. Default:bili-auth.json or BILI_AUTH_FILE",
-    "  --summary-users           Optional. Comma-separated Bilibili space URLs or user ids. Default: SUMMARY_USERS",
-    "  --summary-since-hours     Optional. Recent upload window. Default: 24",
-    "  --refresh-days            Optional. Refresh auth when older than this many days. Default: 30",
-    "  --cleanup-days            Optional. Remove work dirs older than this many days. Default: 2",
-    "  --db                      Optional. SQLite path. Default: work/pipeline.sqlite3",
-    "  --work-root               Optional. Work root. Default: work",
-    "  --timezone                Optional. Cron timezone. Default: system timezone",
-    "  --run-on-start            Optional. Run due tasks once before entering the scheduler loop.",
-    "  --once                    Optional. Run one task and exit: refresh | summary | cleanup | all",
-    "  --help                    Show this help.",
-  ]);
-}
+const command = addWorkRootOption(
+  addDatabaseOption(
+    createCliCommand({
+      name: "run-scheduler",
+      description: "Run the recurring refresh, summary, and cleanup scheduler.",
+    })
+      .option("--cookie-file <path>", "Optional. Cookie file path.")
+      .option("--auth-file <path>", "Optional. TV auth file path.")
+      .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
+      .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
+      .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
+      .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
+      .option("--timezone <timezone>", "Optional. Cron timezone.")
+      .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | cleanup | all."),
+  ),
+);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
-
-  const config = {
-    cookieFile: args["cookie-file"] ?? process.env.BILI_COOKIE_FILE ?? "cookie.txt",
-    authFile: resolveBiliAuthFile(args["auth-file"]),
-    summaryUsers: args["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
-    summarySinceHours: Number(args["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24),
-    refreshDays: Number(args["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30),
-    cleanupDays: Number(args["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2),
-    dbPath: args.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
-    workRoot: args["work-root"] ?? process.env.WORK_ROOT ?? "work",
-    timezone: args.timezone ?? process.env.CRON_TIMEZONE ?? undefined,
-  };
+  const args = parseCliArgs(command);
+  const config = resolveSchedulerConfig(args);
+  config.authFile = resolveBiliAuthFile(config.authFile);
   const resolvedCookieFile = resolveBiliCookieFile(config.cookieFile);
   const runningTasks = new Set();
 
@@ -255,7 +245,5 @@ function attachSignalHandlers(scheduledTasks, log) {
 }
 
 main().catch((error) => {
-  fail(error?.message ?? "Unknown error", {
-    stack: error?.stack,
-  });
+  printErrorJson(error);
 });

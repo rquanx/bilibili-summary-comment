@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { buildSummarySegmentsFromSrt, formatSummaryTime } from "./srt-utils.mjs";
 import { getRepoRoot } from "./runtime-tools.mjs";
 import { savePartSummary } from "./storage.mjs";
@@ -111,12 +112,12 @@ export async function summarizePartFromSubtitle({
 }
 
 export function resolveSummaryConfig(args = {}) {
-  return {
+  return summaryConfigSchema.parse({
     model: args.model ?? process.env.SUMMARY_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
     apiKey: args["api-key"] ?? process.env.SUMMARY_API_KEY ?? process.env.OPENAI_API_KEY ?? "",
     apiBaseUrl: normalizeApiBaseUrl(args["api-base-url"] ?? process.env.SUMMARY_API_BASE_URL ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"),
     apiFormat: normalizeApiFormat(args["api-format"] ?? process.env.SUMMARY_API_FORMAT ?? process.env.OPENAI_API_FORMAT ?? "auto"),
-  };
+  });
 }
 
 export async function requestSummary({ pageNo, partTitle, durationSec, subtitleText, segments, model, apiKey, apiBaseUrl, apiFormat }) {
@@ -138,6 +139,7 @@ export async function requestSummary({ pageNo, partTitle, durationSec, subtitleT
     '9. 不要大段复述原字幕，不要写空泛提纲，不要只写“闲聊”“互动”“继续聊天”这种无法帮助定位的词。',
     '10. 字幕有重复、口癖、语病或 ASR 误识别时，可以整理后再表达；如果人名、歌名、梗名听不准，就改写成保守但通顺的说法。',
     '11. 尽量让每一行一眼能扫懂，适合粉丝快速判断“这一段值不值得回看”。',
+    '12. 每次总结都要二次核对是否有理解错误、作假、误判等问题。',
   ].join('\\n')
 
   const segmentPayload =
@@ -399,6 +401,13 @@ function normalizeApiFormat(value) {
   }
   return 'auto'
 }
+
+const summaryConfigSchema = z.object({
+  model: z.string().trim().min(1),
+  apiKey: z.string(),
+  apiBaseUrl: z.string().trim().url(),
+  apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
+});
 
 function trimTrailingEmptyLines(lines) {
   const result = [...lines]

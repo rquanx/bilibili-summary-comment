@@ -2,12 +2,19 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import {
   createClient,
-  fail,
-  parseArgs,
+  printErrorJson,
   printJson,
   readCookie,
-  showUsage,
 } from "./lib/bili-comment-utils.mjs";
+import { createCliError } from "./lib/cli-errors.mjs";
+import {
+  addCookieOptions,
+  addDatabaseOption,
+  addVideoIdentityOptions,
+  createCliCommand,
+  parseCliArgs,
+  requireNonEmptyString,
+} from "./lib/cli-tools.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { groupSummaryBlocksByPage, normalizeSummaryMarkers } from "./lib/summary-format.mjs";
 import { openDatabase, savePartSummary } from "./lib/storage.mjs";
@@ -15,32 +22,22 @@ import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./lib/video-state.mjs
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/import-summary-file.mjs --cookie-file cookie.txt --bvid BVxxxx --summary-file work/BVxxxx/summary.md",
-    "",
-    "Options:",
-    "  --cookie / --cookie-file   Required. Bilibili cookie string or cookie file path.",
-    "  --oid / --aid              Optional. Video aid.",
-    "  --bvid / --url             Optional. Video bvid or url.",
-    "  --summary-file             Required. Summary markdown/text path.",
-    "  --db                       Optional. SQLite path. Default: work/pipeline.sqlite3",
-    "  --help                     Show this help.",
-  ]);
-}
+const command = addDatabaseOption(
+  addVideoIdentityOptions(
+    addCookieOptions(
+      createCliCommand({
+        name: "import-summary-file",
+        description: "Import summary blocks from a local summary file into SQLite.",
+      })
+        .option("--summary-file <path>", "Required. Summary markdown/text path."),
+      { required: true },
+    ),
+  ),
+);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
-
-  const summaryFile = args["summary-file"];
-  if (typeof summaryFile !== "string" || !summaryFile.trim()) {
-    fail("Missing required option: --summary-file");
-  }
+  const args = parseCliArgs(command);
+  const summaryFile = requireNonEmptyString(args["summary-file"], "--summary-file");
 
   const cookie = readCookie(args);
   const client = createClient(cookie);
@@ -51,7 +48,7 @@ async function main() {
   const summaryText = normalizeSummaryMarkers(fs.readFileSync(summaryFile, "utf8"));
   const pageGroups = groupSummaryBlocksByPage(summaryText);
   if (pageGroups.length === 0) {
-    fail("No page markers found in summary file", { summaryFile });
+    throw createCliError("No page markers found in summary file", { summaryFile });
   }
 
   const savedPages = [];
@@ -81,10 +78,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  printJson({
-    ok: false,
-    message: error?.message ?? "Unknown error",
-    stack: error?.stack,
-  });
-  process.exitCode = 1;
+  printErrorJson(error);
 });

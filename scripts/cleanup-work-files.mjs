@@ -1,33 +1,35 @@
-import { fail, parseArgs, printJson, showUsage } from "./lib/bili-comment-utils.mjs";
+import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
+import { resolveCleanupConfig } from "./lib/app-config.mjs";
+import {
+  addDatabaseOption,
+  addWorkRootOption,
+  createCliCommand,
+  parseCliArgs,
+  parsePositiveIntegerArg,
+} from "./lib/cli-tools.mjs";
 import { cleanupOldWorkDirectories } from "./lib/scheduler-tasks.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/cleanup-work-files.mjs",
-    "",
-    "Options:",
-    "  --db                      Optional. SQLite path. Default: work/pipeline.sqlite3",
-    "  --work-root               Optional. Work root. Default: work",
-    "  --cleanup-days            Optional. Remove files older than this many days. Default: 2",
-    "  --help                    Show this help.",
-  ]);
-}
+const command = addWorkRootOption(
+  addDatabaseOption(
+    createCliCommand({
+      name: "cleanup-work-files",
+      description: "Remove stale work directories for old videos.",
+    }),
+  ),
+)
+  .option("--cleanup-days <days>", "Optional. Remove files older than this many days.", parsePositiveIntegerArg);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
+  const config = resolveCleanupConfig(args);
 
   const result = await cleanupOldWorkDirectories({
-    dbPath: args.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
-    workRoot: args["work-root"] ?? process.env.WORK_ROOT ?? "work",
-    olderThanDays: Number(args["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2),
+    dbPath: config.dbPath,
+    workRoot: config.workRoot,
+    olderThanDays: config.olderThanDays,
     onLog(message) {
       process.stderr.write(`[cleanup-work] ${message}\n`);
     },
@@ -44,7 +46,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  fail(error?.message ?? "Unknown error", {
-    stack: error?.stack,
-  });
+  printErrorJson(error);
 });

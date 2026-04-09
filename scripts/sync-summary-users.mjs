@@ -1,38 +1,39 @@
-import { fail, parseArgs, printJson, showUsage } from "./lib/bili-comment-utils.mjs";
+import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
+import { resolveSummaryUsersConfig } from "./lib/app-config.mjs";
+import {
+  addDatabaseOption,
+  addWorkRootOption,
+  createCliCommand,
+  parseCliArgs,
+  parsePositiveIntegerArg,
+} from "./lib/cli-tools.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { syncSummaryUsersRecentVideos } from "./lib/scheduler-tasks.mjs";
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/sync-summary-users.mjs --cookie-file cookie.txt",
-    "  node scripts/sync-summary-users.mjs --cookie-file cookie.txt --summary-users \"https://space.bilibili.com/1,https://space.bilibili.com/2\"",
-    "",
-    "Options:",
-    "  --cookie-file             Optional. Cookie file path. Default: cookie.txt or BILI_COOKIE_FILE",
-    "  --summary-users           Optional. Comma-separated Bilibili space URLs or user ids. Default: SUMMARY_USERS",
-    "  --summary-since-hours     Optional. How many recent hours to scan. Default: 24",
-    "  --db                      Optional. SQLite path. Default: work/pipeline.sqlite3",
-    "  --work-root               Optional. Work root. Default: work",
-    "  --help                    Show this help.",
-  ]);
-}
+const command = addWorkRootOption(
+  addDatabaseOption(
+    createCliCommand({
+      name: "sync-summary-users",
+      description: "Scan recent uploads from configured users and run the pipeline.",
+    })
+      .option("--cookie-file <path>", "Optional. Cookie file path.")
+      .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
+      .option("--summary-since-hours <hours>", "Optional. How many recent hours to scan.", parsePositiveIntegerArg),
+  ),
+);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
+  const config = resolveSummaryUsersConfig(args);
 
   const result = await syncSummaryUsersRecentVideos({
-    summaryUsers: args["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
-    cookieFile: args["cookie-file"] ?? process.env.BILI_COOKIE_FILE ?? "cookie.txt",
-    sinceHours: Number(args["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24),
-    dbPath: args.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
-    workRoot: args["work-root"] ?? process.env.WORK_ROOT ?? "work",
+    summaryUsers: config.summaryUsers,
+    cookieFile: config.cookieFile,
+    sinceHours: config.sinceHours,
+    dbPath: config.dbPath,
+    workRoot: config.workRoot,
     onLog(message) {
       process.stderr.write(`[sync-summary-users] ${message}\n`);
     },
@@ -61,7 +62,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  fail(error?.message ?? "Unknown error", {
-    stack: error?.stack,
-  });
+  printErrorJson(error);
 });

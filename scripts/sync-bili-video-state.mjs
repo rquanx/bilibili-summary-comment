@@ -1,37 +1,36 @@
 import {
   createClient,
-  parseArgs,
+  printErrorJson,
   printJson,
   readCookie,
-  showUsage,
 } from "./lib/bili-comment-utils.mjs";
+import {
+  addCookieOptions,
+  addDatabaseOption,
+  addVideoIdentityOptions,
+  createCliCommand,
+  parseCliArgs,
+} from "./lib/cli-tools.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 import { openDatabase } from "./lib/storage.mjs";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./lib/video-state.mjs";
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/sync-bili-video-state.mjs --cookie-file cookie.txt --bvid BVxxxx",
-    "  node scripts/sync-bili-video-state.mjs --cookie-file cookie.txt --url https://www.bilibili.com/video/BVxxxx",
-    "",
-    "Options:",
-    "  --cookie / --cookie-file   Required. Bilibili cookie string or cookie file path.",
-    "  --oid / --aid              Optional. Video aid.",
-    "  --bvid / --url             Optional. Video bvid or url.",
-    "  --db                       Optional. SQLite path. Default: work/pipeline.sqlite3",
-    "  --help                     Show this help.",
-  ]);
-}
+const command = addDatabaseOption(
+  addVideoIdentityOptions(
+    addCookieOptions(
+      createCliCommand({
+        name: "sync-bili-video-state",
+        description: "Sync video and part metadata from Bilibili into SQLite.",
+      }),
+      { required: true },
+    ),
+  ),
+);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
 
   const cookie = readCookie(args);
   const client = createClient(cookie);
@@ -68,10 +67,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  printJson({
-    ok: false,
-    message: error?.message ?? "Unknown error",
-    stack: error?.stack,
-  });
-  process.exitCode = 1;
+  printErrorJson(error);
 });

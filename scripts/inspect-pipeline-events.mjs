@@ -1,27 +1,25 @@
-import { fail, parseArgs, printJson, showUsage } from "./lib/bili-comment-utils.mjs";
+import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
+import {
+  addDatabaseOption,
+  createCliCommand,
+  parseCliArgs,
+  parsePositiveIntegerArg,
+} from "./lib/cli-tools.mjs";
 import { listPipelineEvents, openDatabase } from "./lib/storage.mjs";
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/inspect-pipeline-events.mjs [--bvid BVxxxx]",
-    "",
-    "Options:",
-    "  --db           Optional. SQLite path. Default: work/pipeline.sqlite3",
-    "  --bvid         Optional. Filter by Bilibili BV id.",
-    "  --since-hours  Optional. Only show events newer than this many hours. Default: 72",
-    "  --limit        Optional. Max event rows to inspect. Default: 200",
-    "  --json         Optional. Print JSON instead of text report.",
-    "  --help         Show this help.",
-  ]);
-}
+const command = addDatabaseOption(
+  createCliCommand({
+    name: "inspect-pipeline-events",
+    description: "Inspect recent pipeline events from SQLite.",
+  })
+    .option("--bvid <bvid>", "Optional. Filter by Bilibili BV id.")
+    .option("--since-hours <hours>", "Optional. Only show recent events newer than this many hours.", parsePositiveIntegerArg)
+    .option("--limit <count>", "Optional. Max event rows to inspect.", parsePositiveIntegerArg)
+    .option("--json", "Optional. Print JSON instead of text report."),
+);
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
 
   const dbPath = args.db ?? "work/pipeline.sqlite3";
   const db = openDatabase(dbPath);
@@ -259,7 +257,5 @@ function hasPageNo(value) {
 }
 
 main().catch((error) => {
-  fail(error?.message ?? "Unknown error", {
-    stack: error?.stack,
-  });
+  printErrorJson(error);
 });

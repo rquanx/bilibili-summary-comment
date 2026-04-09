@@ -1,35 +1,26 @@
-import { fail, parseArgs, printJson, showUsage } from "./lib/bili-comment-utils.mjs";
+import { printErrorJson, printJson } from "./lib/bili-comment-utils.mjs";
 import {
   extractBiliAuthState,
   refreshBiliCookie,
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "./lib/bili-auth.mjs";
+import { createCliCommand, parseCliArgs } from "./lib/cli-tools.mjs";
 import { loadDotEnvIfPresent } from "./lib/runtime-tools.mjs";
 
 loadDotEnvIfPresent();
 
-function usage() {
-  showUsage([
-    "Usage:",
-    "  node scripts/refresh-bili-cookie.mjs [--auth-file bili-auth.json] [--cookie-file cookie.txt]",
-    "  node scripts/refresh-bili-cookie.mjs --access-token <token> --refresh-token <token>",
-    "",
-    "Options:",
-    "  --auth-file               Optional. TV login payload json path. Default: bili-auth.json",
-    "  --cookie-file             Optional. Target cookie text file path. Default: cookie.txt",
-    "  --access-token            Optional. Override access_token from CLI.",
-    "  --refresh-token           Optional. Override refresh_token from CLI.",
-    "  --help                    Show this help.",
-  ]);
-}
+const command = createCliCommand({
+  name: "refresh-bili-cookie",
+  description: "Refresh the persisted Bilibili web cookie from TV auth credentials.",
+})
+  .option("--auth-file <path>", "Optional. TV login payload JSON path.")
+  .option("--cookie-file <path>", "Optional. Target cookie text file path.")
+  .option("--access-token <token>", "Optional. Override access token from CLI.")
+  .option("--refresh-token <token>", "Optional. Override refresh token from CLI.");
 
 async function main() {
-  const args = parseArgs();
-  if (args.help) {
-    usage();
-    return;
-  }
+  const args = parseCliArgs(command);
 
   const authFile = resolveBiliAuthFile(args["auth-file"]);
   const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
@@ -52,7 +43,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  fail(error?.message ?? "Unknown error", {
-    stack: error?.stack,
-  });
+  printErrorJson(error);
 });
