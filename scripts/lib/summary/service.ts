@@ -56,7 +56,9 @@ export async function summarizePartFromSubtitle({
       apiFormat,
     });
 
-    const normalizedSummary = normalizeSummaryOutput(pageSummary, pageNo);
+    const normalizedSummary = normalizeSummaryOutput(pageSummary, pageNo, {
+      subtitleText,
+    });
     const normalized = `${normalizedSummary}\n`;
     const summaryHash = createHash("sha1").update(normalized).digest("hex");
     const saved = savePartSummary(db, videoId, pageNo, {

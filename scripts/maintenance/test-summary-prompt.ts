@@ -83,7 +83,9 @@ async function runSample({ sampleName, pageNo, candidate, outputDir, config, wor
     apiFormat: config.apiFormat,
   });
 
-  const normalizedSummary = normalizeSummaryOutput(rawSummary, pageNo);
+  const normalizedSummary = normalizeSummaryOutput(rawSummary, pageNo, {
+    subtitleText,
+  });
   const promptPath = path.join(outputDir, `${sampleName}-prompt.md`);
   const requestPath = path.join(outputDir, `${sampleName}-request.json`);
   const summaryPath = path.join(outputDir, `${sampleName}-summary.md`);

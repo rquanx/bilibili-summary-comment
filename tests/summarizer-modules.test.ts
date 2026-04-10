@@ -92,3 +92,32 @@ test("normalizeSummaryOutput merges same-page blocks into one block", () => {
 
   assert.equal(normalized, "<1P>\n00:01 first\n\n00:20 second");
 });
+
+test("normalizeSummaryOutput removes timestamps from single-line summaries", () => {
+  const normalized = normalizeSummaryOutput("<3P> 00:00 主播撒娇质问哥哥不想跟我玩吗", 3);
+
+  assert.equal(normalized, "<3P> 主播撒娇质问哥哥不想跟我玩吗");
+});
+
+test("normalizeSummaryOutput aligns timestamped lines to subtitle cue starts", () => {
+  const subtitleText = [
+    "1",
+    "00:00:02,000 --> 00:00:04,000",
+    "开场",
+    "",
+    "2",
+    "00:00:08,600 --> 00:00:11,000",
+    "开始连麦",
+    "",
+    "3",
+    "00:00:16,100 --> 00:00:18,000",
+    "开始唱歌",
+    "",
+  ].join("\n");
+
+  const normalized = normalizeSummaryOutput("<1P>\n00:10 开始连麦\n00:18 开始唱歌", 1, {
+    subtitleText,
+  });
+
+  assert.equal(normalized, "<1P>\n00:08 开始连麦\n00:16 开始唱歌");
+});
