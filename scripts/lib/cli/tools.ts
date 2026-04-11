@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import type { Command as CommanderCommand } from "commander";
 import { z } from "zod";
+import { attachVideoContextToError } from "../bili/video-url";
 import { errorToJson } from "./errors";
 import { loadDotEnvIfPresent } from "../shared/runtime-tools";
 
@@ -93,18 +94,24 @@ export async function runCli<TArgs extends CliArgs = CliArgs, TResult = unknown>
   printFn = defaultPrintJson,
   onError = defaultCliErrorHandler,
 }: RunCliOptions<TArgs, TResult>): Promise<TResult | undefined> {
+  let parsedArgs: TArgs | null = null;
   try {
     if (loadEnv) {
       await loadEnvFn();
     }
 
     const args = parseCliArgs(command, argv) as TArgs;
+    parsedArgs = args;
     const result = await handler(args);
     if (printResult && result !== undefined) {
       await printFn(result);
     }
     return result;
   } catch (error) {
+    attachVideoContextToError(error, {
+      bvid: parsedArgs?.bvid ?? null,
+      aid: parsedArgs?.aid ?? parsedArgs?.oid ?? null,
+    });
     return await onError(error);
   }
 }

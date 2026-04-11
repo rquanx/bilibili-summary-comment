@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { insertPipelineEvent } from "../db/index";
+import { formatBiliVideoUrlSuffix } from "../bili/video-url";
 import type { Db, PipelineEventInput, PipelineEventLogger, VideoRecord } from "../db/index";
 
 export function createPipelineEventLogger({
@@ -31,7 +32,8 @@ export function createPipelineEventLogger({
         const action = `${String(payload.scope ?? "pipeline")}/${String(payload.action ?? "event")}`;
         const message = String(payload.message ?? "").trim();
         const suffix = message ? `: ${message}` : "";
-        console.warn(`Skipping pipeline event log because the database is locked (${action}${suffix})`);
+        const videoSuffix = formatBiliVideoUrlSuffix({ bvid: sharedContext.bvid });
+        console.warn(`Skipping pipeline event log because the database is locked (${action}${suffix})${videoSuffix}`);
         return null;
       }
 

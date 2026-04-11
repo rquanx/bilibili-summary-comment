@@ -4,6 +4,7 @@ import {
   printJson,
   readCookie,
 } from "../bili/comment-utils";
+import { attachVideoContextToError } from "../bili/video-url";
 import { errorToJson, extractErrorDetails } from "../cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
@@ -79,98 +80,110 @@ export async function runVideoPipeline(
     progress.log(`Publish thread marked for rebuild: ${state.video.publish_rebuild_reason || "structural-part-change"}`);
   }
 
-  const generation = await runGenerationStage({
-    client,
-    db,
-    video: state.video,
-    cookie,
-    cookieFile: args["cookie-file"] ?? null,
-    workRoot,
-    venvPath,
-    asr,
-    summaryConfig,
-    forceSummary,
-    eventLogger,
-    progress,
-  });
-  let publishResult = null;
+  try {
+    const generation = await runGenerationStage({
+      client,
+      db,
+      video: state.video,
+      cookie,
+      cookieFile: args["cookie-file"] ?? null,
+      workRoot,
+      venvPath,
+      asr,
+      summaryConfig,
+      forceSummary,
+      eventLogger,
+      progress,
+    });
+    let publishResult = null;
 
-  if (args.publish) {
-    try {
-      publishResult = await runPublishStage({
-        client,
-        db,
-        video: state.video,
-        artifacts: generation.artifacts,
-        oid: state.video.aid,
-        type: getType(args),
-        workRoot,
-        forcedRootRpid: null,
-        eventLogger,
-        progress,
-      });
-    } catch (error) {
+    if (args.publish) {
+      try {
+        publishResult = await runPublishStage({
+          client,
+          db,
+          video: state.video,
+          artifacts: generation.artifacts,
+          oid: state.video.aid,
+          type: getType(args),
+          workRoot,
+          forcedRootRpid: null,
+          eventLogger,
+          progress,
+        });
+      } catch (error) {
+        attachVideoContextToError(error, {
+          bvid: state.video.bvid,
+          aid: state.video.aid,
+        });
+        eventLogger.log({
+          scope: "publish",
+          action: "comment-thread",
+          status: "failed",
+          message: error?.message ?? "Unknown publish error",
+          details: {
+            publishMode: needsRebuildPublish ? "rebuild" : "append",
+            ...extractErrorDetails(error),
+          },
+        });
+        throw error;
+      }
+    } else {
       eventLogger.log({
         scope: "publish",
         action: "comment-thread",
-        status: "failed",
-        message: error?.message ?? "Unknown publish error",
-        details: {
-          publishMode: needsRebuildPublish ? "rebuild" : "append",
-          ...extractErrorDetails(error),
-        },
+        status: "skipped",
+        message: "Publish step was not requested",
       });
-      throw error;
     }
-  } else {
+
+    progress.log(`Pipeline complete, generated ${generation.summaryResults.length} summaries`);
+    const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
     eventLogger.log({
-      scope: "publish",
-      action: "comment-thread",
-      status: "skipped",
-      message: "Publish step was not requested",
+      scope: "pipeline",
+      action: "run",
+      status: "succeeded",
+      message: `Pipeline completed for ${state.video.bvid}`,
+      details: {
+        generatedPages: generation.summaryResults.map((item) => item.pageNo),
+        publishRequested: Boolean(args.publish),
+        publishNeedsRebuild: finalPublishNeedsRebuild,
+      },
     });
-  }
 
-  progress.log(`Pipeline complete, generated ${generation.summaryResults.length} summaries`);
-  const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
-  eventLogger.log({
-    scope: "pipeline",
-    action: "run",
-    status: "succeeded",
-    message: `Pipeline completed for ${state.video.bvid}`,
-    details: {
+    return {
+      ok: true,
+      dbPath,
+      video: {
+        id: state.video.id,
+        bvid: state.video.bvid,
+        aid: state.video.aid,
+        title: state.video.title,
+        pageCount: state.video.page_count,
+      },
       generatedPages: generation.summaryResults.map((item) => item.pageNo),
-      publishRequested: Boolean(args.publish),
+      changeSet: state.changeSet,
       publishNeedsRebuild: finalPublishNeedsRebuild,
-    },
-  });
-
-  return {
-    ok: true,
-    dbPath,
-    video: {
-      id: state.video.id,
+      publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,
+      subtitleResults: generation.subtitleResults,
+      summaryResults: generation.summaryResults,
+      reusedSummaryFrom: generation.reusedSummarySource
+        ? {
+            bvid: generation.reusedSummarySource.video.bvid,
+            title: generation.reusedSummarySource.video.title,
+            reusedPages: generation.reusedSummarySource.reusedPages,
+          }
+        : null,
+      artifacts: generation.artifacts,
+      publishResult,
+    };
+  } catch (error) {
+    attachVideoContextToError(error, {
       bvid: state.video.bvid,
       aid: state.video.aid,
-      title: state.video.title,
-      pageCount: state.video.page_count,
-    },
-    generatedPages: generation.summaryResults.map((item) => item.pageNo),
-    changeSet: state.changeSet,
-    publishNeedsRebuild: finalPublishNeedsRebuild,
-    publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,
-    subtitleResults: generation.subtitleResults,
-    summaryResults: generation.summaryResults,
-    reusedSummaryFrom: generation.reusedSummarySource
-      ? {
-          bvid: generation.reusedSummarySource.video.bvid,
-          title: generation.reusedSummarySource.video.title,
-          reusedPages: generation.reusedSummarySource.reusedPages,
-        }
-      : null,
-    artifacts: generation.artifacts,
-    publishResult,
-  };
+    });
+    throw error;
+  }
 }
 
 export function printPipelineFailure(error: CommandError | Error | unknown, activeEventLogger: PipelineEventLogger | null = null) {

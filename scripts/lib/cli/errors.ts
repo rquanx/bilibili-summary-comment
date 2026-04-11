@@ -1,3 +1,5 @@
+import { buildBiliVideoUrl } from "../bili/video-url";
+
 export type CliErrorDetails = Record<string, unknown>;
 
 export interface ErrorJson extends Record<string, unknown> {
@@ -14,6 +16,10 @@ interface ErrorLike {
   path?: unknown;
   method?: unknown;
   rawResponse?: unknown;
+  bvid?: unknown;
+  aid?: unknown;
+  pageNo?: unknown;
+  videoUrl?: unknown;
 }
 
 export class CliError extends Error {
@@ -83,6 +89,16 @@ export function extractErrorDetails(error: unknown): CliErrorDetails {
     details.responseData = responseData;
   }
 
+  const videoUrl = normalizeVideoUrl({
+    videoUrl: errorLike.videoUrl ?? details.videoUrl,
+    bvid: errorLike.bvid ?? details.bvid,
+    aid: errorLike.aid ?? details.aid,
+    pageNo: errorLike.pageNo ?? details.pageNo,
+  });
+  if (videoUrl) {
+    details.videoUrl = videoUrl;
+  }
+
   return details;
 }
 
@@ -103,6 +119,25 @@ function normalizeResponseData(rawResponse: unknown): unknown {
 
   const responseLike = rawResponse as { data?: unknown };
   return isJsonSafeValue(responseLike.data) ? responseLike.data : undefined;
+}
+
+function normalizeVideoUrl({
+  videoUrl,
+  bvid,
+  aid,
+  pageNo,
+}: {
+  videoUrl?: unknown;
+  bvid?: unknown;
+  aid?: unknown;
+  pageNo?: unknown;
+}): string | undefined {
+  const directUrl = String(videoUrl ?? "").trim();
+  if (directUrl) {
+    return directUrl;
+  }
+
+  return buildBiliVideoUrl({ bvid, aid, pageNo }) ?? undefined;
 }
 
 function isJsonSafeValue(value: unknown): boolean {

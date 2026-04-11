@@ -432,6 +432,30 @@ test("runPipelineForBvid launches the compiled JavaScript entry directly when di
   ]);
 });
 
+test("runPipelineForBvid appends the video link to command failures", async () => {
+  await assert.rejects(
+    () =>
+      runPipelineForBvid({
+        cookieFile: "cookie.txt",
+        dbPath: "work/pipeline.sqlite3",
+        workRoot: "work",
+        bvid: "BV1FAILURL",
+        publish: true,
+        repoRoot: "D:\\repo",
+        async runCommandImpl() {
+          const error = new Error("child failed") as Error & { stdout?: string };
+          error.stdout = JSON.stringify({
+            ok: false,
+            message: "Publish failed",
+            videoUrl: "https://www.bilibili.com/video/BV1FAILURL",
+          });
+          throw error;
+        },
+      }),
+    /https:\/\/www\.bilibili\.com\/video\/BV1FAILURL/u,
+  );
+});
+
 test("scheduler-tasks barrel re-exports split modules", () => {
   assert.equal(schedulerTasks.parseSummaryUsers, parseSummaryUsers);
   assert.equal(schedulerTasks.runPipelinesWithConcurrency, runPipelinesWithConcurrency);

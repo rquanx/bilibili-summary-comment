@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { buildBiliVideoUrl } from "../bili/video-url";
 import { getRepoRoot, runCommand } from "../shared/runtime-tools";
 import type { CommandResult, RunCommandOptions } from "../shared/runtime-tools";
 
@@ -44,10 +45,16 @@ export async function runPipelineForBvid({
   if (publish) {
     args.push("--publish");
   }
-  const result = await runCommandImpl(process.execPath, args, {
-    streamOutput: true,
-    outputStream: process.stderr,
-  });
+  let result;
+  try {
+    result = await runCommandImpl(process.execPath, args, {
+      streamOutput: true,
+      outputStream: process.stderr,
+    });
+  } catch (error) {
+    appendVideoLinkToCommandError(error, bvid);
+    throw error;
+  }
 
   try {
     return JSON.parse(result.stdout);
@@ -88,4 +95,36 @@ function buildNodeScriptArgs(scriptPath: string): string[] {
   }
 
   return [scriptPath];
+}
+
+function appendVideoLinkToCommandError(error: unknown, bvid: string) {
+  if (!error || typeof error !== "object") {
+    return;
+  }
+
+  const candidate = error as { message?: unknown; stdout?: unknown };
+  const parsedPayload = parseJsonObject(candidate.stdout);
+  const videoUrl = String(parsedPayload?.videoUrl ?? buildBiliVideoUrl({ bvid }) ?? "").trim();
+  if (!videoUrl) {
+    return;
+  }
+
+  const baseMessage = String(candidate.message ?? "Unknown error").trim() || "Unknown error";
+  if (!baseMessage.includes(videoUrl)) {
+    candidate.message = `${baseMessage} | ${videoUrl}`;
+  }
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(normalized);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }

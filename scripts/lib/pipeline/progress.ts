@@ -1,3 +1,5 @@
+import { formatBiliVideoUrlSuffix } from "../bili/video-url";
+
 export function createProgressReporter(video, totalParts) {
   const outputStream = process.stderr;
   const safeTotalParts = Math.max(totalParts, 1);
@@ -47,6 +49,10 @@ function formatPartLabel(pageNo, partTitle) {
 function formatVideoPrefix(video) {
   const bvid = String(video?.bvid ?? "").trim();
   const title = String(video?.title ?? "").trim();
-  const label = [bvid, title].filter(Boolean).join(" | ");
-  return label ? `[${label}]` : "[video]";
+  const videoUrl = formatBiliVideoUrlSuffix({
+    bvid,
+    aid: video?.aid,
+  }).replace(/^ \| /u, "");
+  const labelWithUrl = [bvid, title, videoUrl].filter(Boolean).join(" | ");
+  return labelWithUrl ? `[${labelWithUrl}]` : "[video]";
 }

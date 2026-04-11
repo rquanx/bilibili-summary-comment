@@ -23,6 +23,15 @@ test("errorToJson includes CliError details in the payload", () => {
   assert.match(payload.stack, /CliError: Bad input/);
 });
 
+test("errorToJson derives a videoUrl from video context details", () => {
+  const payload = errorToJson(createCliError("Publish failed", {
+    bvid: "BV1VideoUrl",
+    pageNo: 3,
+  }));
+
+  assert.equal(payload.videoUrl, "https://www.bilibili.com/video/BV1VideoUrl?p=3");
+});
+
 test("errorToJson includes transport details from rich API errors", () => {
   const payload = errorToJson(Object.assign(new Error("啥都木有"), {
     code: -404,
