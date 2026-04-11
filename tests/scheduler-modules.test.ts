@@ -68,6 +68,114 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
   });
 });
 
+test("syncSummaryUsersRecentVideos deduplicates same-user title variants before scheduling", async () => {
+  const logMessages: string[] = [];
+  const scheduledUploads: Array<{ bvid: string; title: string }> = [];
+
+  const result = await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BVDANMU",
+          aid: 1,
+          title: "直播回放 弹幕版",
+          createdAtUnix: 200,
+          createdAt: new Date(200 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BVCLEAN",
+          aid: 2,
+          title: "直播回放 纯净版",
+          createdAtUnix: 100,
+          createdAt: new Date(100 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BVPLAIN",
+          aid: 3,
+          title: "另一个视频",
+          createdAtUnix: 150,
+          createdAt: new Date(150 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    async runPipelinesWithConcurrencyImpl(options) {
+      for (const upload of options.uploads ?? []) {
+        scheduledUploads.push({
+          bvid: String(upload.bvid),
+          title: String(upload.title),
+        });
+      }
+
+      return {
+        runs: [],
+        failures: [],
+      };
+    },
+    onLog(message) {
+      logMessages.push(message);
+    },
+  });
+
+  assert.deepEqual(result.uploads.map((item) => item.bvid), ["BVCLEAN", "BVPLAIN"]);
+  assert.deepEqual(scheduledUploads.map((item) => item.bvid), ["BVCLEAN", "BVPLAIN"]);
+  assert.equal(
+    logMessages.includes(
+      "Skip duplicate variant BVDANMU (直播回放 弹幕版) [user 123] in favor of BVCLEAN (直播回放 纯净版)",
+    ),
+    true,
+  );
+  assert.equal(logMessages.includes("Deduplicated 1 same-user title variants before scheduling"), true);
+});
+
+test("syncSummaryUsersRecentVideos schedules same-user uploads against unique bvid keys", async () => {
+  const observedKeys: string[] = [];
+
+  await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BV1",
+          aid: 1,
+          title: "视频一",
+          createdAtUnix: 100,
+          createdAt: new Date(100 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BV2",
+          aid: 2,
+          title: "视频二",
+          createdAtUnix: 90,
+          createdAt: new Date(90 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    async runPipelinesWithConcurrencyImpl(options) {
+      observedKeys.push(...(options.uploads ?? []).map((upload) => String(options.userKeyForUpload?.(upload))));
+
+      return {
+        runs: [],
+        failures: [],
+      };
+    },
+  });
+
+  assert.deepEqual(observedKeys, ["BV1", "BV2"]);
+});
+
 test("collectRecentUploadsFromUsers skips only-self-visible videos", async () => {
   const logMessages: string[] = [];
   const nowUnix = Math.floor(Date.now() / 1000);

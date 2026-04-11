@@ -22,6 +22,8 @@ export interface CollectedUploadsResult {
   uploads: RecentUpload[];
 }
 
+type UploadTitleVariant = "clean" | "plain" | "danmu";
+
 interface CollectRecentUploadsOptions {
   summaryUsers?: unknown;
   cookieFile?: string;
@@ -130,32 +132,35 @@ export async function syncSummaryUsersRecentVideos({
     sinceHours,
     onLog,
   });
+  const deduplicatedUploads = dedupeRecentUploadsByTitleVariant(collected.uploads, onLog);
+  const effectiveCollected = {
+    ...collected,
+    uploads: deduplicatedUploads,
+  };
 
-  if (collected.summaryUsers.length === 0) {
+  if (effectiveCollected.summaryUsers.length === 0) {
     return {
-      ...collected,
+      ...effectiveCollected,
       runs: [],
       failures: [],
     };
   }
 
-  if (collected.uploads.length === 0) {
+  if (effectiveCollected.uploads.length === 0) {
     onLog("No uploads found within the recent time window");
     return {
-      ...collected,
+      ...effectiveCollected,
       runs: [],
       failures: [],
     };
   }
 
-  onLog(
-    `Running up to ${SUMMARY_PIPELINE_MAX_CONCURRENCY} pipelines concurrently with per-user concurrency capped at 1`,
-  );
+  onLog(`Running up to ${SUMMARY_PIPELINE_MAX_CONCURRENCY} pipelines concurrently after variant deduplication`);
   const { runs, failures } = await runPipelinesWithConcurrencyImpl({
-    uploads: collected.uploads,
+    uploads: effectiveCollected.uploads,
     maxConcurrent: SUMMARY_PIPELINE_MAX_CONCURRENCY,
     userKeyForUpload(upload) {
-      return String(upload.mid ?? "");
+      return String(upload.bvid ?? "");
     },
     async runUpload(upload) {
       onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"}) [user ${upload.mid}]`);
@@ -170,10 +175,127 @@ export async function syncSummaryUsersRecentVideos({
   });
 
   return {
-    ...collected,
+    ...effectiveCollected,
     runs,
     failures,
   };
+}
+
+function dedupeRecentUploadsByTitleVariant(
+  uploads: RecentUpload[],
+  onLog: (message: string) => void = () => {},
+): RecentUpload[] {
+  if (!Array.isArray(uploads) || uploads.length < 2) {
+    return Array.isArray(uploads) ? uploads : [];
+  }
+
+  const uploadsByGroup = new Map<string, Array<{ upload: RecentUpload; index: number }>>();
+  for (const [index, upload] of uploads.entries()) {
+    const normalizedTitle = normalizeUploadTitleVariantKey(upload.title);
+    const groupKey = `${String(upload.mid ?? "")}\n${normalizedTitle || String(upload.bvid ?? "")}`;
+    const bucket = uploadsByGroup.get(groupKey) ?? [];
+    bucket.push({
+      upload,
+      index,
+    });
+    uploadsByGroup.set(groupKey, bucket);
+  }
+
+  const keepBvids = new Set<string>();
+  let skippedCount = 0;
+
+  for (const group of uploadsByGroup.values()) {
+    if (group.length === 1) {
+      const onlyUpload = group[0]?.upload;
+      if (onlyUpload?.bvid) {
+        keepBvids.add(onlyUpload.bvid);
+      }
+      continue;
+    }
+
+    const sortedGroup = [...group].sort(compareUploadPreference);
+    const keeper = sortedGroup[0]?.upload;
+    if (!keeper?.bvid) {
+      continue;
+    }
+
+    keepBvids.add(keeper.bvid);
+    for (const candidate of sortedGroup.slice(1)) {
+      skippedCount += 1;
+      onLog(
+        `Skip duplicate variant ${candidate.upload.bvid} (${candidate.upload.title || "untitled"}) [user ${candidate.upload.mid}] in favor of ${keeper.bvid} (${keeper.title || "untitled"})`,
+      );
+    }
+  }
+
+  if (skippedCount > 0) {
+    onLog(`Deduplicated ${skippedCount} same-user title variants before scheduling`);
+  }
+
+  return uploads.filter((upload) => keepBvids.has(upload.bvid));
+}
+
+function compareUploadPreference(
+  left: { upload: RecentUpload; index: number },
+  right: { upload: RecentUpload; index: number },
+): number {
+  const variantDiff = getUploadTitleVariantPriority(left.upload.title) - getUploadTitleVariantPriority(right.upload.title);
+  if (variantDiff !== 0) {
+    return variantDiff;
+  }
+
+  const createdAtDiff = left.upload.createdAtUnix - right.upload.createdAtUnix;
+  if (createdAtDiff !== 0) {
+    return createdAtDiff;
+  }
+
+  return left.index - right.index;
+}
+
+function getUploadTitleVariantPriority(title: unknown): number {
+  switch (detectUploadTitleVariant(title)) {
+    case "clean":
+      return 0;
+    case "plain":
+      return 1;
+    case "danmu":
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+function detectUploadTitleVariant(title: unknown): UploadTitleVariant {
+  const normalized = normalizeUploadTitle(title);
+  if (CLEAN_TITLE_VARIANT_SUFFIX_PATTERN.test(normalized)) {
+    return "clean";
+  }
+
+  if (DANMU_TITLE_VARIANT_SUFFIX_PATTERN.test(normalized)) {
+    return "danmu";
+  }
+
+  return "plain";
+}
+
+function normalizeUploadTitleVariantKey(title: unknown): string {
+  let normalized = normalizeUploadTitle(title);
+  let previous = "";
+
+  while (normalized && normalized !== previous) {
+    previous = normalized;
+    normalized = normalized.replace(TITLE_VARIANT_SUFFIX_PATTERN, "").trim();
+  }
+
+  return normalized;
+}
+
+function normalizeUploadTitle(title: unknown): string {
+  return String(title ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 }
 
 function isOnlySelfVisibleVideo(video: unknown): boolean {
@@ -184,3 +306,9 @@ function isOnlySelfVisibleVideo(video: unknown): boolean {
   const candidate = video as Record<string, unknown>;
   return candidate.is_self_view === true || Number(candidate.is_only_self ?? 0) === 1;
 }
+
+const TITLE_VARIANT_SUFFIX_PATTERN =
+  /(?:\s*[\[(（【]?\s*(?:纯净版|无弹幕版|无弹幕|弹幕版)\s*[\])）】]?\s*)+$/u;
+const CLEAN_TITLE_VARIANT_SUFFIX_PATTERN =
+  /\s*[\[(（【]?\s*(?:纯净版|无弹幕版|无弹幕)\s*[\])）】]?\s*$/u;
+const DANMU_TITLE_VARIANT_SUFFIX_PATTERN = /\s*[\[(（【]?\s*弹幕版\s*[\])）】]?\s*$/u;
