@@ -1,4 +1,4 @@
-import { createCliError } from "../cli/errors";
+import { createCliError, extractErrorDetails } from "../cli/errors";
 import { extractCoveredPages, normalizeSummaryMarkers, splitSummaryForComments } from "../summary/format";
 import { markPartsPublished, updateVideoCommentThread } from "../db/index";
 
@@ -8,6 +8,7 @@ const sleep = (timeout) =>
   });
 
 const ROOT_TOP_DELAY_MS = 1000;
+const ROOT_TOP_RETRY_DELAY_MS = 2500;
 const REPLY_POST_DELAY_MS = 1500;
 
 const DELETED_COMMENT_PATTERNS = [
@@ -34,6 +35,20 @@ function isDeletedCommentThreadError(error) {
   return messages.some((message) => DELETED_COMMENT_PATTERNS.some((pattern) => message.includes(pattern)));
 }
 
+function isRetryableRootTopError(error) {
+  const messages = getCommentErrorMessages(error);
+  return messages.some((message) => message.includes("啥都木有") || message.includes("稍后"));
+}
+
+function buildCommentWarning({ step, rpid, error }) {
+  return {
+    step,
+    rpid,
+    message: error?.message ?? "Unknown comment error",
+    ...extractErrorDetails(error),
+  };
+}
+
 export function isMissingCommentThreadError(error) {
   return isDeletedCommentThreadError(error);
 }
@@ -58,14 +73,37 @@ async function createRootComment({ client, oid, type, chunk }) {
   });
 
   await sleep(ROOT_TOP_DELAY_MS);
-  await client.reply.top({
-    oid,
-    type,
-    rpid: rootRes.rpid,
-    action: 1,
-  });
+  let topError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await client.reply.top({
+        oid,
+        type,
+        rpid: rootRes.rpid,
+        action: 1,
+      });
+      topError = null;
+      break;
+    } catch (error) {
+      topError = error;
+      if (attempt === 0 && isRetryableRootTopError(error)) {
+        await sleep(ROOT_TOP_RETRY_DELAY_MS);
+        continue;
+      }
+      break;
+    }
+  }
 
-  return rootRes;
+  return {
+    rootRes,
+    topWarning: topError
+      ? buildCommentWarning({
+          step: "top-root-comment",
+          rpid: rootRes.rpid,
+          error: topError,
+        })
+      : null,
+  };
 }
 
 export async function postSummaryThread({
@@ -91,17 +129,21 @@ export async function postSummaryThread({
 
   let rootRpid = forcedRootRpid ?? existingRootRpid ?? topCommentState.topComment?.rpid ?? null;
   const createdComments = [];
+  const warnings = [];
   let recoveredFromDeletedRoot = false;
   let replacedRootCommentRpid = null;
 
   if (!rootRpid) {
     const firstChunk = chunks.shift();
-    const rootRes = await createRootComment({
+    const { rootRes, topWarning } = await createRootComment({
       client,
       oid,
       type,
       chunk: firstChunk,
     });
+    if (topWarning) {
+      warnings.push(topWarning);
+    }
 
     rootRpid = rootRes.rpid;
     createdComments.push(
@@ -150,12 +192,15 @@ export async function postSummaryThread({
       }
     } catch (error) {
       if (createdComments.length === 0 && rootRpid && isDeletedCommentThreadError(error)) {
-        const rootRes = await createRootComment({
+        const { rootRes, topWarning } = await createRootComment({
           client,
           oid,
           type,
           chunk,
         });
+        if (topWarning) {
+          warnings.push(topWarning);
+        }
 
         replacedRootCommentRpid = rootRpid;
         rootRpid = rootRes.rpid;
@@ -193,6 +238,7 @@ export async function postSummaryThread({
     recoveredFromDeletedRoot,
     replacedRootCommentRpid,
     createdComments,
+    warnings,
   };
 }
 

@@ -4,6 +4,7 @@ import {
   printJson,
   readCookie,
 } from "../bili/comment-utils";
+import { errorToJson, extractErrorDetails } from "../cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
 import { createProgressReporter, trimCommandOutput } from "../pipeline/progress";
@@ -116,6 +117,7 @@ export async function runVideoPipeline(
         message: error?.message ?? "Unknown publish error",
         details: {
           publishMode: needsRebuildPublish ? "rebuild" : "append",
+          ...extractErrorDetails(error),
         },
       });
       throw error;
@@ -173,6 +175,7 @@ export async function runVideoPipeline(
 
 export function printPipelineFailure(error: CommandError | Error | unknown, activeEventLogger: PipelineEventLogger | null = null) {
   const commandError = (typeof error === "object" && error !== null ? error : {}) as CommandError;
+  const errorDetails = extractErrorDetails(error);
   if (activeEventLogger) {
     try {
       activeEventLogger.log({
@@ -183,6 +186,7 @@ export function printPipelineFailure(error: CommandError | Error | unknown, acti
         details: {
           stderr: trimCommandOutput(commandError.stderr),
           stdout: trimCommandOutput(commandError.stdout),
+          ...errorDetails,
         },
       });
     } catch (logError) {
@@ -191,10 +195,8 @@ export function printPipelineFailure(error: CommandError | Error | unknown, acti
     }
   }
   printJson({
-    ok: false,
-    message: commandError.message ?? "Unknown error",
+    ...errorToJson(error),
     stderr: trimCommandOutput(commandError.stderr),
     stdout: trimCommandOutput(commandError.stdout),
-    stack: commandError.stack,
   });
 }

@@ -18,6 +18,7 @@ export interface PublishStageResult {
   recoveredFromDeletedRoot?: boolean;
   replacedRootCommentRpid?: number | null;
   createdComments?: Array<Record<string, unknown>>;
+  warnings?: Array<Record<string, unknown>>;
   rebuild?: boolean;
   deletedThread?: { rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean };
   deletedThreads?: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }>;
@@ -161,6 +162,7 @@ export async function runPublishStage({
         rootCommentRpid: result.rootCommentRpid,
         createdComments: result.createdComments?.length ?? 0,
         deletedThreads,
+        warnings: result.warnings ?? [],
       },
     });
     progress?.log(`Rebuild publish complete, sent ${result.createdComments?.length ?? 0} comments`);
@@ -219,6 +221,7 @@ export async function runPublishStage({
       publishMode: "append",
       rootCommentRpid: appended.rootCommentRpid,
       createdComments: appended.createdComments?.length ?? 0,
+      warnings: appended.warnings ?? [],
     },
   });
   progress?.log(`Publish complete, sent ${appended.createdComments?.length ?? 0} comments`);
