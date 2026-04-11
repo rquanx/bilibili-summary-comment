@@ -1,6 +1,18 @@
 import { formatBiliVideoUrlSuffix } from "../bili/video-url";
 
-export function createProgressReporter(video, totalParts, { logger = null, outputStream = process.stderr } = {}) {
+type ProgressOutputStream = Pick<NodeJS.WritableStream, "write">;
+
+export function createProgressReporter(
+  video,
+  totalParts,
+  {
+    logger = null,
+    outputStream = process.stderr,
+  }: {
+    logger?: { createStream?: (details?: Record<string, unknown>) => ProgressOutputStream; progress?: (message: string, details?: Record<string, unknown>) => void } | null;
+    outputStream?: ProgressOutputStream;
+  } = {},
+) {
   const safeTotalParts = Math.max(totalParts, 1);
   const videoPrefix = formatVideoPrefix(video);
   const rawOutputStream = logger?.createStream({
@@ -73,12 +85,11 @@ function formatPartLabel(pageNo, partTitle) {
 }
 
 function formatVideoPrefix(video) {
-  const bvid = String(video?.bvid ?? "").trim();
   const title = String(video?.title ?? "").trim();
   const videoUrl = formatBiliVideoUrlSuffix({
-    bvid,
+    bvid: video?.bvid,
     aid: video?.aid,
   }).replace(/^ \| /u, "");
-  const labelWithUrl = [bvid, title, videoUrl].filter(Boolean).join(" | ");
+  const labelWithUrl = [title, videoUrl].filter(Boolean).join(" | ");
   return labelWithUrl ? `[${labelWithUrl}]` : "[video]";
 }
