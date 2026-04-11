@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot, runCommand } from "../scripts/lib/shared/runtime-tools";
+import {
+  getRepoRoot,
+  runCommand,
+  withSuppressedExperimentalWarning,
+} from "../scripts/lib/shared/runtime-tools";
 
 test("getRepoRoot resolves to the project root", () => {
   const repoRoot = getRepoRoot();
@@ -43,4 +47,28 @@ test("runCommand can stream stdout and stderr to separate destinations", async (
   assert.equal(result.stderr, "stderr-line\n");
   assert.deepEqual(streamedStdout, ["stdout-line\n"]);
   assert.deepEqual(streamedStderr, ["stderr-line\n"]);
+});
+
+test("withSuppressedExperimentalWarning appends the sqlite warning filter", () => {
+  const env = withSuppressedExperimentalWarning({
+    SAMPLE: "value",
+  });
+
+  assert.equal(env.NODE_OPTIONS, "--disable-warning=ExperimentalWarning");
+  assert.equal(env.SAMPLE, "value");
+});
+
+test("withSuppressedExperimentalWarning preserves existing warning settings", () => {
+  const withSpecificFilter = withSuppressedExperimentalWarning({
+    NODE_OPTIONS: "--trace-warnings",
+  });
+  const withNoWarnings = withSuppressedExperimentalWarning({
+    NODE_OPTIONS: "--no-warnings",
+  });
+
+  assert.equal(
+    withSpecificFilter.NODE_OPTIONS,
+    "--trace-warnings --disable-warning=ExperimentalWarning",
+  );
+  assert.equal(withNoWarnings.NODE_OPTIONS, "--no-warnings");
 });

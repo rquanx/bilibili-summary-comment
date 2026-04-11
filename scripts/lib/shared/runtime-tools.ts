@@ -36,6 +36,8 @@ export interface RunVenvModuleOptions extends RunCommandOptions {
   venvPath?: string;
 }
 
+const NODE_EXPERIMENTAL_WARNING_FLAG = "--disable-warning=ExperimentalWarning";
+
 export function getRepoRoot(): string {
   return REPO_ROOT;
 }
@@ -87,6 +89,10 @@ export async function runCommand(command: string, args: string[], options: RunCo
     const stderrStream = options.stderrStream ?? outputStream;
     const logger = options.logger ?? null;
     const logContext = options.logContext ?? {};
+    const childEnv = withSuppressedExperimentalWarning({
+      ...process.env,
+      ...(options.env ?? {}),
+    });
     logger?.debug("Starting command", {
       ...logContext,
       command,
@@ -95,7 +101,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
     });
     const child = spawn(command, args, {
       cwd: options.cwd ?? getRepoRoot(),
-      env: { ...process.env, ...(options.env ?? {}) },
+      env: childEnv,
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
       shell: false,
     });
@@ -171,4 +177,21 @@ export async function runCommand(command: string, args: string[], options: RunCo
       reject(error);
     });
   });
+}
+
+export function withSuppressedExperimentalWarning(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const currentNodeOptions = String(env.NODE_OPTIONS ?? "").trim();
+  if (
+    currentNodeOptions.includes("--no-warnings")
+    || currentNodeOptions.includes(NODE_EXPERIMENTAL_WARNING_FLAG)
+  ) {
+    return env;
+  }
+
+  return {
+    ...env,
+    NODE_OPTIONS: currentNodeOptions
+      ? `${currentNodeOptions} ${NODE_EXPERIMENTAL_WARNING_FLAG}`
+      : NODE_EXPERIMENTAL_WARNING_FLAG,
+  };
 }
