@@ -37,6 +37,8 @@ interface CollectRecentUploadsOptions {
 interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOptions {
   dbPath?: string;
   workRoot?: string;
+  logDay?: string | null;
+  logGroup?: string | null;
   publish?: boolean;
   maxConcurrent?: number;
   logger?: FileLogger | null;
@@ -122,6 +124,8 @@ export async function syncSummaryUsersRecentVideos({
   cookieFile = "cookie.txt",
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
+  logDay = null,
+  logGroup = null,
   sinceHours = 24,
   publish = true,
   maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
@@ -175,6 +179,8 @@ export async function syncSummaryUsersRecentVideos({
         dbPath,
         workRoot,
         bvid: upload.bvid,
+        logDay,
+        logGroup,
         publish,
         logger: logger?.child({
           bvid: upload.bvid,

@@ -20,6 +20,8 @@ import type { CommandError } from "../shared/runtime-tools";
 interface VideoPipelineArgs extends Record<string, unknown> {
   db?: string;
   ["work-root"]?: string;
+  ["log-day"]?: string;
+  ["log-group"]?: string;
   ["venv-path"]?: string;
   asr?: string;
   ["cookie-file"]?: string;
@@ -35,6 +37,8 @@ export async function runVideoPipeline(
   const client = createClient(cookie);
   const dbPath = args.db ?? "work/pipeline.sqlite3";
   const workRoot = args["work-root"] ?? "work";
+  const logDay = args["log-day"] ?? process.env.PIPELINE_LOG_DAY ?? null;
+  const logGroup = args["log-group"] ?? process.env.PIPELINE_LOG_GROUP ?? null;
   const venvPath = args["venv-path"] ?? ".3.11";
   const asr = args.asr ?? "faster-whisper";
   const db = openDatabase(dbPath);
@@ -45,6 +49,8 @@ export async function runVideoPipeline(
     workRoot,
     name: "pipeline",
     label: state.video.bvid,
+    day: typeof logDay === "string" ? logDay : null,
+    group: typeof logGroup === "string" ? logGroup : null,
     context: {
       scope: "pipeline",
       bvid: state.video.bvid,

@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createCompositeWriteStream, createWorkFileLogger } from "../scripts/lib/shared/logger";
+import {
+  createCompositeWriteStream,
+  createLogGroupName,
+  createWorkFileLogger,
+  formatLogDay,
+} from "../scripts/lib/shared/logger";
 
 test("createWorkFileLogger writes structured jsonl entries", async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-logger-"));
@@ -40,6 +45,31 @@ test("createWorkFileLogger writes structured jsonl entries", async () => {
     assert.equal(lines[1].message, "stream-output");
     assert.equal(lines[1].context.source, "stdout");
     assert.equal(lines[1].context.chunk, "child output");
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("createWorkFileLogger writes grouped logs under the requested day directory", async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-logger-group-"));
+  const startedAt = new Date("2026-04-11T17:24:11.706Z");
+  const logDay = formatLogDay(startedAt);
+  const logGroup = createLogGroupName("summary", "scheduler", startedAt);
+
+  try {
+    const logger = createWorkFileLogger({
+      repoRoot,
+      workRoot: "work",
+      name: "summary",
+      day: logDay,
+      group: logGroup,
+    });
+
+    logger.info("grouped");
+    await waitForLogContent(logger.filePath);
+
+    const relativePath = path.relative(repoRoot, logger.filePath).split(path.sep).join("/");
+    assert.match(relativePath, new RegExp(`^work/logs/${logDay}/${logGroup}/.+-summary\\.jsonl$`, "u"));
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }

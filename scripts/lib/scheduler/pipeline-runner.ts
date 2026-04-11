@@ -27,6 +27,8 @@ interface RunPipelineForBvidOptions {
   dbPath: string;
   workRoot: string;
   bvid: string;
+  logDay?: string | null;
+  logGroup?: string | null;
   publish?: boolean;
   logger?: FileLogger | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
@@ -38,6 +40,8 @@ export async function runPipelineForBvid({
   dbPath,
   workRoot,
   bvid,
+  logDay = null,
+  logGroup = null,
   publish = true,
   logger = null,
   runCommandImpl = runCommand,
@@ -73,6 +77,10 @@ export async function runPipelineForBvid({
       channel: "stderr",
     }) ?? null;
     result = await runCommandImpl(process.execPath, args, {
+      env: {
+        PIPELINE_LOG_DAY: logDay ?? "",
+        PIPELINE_LOG_GROUP: logGroup ?? "",
+      },
       streamOutput: true,
       stdoutStream: stdoutLogStream,
       stderrStream: createCompositeWriteStream(process.stderr, stderrLogStream),

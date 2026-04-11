@@ -7,7 +7,7 @@ import {
   runCli,
 } from "../lib/cli/tools";
 import { syncSummaryUsersRecentVideos } from "../lib/scheduler/index";
-import { createWorkFileLogger } from "../lib/shared/logger";
+import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { PipelineProcessResult } from "../lib/scheduler/pipeline-runner";
 
 const command = addWorkRootOption(
@@ -28,9 +28,14 @@ await runCli({
   printResult: false,
   async handler(args) {
     const config = resolveSummaryUsersConfig(args);
+    const startedAt = new Date();
+    const logDay = formatLogDay(startedAt);
+    const logGroup = createLogGroupName("summary", "sync-summary-users", startedAt);
     const logger = createWorkFileLogger({
       workRoot: config.workRoot,
       name: "sync-summary-users",
+      day: logDay,
+      group: logGroup,
       context: {
         scope: "sync-summary-users",
         dbPath: config.dbPath,
@@ -45,6 +50,8 @@ await runCli({
       maxConcurrent: config.summaryConcurrency,
       dbPath: config.dbPath,
       workRoot: config.workRoot,
+      logDay,
+      logGroup,
       logger,
       onLog(message) {
         logger.progress(message);

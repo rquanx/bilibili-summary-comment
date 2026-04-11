@@ -21,6 +21,8 @@ interface CreateWorkFileLoggerOptions {
   workRoot?: string;
   name: string;
   label?: string | null;
+  day?: string | null;
+  group?: string | null;
   context?: LogContext;
   repoRoot?: string;
 }
@@ -36,13 +38,18 @@ export function createWorkFileLogger({
   workRoot = "work",
   name,
   label = null,
+  day = null,
+  group = null,
   context = {},
   repoRoot = getRepoRoot(),
 }: CreateWorkFileLoggerOptions): FileLogger {
-  const logDir = path.join(repoRoot, workRoot, "logs", new Date().toISOString().slice(0, 10));
+  const logDay = normalizeLogDay(day) ?? formatLogDay();
+  const logRoot = path.join(repoRoot, workRoot, "logs", logDay);
+  const logGroup = sanitizeFilenamePart(group);
+  const logDir = logGroup ? path.join(logRoot, logGroup) : logRoot;
   fs.mkdirSync(logDir, { recursive: true });
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const timestamp = formatLogTimestamp();
   const filenameParts = [timestamp, sanitizeFilenamePart(name), sanitizeFilenamePart(label)].filter(Boolean);
   const filePath = path.join(logDir, `${filenameParts.join("-")}.jsonl`);
   const stream = fs.createWriteStream(filePath, {
@@ -69,6 +76,15 @@ export function createCompositeWriteStream(
       return true;
     },
   };
+}
+
+export function formatLogDay(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+export function createLogGroupName(name: string, label: string | null = null, date = new Date()): string {
+  const groupParts = [formatLogTimestamp(date), sanitizeFilenamePart(name), sanitizeFilenamePart(label)].filter(Boolean);
+  return groupParts.join("-");
 }
 
 function createFileLogger({
@@ -160,6 +176,19 @@ function sanitizeFilenamePart(value: unknown): string {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 80);
+}
+
+function formatLogTimestamp(date = new Date()): string {
+  return date.toISOString().replace(/[:.]/g, "-");
+}
+
+function normalizeLogDay(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  if (!normalized || !/^\d{4}-\d{2}-\d{2}$/u.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
 }
 
 function normalizeContext(value: unknown): LogContext {

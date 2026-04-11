@@ -16,7 +16,7 @@ import {
 } from "../lib/bili/auth";
 import { createCoalescedRunner } from "../lib/scheduler/coalesced-runner";
 import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "../lib/scheduler/index";
-import { createWorkFileLogger } from "../lib/shared/logger";
+import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { LogLevel } from "../lib/shared/logger";
 
 const command = addWorkRootOption(
@@ -71,8 +71,12 @@ await runCli({
     } = {}) {
       schedulerLogger.log(level, message, details);
       if (console) {
-        process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
+        writeConsole(message);
       }
+    }
+
+    function writeConsole(message: string) {
+      process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
     }
 
     log(`Detailed log: ${schedulerLogger.filePath}`);
@@ -111,7 +115,24 @@ await runCli({
     }
 
     async function runSummaryTask() {
-      log("Scanning SUMMARY_USERS recent uploads");
+      const startedAt = new Date();
+      const logDay = formatLogDay(startedAt);
+      const logGroup = createLogGroupName("summary", null, startedAt);
+      const summaryLogger = createWorkFileLogger({
+        workRoot: config.workRoot,
+        name: "scheduler",
+        label: "summary",
+        day: logDay,
+        group: logGroup,
+        context: {
+          scope: "scheduler",
+          task: "summary",
+          schedulerLogPath: schedulerLogger.filePath,
+        },
+      });
+      log(`[summary] run log: ${summaryLogger.filePath}`);
+      summaryLogger.progress("Scanning SUMMARY_USERS recent uploads");
+      writeConsole("Scanning SUMMARY_USERS recent uploads");
       const result = await syncSummaryUsersRecentVideos({
         summaryUsers: config.summaryUsers,
         cookieFile: resolvedCookieFile,
@@ -119,17 +140,32 @@ await runCli({
         maxConcurrent: config.summaryConcurrency,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
-        logger: schedulerLogger.child({
-          task: "summary",
-        }),
+        logDay,
+        logGroup,
+        logger: summaryLogger,
         onLog(message) {
-          log(`[summary] ${message}`);
+          summaryLogger.progress(message);
+          writeConsole(`[summary] ${message}`);
         },
       });
-      log(`Summary sweep finished: uploads=${result.uploads.length}, failures=${result.failures.length}`);
+      summaryLogger.info("Summary sweep finished", {
+        uploads: result.uploads.length,
+        failures: result.failures.length,
+        runs: result.runs.length,
+      });
+      log(`Summary sweep finished: uploads=${result.uploads.length}, failures=${result.failures.length}`, {
+        details: {
+          task: "summary",
+          logPath: summaryLogger.filePath,
+        },
+      });
       if (result.failures.length > 0) {
         for (const failure of result.failures) {
-          log(`[summary] failure: ${formatSummaryFailure(failure)}`);
+          summaryLogger.error("Summary failure", {
+            failure,
+            formattedFailure: formatSummaryFailure(failure),
+          });
+          writeConsole(`[summary] failure: ${formatSummaryFailure(failure)}`);
         }
       }
       return {
