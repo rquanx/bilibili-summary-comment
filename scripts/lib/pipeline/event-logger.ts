@@ -19,14 +19,38 @@ export function createPipelineEventLogger({
   };
 
   function log(event: PipelineEventInput) {
-    return insertPipelineEvent(db, {
+    const payload = {
       ...sharedContext,
       ...event,
-    });
+    };
+
+    try {
+      return insertPipelineEvent(db, payload);
+    } catch (error) {
+      if (isSqliteLockedError(error)) {
+        const action = `${String(payload.scope ?? "pipeline")}/${String(payload.action ?? "event")}`;
+        const message = String(payload.message ?? "").trim();
+        const suffix = message ? `: ${message}` : "";
+        console.warn(`Skipping pipeline event log because the database is locked (${action}${suffix})`);
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   return {
     runId,
     log,
   };
+}
+
+function isSqliteLockedError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: unknown; errcode?: unknown; errstr?: unknown; message?: unknown };
+  const message = String(candidate.message ?? candidate.errstr ?? "").toLowerCase();
+  return candidate.code === "ERR_SQLITE_ERROR" && (candidate.errcode === 5 || message.includes("database is locked"));
 }

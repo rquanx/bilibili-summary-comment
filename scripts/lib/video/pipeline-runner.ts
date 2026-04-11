@@ -174,16 +174,21 @@ export async function runVideoPipeline(
 export function printPipelineFailure(error: CommandError | Error | unknown, activeEventLogger: PipelineEventLogger | null = null) {
   const commandError = (typeof error === "object" && error !== null ? error : {}) as CommandError;
   if (activeEventLogger) {
-    activeEventLogger.log({
-      scope: "pipeline",
-      action: "run",
-      status: "failed",
-      message: commandError.message ?? "Unknown error",
-      details: {
-        stderr: trimCommandOutput(commandError.stderr),
-        stdout: trimCommandOutput(commandError.stdout),
-      },
-    });
+    try {
+      activeEventLogger.log({
+        scope: "pipeline",
+        action: "run",
+        status: "failed",
+        message: commandError.message ?? "Unknown error",
+        details: {
+          stderr: trimCommandOutput(commandError.stderr),
+          stdout: trimCommandOutput(commandError.stdout),
+        },
+      });
+    } catch (logError) {
+      const logMessage = logError instanceof Error ? logError.message : String(logError ?? "Unknown logging error");
+      console.warn(`Failed to write pipeline failure event: ${logMessage}`);
+    }
   }
   printJson({
     ok: false,
