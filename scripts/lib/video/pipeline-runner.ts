@@ -5,7 +5,7 @@ import {
   readCookie,
 } from "../bili/comment-utils";
 import { attachVideoContextToError } from "../bili/video-url";
-import { errorToJson, extractErrorDetails } from "../cli/errors";
+import { attachErrorDetails, errorToJson, extractErrorDetails } from "../cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
 import { createProgressReporter, trimCommandOutput } from "../pipeline/progress";
@@ -81,20 +81,32 @@ export async function runVideoPipeline(
   }
 
   try {
-    const generation = await runGenerationStage({
-      client,
-      db,
-      video: state.video,
-      cookie,
-      cookieFile: args["cookie-file"] ?? null,
-      workRoot,
-      venvPath,
-      asr,
-      summaryConfig,
-      forceSummary,
-      eventLogger,
-      progress,
-    });
+    let generation;
+    try {
+      generation = await runGenerationStage({
+        client,
+        db,
+        video: state.video,
+        cookie,
+        cookieFile: args["cookie-file"] ?? null,
+        workRoot,
+        venvPath,
+        asr,
+        summaryConfig,
+        forceSummary,
+        eventLogger,
+        progress,
+      });
+    } catch (error) {
+      attachErrorDetails(error, {
+        bvid: state.video.bvid,
+        aid: state.video.aid,
+        failedStep: "generation",
+        failedScope: "pipeline",
+        failedAction: "generation",
+      });
+      throw error;
+    }
     let publishResult = null;
 
     if (args.publish) {
@@ -115,6 +127,13 @@ export async function runVideoPipeline(
         attachVideoContextToError(error, {
           bvid: state.video.bvid,
           aid: state.video.aid,
+        });
+        attachErrorDetails(error, {
+          bvid: state.video.bvid,
+          aid: state.video.aid,
+          failedStep: "publish",
+          failedScope: "publish",
+          failedAction: "comment-thread",
         });
         eventLogger.log({
           scope: "publish",

@@ -135,6 +135,104 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
   }
 });
 
+test("postSummaryThread splits comments so each payload stays within 700 characters", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const firstPageText = `first page ${"A".repeat(340)}`;
+  const secondPageText = `second page ${"B".repeat(340)}`;
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcomment700limit",
+      aid: 123456790,
+      title: "Comment Thread 700 Limit Test",
+      pageCount: 2,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: `<1P>\n${firstPageText}`,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: `<2P>\n${secondPageText}`,
+      summaryHash: "hash-2",
+      published: false,
+      isDeleted: false,
+    });
+
+    const addCalls = [];
+    let nextRpid = 830001;
+    const client = {
+      reply: {
+        async list() {
+          return {
+            page: {
+              count: 1,
+            },
+            replies: [
+              {
+                rpid: 830001,
+                count: 1,
+                replies: [
+                  {
+                    rpid: 830002,
+                  },
+                ],
+              },
+            ],
+          };
+        },
+        async add(payload) {
+          addCalls.push(payload);
+          return {
+            rpid: nextRpid++,
+          };
+        },
+        async top() {
+          return {
+            ok: true,
+          };
+        },
+      },
+    };
+
+    const result = await postSummaryThread({
+      client,
+      oid: video.aid,
+      type: 1,
+      message: ["<1P>", firstPageText, "", "<2P>", secondPageText].join("\n"),
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+    });
+
+    assert.equal(result.createdComments.length, 2);
+    assert.deepEqual(result.createdComments.map((item) => item.pages), [[1], [2]]);
+    assert.equal(addCalls.length, 2);
+    assert.ok(addCalls.every((payload) => payload.message.length <= 700));
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("postSummaryThread does not mark parts published when the new comment thread is not visible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

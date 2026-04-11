@@ -99,11 +99,17 @@ await runCli({
         },
       });
       log(`Summary sweep finished: uploads=${result.uploads.length}, failures=${result.failures.length}`);
+      if (result.failures.length > 0) {
+        for (const failure of result.failures) {
+          log(`[summary] failure: ${formatSummaryFailure(failure)}`);
+        }
+      }
       return {
         action: "summary",
         uploads: result.uploads.length,
         runs: result.runs.length,
         failures: result.failures.length,
+        failureDetails: result.failures.map((failure) => formatSummaryFailure(failure)),
       };
     }
 
@@ -168,6 +174,7 @@ await runCli({
           uploads: 0,
           runs: 0,
           failures: 1,
+          failureDetails: [message],
           message,
         };
       },
@@ -265,4 +272,44 @@ function attachSignalHandlers(scheduledTasks, log) {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+function formatSummaryFailure(failure) {
+  const bvid = String(failure?.bvid ?? "").trim() || "unknown-bvid";
+  const title = String(failure?.title ?? "").trim() || "untitled";
+  const message = String(failure?.message ?? "").trim() || "Unknown error";
+  const details = failure?.details && typeof failure.details === "object" ? failure.details : {};
+  const step = formatFailureStep(details);
+  const pageNo = normalizePositiveInteger(details.pageNo);
+  const segments = [`${bvid} (${title})`];
+
+  if (pageNo !== null) {
+    segments.push(`P${pageNo}`);
+  }
+
+  if (step) {
+    segments.push(`step=${step}`);
+  }
+
+  return `${segments.join(" ")}: ${message}`;
+}
+
+function formatFailureStep(details) {
+  const explicitStep = String(details?.failedStep ?? "").trim();
+  if (explicitStep) {
+    return explicitStep;
+  }
+
+  const scope = String(details?.failedScope ?? "").trim();
+  const action = String(details?.failedAction ?? "").trim();
+  if (scope && action) {
+    return `${scope}/${action}`;
+  }
+
+  return scope || action;
+}
+
+function normalizePositiveInteger(value) {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }

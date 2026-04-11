@@ -13,6 +13,7 @@ export type PipelineRunResult<TUpload extends PipelineUpload, TResult = unknown>
 
 export type PipelineFailureResult<TUpload extends PipelineUpload> = TUpload & {
   message: string;
+  details?: Record<string, unknown>;
 };
 
 interface RunPipelinesWithConcurrencyOptions<TUpload extends PipelineUpload, TResult> {
@@ -86,7 +87,8 @@ export async function runPipelinesWithConcurrency<TUpload extends PipelineUpload
           .catch((error) => {
             failureResults[index] = {
               ...upload,
-              message: error?.message ?? "Unknown error",
+              message: extractFailureMessage(error),
+              details: extractFailureDetails(error),
             };
           })
           .finally(() => {
@@ -103,4 +105,32 @@ export async function runPipelinesWithConcurrency<TUpload extends PipelineUpload
 
     scheduleNext();
   });
+}
+
+function extractFailureMessage(error: unknown): string {
+  const message = typeof (error as { message?: unknown })?.message === "string"
+    ? (error as { message: string }).message.trim()
+    : "";
+  return message || "Unknown error";
+}
+
+function extractFailureDetails(error: unknown): Record<string, unknown> | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+
+  const candidate = error as Record<string, unknown>;
+  const details = Object.fromEntries(
+    Object.entries({
+      failedStep: candidate.failedStep,
+      failedScope: candidate.failedScope,
+      failedAction: candidate.failedAction,
+      pageNo: candidate.pageNo,
+      cid: candidate.cid,
+      videoUrl: candidate.videoUrl,
+      partTitle: candidate.partTitle,
+    }).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+  );
+
+  return Object.keys(details).length > 0 ? details : undefined;
 }

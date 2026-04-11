@@ -2,6 +2,7 @@ import { findReusableSummarySource, reusePartSummaries } from "../summary/live-s
 import { writePartSummaryArtifact, writeSummaryArtifacts } from "../summary/files";
 import { ensureSubtitleForPart } from "../subtitle/pipeline";
 import { summarizePartFromSubtitle } from "../summary/index";
+import { attachErrorDetails } from "../cli/errors";
 import { listVideoParts } from "../db/index";
 
 export async function runGenerationStage({
@@ -98,25 +99,39 @@ export async function runGenerationStage({
     });
     progress?.logPart(currentIndex, part, "Started");
 
-    const subtitleResult = await ensureSubtitleForPart({
-      client,
-      db,
-      videoId: video.id,
-      bvid: video.bvid,
-      videoTitle: video.title,
-      pageNo: part.page_no,
-      cid: part.cid,
-      partTitle: part.part_title,
-      existingSubtitlePath: part.subtitle_path ?? null,
-      cookie,
-      cookieFile,
-      durationSec: part.duration_sec,
-      workRoot,
-      venvPath,
-      asr,
-      progress,
-      eventLogger,
-    });
+    let subtitleResult;
+    try {
+      subtitleResult = await ensureSubtitleForPart({
+        client,
+        db,
+        videoId: video.id,
+        bvid: video.bvid,
+        videoTitle: video.title,
+        pageNo: part.page_no,
+        cid: part.cid,
+        partTitle: part.part_title,
+        existingSubtitlePath: part.subtitle_path ?? null,
+        cookie,
+        cookieFile,
+        durationSec: part.duration_sec,
+        workRoot,
+        venvPath,
+        asr,
+        progress,
+        eventLogger,
+      });
+    } catch (error) {
+      attachErrorDetails(error, {
+        bvid: video.bvid,
+        failedStep: "subtitle",
+        failedScope: "subtitle",
+        failedAction: "ensure",
+        pageNo: part.page_no,
+        cid: part.cid,
+        partTitle: part.part_title,
+      });
+      throw error;
+    }
     progress?.logPart(currentIndex, part, "Subtitle ready", describeSubtitleResult(subtitleResult));
     subtitleResults.push({
       pageNo: part.page_no,
@@ -126,22 +141,36 @@ export async function runGenerationStage({
     });
 
     progress?.logPart(currentIndex, part, "Generating summary", `model ${summaryConfig.model}`);
-    const summaryResult = await summarizePartFromSubtitle({
-      db,
-      videoId: video.id,
-      bvid: video.bvid,
-      pageNo: part.page_no,
-      partTitle: part.part_title,
-      durationSec: part.duration_sec,
-      subtitlePath: subtitleResult.subtitlePath,
-      model: summaryConfig.model,
-      apiKey: summaryConfig.apiKey,
-      apiBaseUrl: summaryConfig.apiBaseUrl,
-      apiFormat: summaryConfig.apiFormat,
-      workRoot,
-      cid: part.cid,
-      eventLogger,
-    });
+    let summaryResult;
+    try {
+      summaryResult = await summarizePartFromSubtitle({
+        db,
+        videoId: video.id,
+        bvid: video.bvid,
+        pageNo: part.page_no,
+        partTitle: part.part_title,
+        durationSec: part.duration_sec,
+        subtitlePath: subtitleResult.subtitlePath,
+        model: summaryConfig.model,
+        apiKey: summaryConfig.apiKey,
+        apiBaseUrl: summaryConfig.apiBaseUrl,
+        apiFormat: summaryConfig.apiFormat,
+        workRoot,
+        cid: part.cid,
+        eventLogger,
+      });
+    } catch (error) {
+      attachErrorDetails(error, {
+        bvid: video.bvid,
+        failedStep: "summary",
+        failedScope: "summary",
+        failedAction: "generate",
+        pageNo: part.page_no,
+        cid: part.cid,
+        partTitle: part.part_title,
+      });
+      throw error;
+    }
     progress?.logPart(currentIndex, part, "Summary ready", summaryResult.summaryPath);
     summaryResults.push({
       pageNo: part.page_no,
@@ -151,7 +180,18 @@ export async function runGenerationStage({
   }
 
   progress?.log("Writing summary artifacts");
-  const artifacts = writeSummaryArtifacts(db, video, workRoot);
+  let artifacts;
+  try {
+    artifacts = writeSummaryArtifacts(db, video, workRoot);
+  } catch (error) {
+    attachErrorDetails(error, {
+      bvid: video.bvid,
+      failedStep: "artifacts",
+      failedScope: "pipeline",
+      failedAction: "artifacts",
+    });
+    throw error;
+  }
   eventLogger?.log({
     scope: "pipeline",
     action: "artifacts",

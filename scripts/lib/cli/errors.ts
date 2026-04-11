@@ -20,6 +20,10 @@ interface ErrorLike {
   aid?: unknown;
   pageNo?: unknown;
   videoUrl?: unknown;
+  failedStep?: unknown;
+  failedScope?: unknown;
+  failedAction?: unknown;
+  partTitle?: unknown;
 }
 
 export class CliError extends Error {
@@ -99,7 +103,37 @@ export function extractErrorDetails(error: unknown): CliErrorDetails {
     details.videoUrl = videoUrl;
   }
 
+  if (typeof errorLike.failedStep === "string" && errorLike.failedStep.trim()) {
+    details.failedStep = errorLike.failedStep.trim();
+  }
+
+  if (typeof errorLike.failedScope === "string" && errorLike.failedScope.trim()) {
+    details.failedScope = errorLike.failedScope.trim();
+  }
+
+  if (typeof errorLike.failedAction === "string" && errorLike.failedAction.trim()) {
+    details.failedAction = errorLike.failedAction.trim();
+  }
+
+  if (typeof errorLike.partTitle === "string" && errorLike.partTitle.trim()) {
+    details.partTitle = errorLike.partTitle.trim();
+  }
+
   return details;
+}
+
+export function attachErrorDetails(error: unknown, details: CliErrorDetails): void {
+  if (!error || typeof error !== "object") {
+    return;
+  }
+
+  const target = error as Record<string, unknown>;
+  const normalized = normalizeDetails(details);
+  for (const [key, value] of Object.entries(normalized)) {
+    if (target[key] === undefined) {
+      target[key] = value;
+    }
+  }
 }
 
 function normalizeDetails(details: CliErrorDetails): CliErrorDetails {

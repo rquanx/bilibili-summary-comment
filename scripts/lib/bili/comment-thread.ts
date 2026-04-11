@@ -7,11 +7,12 @@ const sleep = (timeout) =>
     setTimeout(resolve, timeout);
   });
 
-const ROOT_TOP_DELAY_MS = 1000;
-const ROOT_TOP_RETRY_DELAY_MS = 2500;
-const REPLY_POST_DELAY_MS = 1500;
-const THREAD_VISIBILITY_RETRY_DELAY_MS = 2000;
+const ROOT_TOP_DELAY_MS = 5000;
+const ROOT_TOP_RETRY_DELAY_MS = 5000;
+const REPLY_POST_DELAY_MS = 5000;
+const THREAD_VISIBILITY_RETRY_DELAY_MS = 5000;
 const THREAD_VISIBILITY_MAX_ATTEMPTS = 3;
+const BILIBILI_COMMENT_MAX_LENGTH = 700;
 
 const DELETED_COMMENT_PATTERNS = [
   "\u5df2\u7ecf\u88ab\u5220\u9664",
@@ -242,7 +243,7 @@ export async function postSummaryThread({
     throw createCliError("Comment content is empty");
   }
 
-  const chunks = splitSummaryForComments(normalizedMessage, 1000);
+  const chunks = splitSummaryForComments(normalizedMessage, BILIBILI_COMMENT_MAX_LENGTH);
   if (chunks.length === 0) {
     throw createCliError("No comment chunks generated from summary");
   }

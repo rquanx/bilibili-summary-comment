@@ -11,6 +11,15 @@ export interface PipelineProcessResult extends Record<string, unknown> {
   reusedSummaryFrom?: unknown;
 }
 
+interface PipelineFailurePayload extends Record<string, unknown> {
+  failedStep?: unknown;
+  failedScope?: unknown;
+  failedAction?: unknown;
+  pageNo?: unknown;
+  cid?: unknown;
+  videoUrl?: unknown;
+}
+
 interface RunPipelineForBvidOptions {
   cookieFile: string;
   dbPath: string;
@@ -52,7 +61,7 @@ export async function runPipelineForBvid({
       outputStream: process.stderr,
     });
   } catch (error) {
-    appendVideoLinkToCommandError(error, bvid);
+    appendPipelineFailureContextToCommandError(error, bvid);
     throw error;
   }
 
@@ -97,21 +106,58 @@ function buildNodeScriptArgs(scriptPath: string): string[] {
   return [scriptPath];
 }
 
-function appendVideoLinkToCommandError(error: unknown, bvid: string) {
+function appendPipelineFailureContextToCommandError(error: unknown, bvid: string) {
   if (!error || typeof error !== "object") {
     return;
   }
 
-  const candidate = error as { message?: unknown; stdout?: unknown };
-  const parsedPayload = parseJsonObject(candidate.stdout);
+  const candidate = error as {
+    message?: unknown;
+    stdout?: unknown;
+    failedStep?: unknown;
+    failedScope?: unknown;
+    failedAction?: unknown;
+    pageNo?: unknown;
+    cid?: unknown;
+    videoUrl?: unknown;
+  };
+  const parsedPayload = parseJsonObject(candidate.stdout) as PipelineFailurePayload | null;
+  const baseMessage = String(candidate.message ?? "Unknown error").trim() || "Unknown error";
+  const failureContext = buildFailureContext(parsedPayload);
   const videoUrl = String(parsedPayload?.videoUrl ?? buildBiliVideoUrl({ bvid }) ?? "").trim();
-  if (!videoUrl) {
-    return;
+
+  if (failureContext && !baseMessage.includes(failureContext)) {
+    candidate.message = `${baseMessage} | ${failureContext}`;
+  } else {
+    candidate.message = baseMessage;
   }
 
-  const baseMessage = String(candidate.message ?? "Unknown error").trim() || "Unknown error";
-  if (!baseMessage.includes(videoUrl)) {
-    candidate.message = `${baseMessage} | ${videoUrl}`;
+  if (videoUrl && !String(candidate.message ?? "").includes(videoUrl)) {
+    candidate.message = `${candidate.message} | ${videoUrl}`;
+  }
+
+  if (parsedPayload?.failedStep !== undefined) {
+    candidate.failedStep = parsedPayload.failedStep;
+  }
+
+  if (parsedPayload?.failedScope !== undefined) {
+    candidate.failedScope = parsedPayload.failedScope;
+  }
+
+  if (parsedPayload?.failedAction !== undefined) {
+    candidate.failedAction = parsedPayload.failedAction;
+  }
+
+  if (parsedPayload?.pageNo !== undefined) {
+    candidate.pageNo = parsedPayload.pageNo;
+  }
+
+  if (parsedPayload?.cid !== undefined) {
+    candidate.cid = parsedPayload.cid;
+  }
+
+  if (videoUrl) {
+    candidate.videoUrl = videoUrl;
   }
 }
 
@@ -127,4 +173,44 @@ function parseJsonObject(value: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function buildFailureContext(payload: PipelineFailurePayload | null): string {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const step = formatFailureStep(payload);
+  const pageNo = normalizePositiveInteger(payload.pageNo);
+  const parts = [];
+
+  if (step) {
+    parts.push(`step=${step}`);
+  }
+
+  if (pageNo !== null) {
+    parts.push(`page=P${pageNo}`);
+  }
+
+  return parts.join(", ");
+}
+
+function formatFailureStep(payload: PipelineFailurePayload): string {
+  const explicitStep = String(payload.failedStep ?? "").trim();
+  if (explicitStep) {
+    return explicitStep;
+  }
+
+  const scope = String(payload.failedScope ?? "").trim();
+  const action = String(payload.failedAction ?? "").trim();
+  if (scope && action) {
+    return `${scope}/${action}`;
+  }
+
+  return scope || action;
+}
+
+function normalizePositiveInteger(value: unknown): number | null {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }
