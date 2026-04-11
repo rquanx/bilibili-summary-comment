@@ -1,4 +1,5 @@
 node_modules
+dist
 work
 .3.11
 summary.md

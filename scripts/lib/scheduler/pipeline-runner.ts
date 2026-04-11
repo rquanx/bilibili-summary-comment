@@ -29,11 +29,9 @@ export async function runPipelineForBvid({
   runCommandImpl = runCommand,
   repoRoot = getRepoRoot(),
 }: RunPipelineForBvidOptions): Promise<PipelineProcessResult> {
-  const scriptPath = path.join(repoRoot, "scripts", "commands", "run-video-pipeline.ts");
-  const args = [
-    "--import",
-    "tsx",
-    scriptPath,
+  const scriptPath = resolvePipelineEntryScript(repoRoot);
+  const args = buildNodeScriptArgs(scriptPath);
+  args.push(
     "--cookie-file",
     path.resolve(repoRoot, cookieFile),
     "--bvid",
@@ -42,7 +40,7 @@ export async function runPipelineForBvid({
     path.resolve(repoRoot, dbPath),
     "--work-root",
     workRoot,
-  ];
+  );
   if (publish) {
     args.push("--publish");
   }
@@ -73,4 +71,21 @@ export function readCookieString(
 ): string {
   const resolvedPath = path.resolve(repoRoot, cookieFile);
   return readFileSync(resolvedPath, "utf8").trim();
+}
+
+function resolvePipelineEntryScript(repoRoot: string): string {
+  const compiledEntry = path.join(repoRoot, "scripts", "commands", "run-video-pipeline.js");
+  if (fs.existsSync(compiledEntry)) {
+    return compiledEntry;
+  }
+
+  return path.join(repoRoot, "scripts", "commands", "run-video-pipeline.ts");
+}
+
+function buildNodeScriptArgs(scriptPath: string): string[] {
+  if (scriptPath.endsWith(".ts")) {
+    return ["--import", "tsx", scriptPath];
+  }
+
+  return [scriptPath];
 }

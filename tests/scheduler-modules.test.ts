@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
 import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency";
 import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets";
@@ -274,6 +277,50 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
     "--work-root",
     "work",
     "--publish",
+  ]);
+});
+
+test("runPipelineForBvid launches the compiled JavaScript entry directly when dist files exist", async () => {
+  const calls = [];
+  const tempRepoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-dist-"));
+  const compiledEntryPath = path.join(tempRepoRoot, "scripts", "commands", "run-video-pipeline.js");
+
+  fs.mkdirSync(path.dirname(compiledEntryPath), { recursive: true });
+  fs.writeFileSync(compiledEntryPath, "export {};\n", "utf8");
+
+  try {
+    await runPipelineForBvid({
+      cookieFile: "cookie.txt",
+      dbPath: "work/pipeline.sqlite3",
+      workRoot: "work",
+      bvid: "BV1DIST",
+      publish: false,
+      repoRoot: tempRepoRoot,
+      async runCommandImpl(command, args) {
+        calls.push({ command, args });
+        return {
+          code: 0,
+          stdout: '{"ok":true}',
+          stderr: "",
+        };
+      },
+    });
+  } finally {
+    fs.rmSync(tempRepoRoot, { recursive: true, force: true });
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, process.execPath);
+  assert.deepEqual(calls[0].args, [
+    compiledEntryPath,
+    "--cookie-file",
+    path.join(tempRepoRoot, "cookie.txt"),
+    "--bvid",
+    "BV1DIST",
+    "--db",
+    path.join(tempRepoRoot, "work", "pipeline.sqlite3"),
+    "--work-root",
+    "work",
   ]);
 });
 
