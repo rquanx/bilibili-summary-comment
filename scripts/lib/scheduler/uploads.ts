@@ -134,7 +134,7 @@ export async function syncSummaryUsersRecentVideos({
     sinceHours,
     onLog,
   });
-  const deduplicatedUploads = dedupeRecentUploadsByTitleVariant(collected.uploads, onLog);
+  const deduplicatedUploads = orderRecentUploadsForVariantReuse(collected.uploads, onLog);
   const effectiveCollected = {
     ...collected,
     uploads: deduplicatedUploads,
@@ -158,12 +158,12 @@ export async function syncSummaryUsersRecentVideos({
   }
 
   const safeMaxConcurrent = Math.max(1, Number(maxConcurrent) || SUMMARY_PIPELINE_MAX_CONCURRENCY);
-  onLog(`Running up to ${safeMaxConcurrent} pipelines concurrently after variant deduplication`);
+  onLog(`Running up to ${safeMaxConcurrent} pipelines concurrently with variant-aware serialization`);
   const { runs, failures } = await runPipelinesWithConcurrencyImpl({
     uploads: effectiveCollected.uploads,
     maxConcurrent: safeMaxConcurrent,
     userKeyForUpload(upload) {
-      return String(upload.bvid ?? "");
+      return buildUploadSchedulingKey(upload);
     },
     async runUpload(upload) {
       onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"}) [user ${upload.mid}]`);
@@ -184,7 +184,7 @@ export async function syncSummaryUsersRecentVideos({
   };
 }
 
-function dedupeRecentUploadsByTitleVariant(
+function orderRecentUploadsForVariantReuse(
   uploads: RecentUpload[],
   onLog: (message: string) => void = () => {},
 ): RecentUpload[] {
@@ -194,8 +194,7 @@ function dedupeRecentUploadsByTitleVariant(
 
   const uploadsByGroup = new Map<string, Array<{ upload: RecentUpload; index: number }>>();
   for (const [index, upload] of uploads.entries()) {
-    const normalizedTitle = normalizeUploadTitleVariantKey(upload.title);
-    const groupKey = `${String(upload.mid ?? "")}\n${normalizedTitle || String(upload.bvid ?? "")}`;
+    const groupKey = buildUploadSchedulingKey(upload);
     const bucket = uploadsByGroup.get(groupKey) ?? [];
     bucket.push({
       upload,
@@ -204,38 +203,31 @@ function dedupeRecentUploadsByTitleVariant(
     uploadsByGroup.set(groupKey, bucket);
   }
 
-  const keepBvids = new Set<string>();
-  let skippedCount = 0;
+  const orderedGroups = [...uploadsByGroup.values()].sort((left, right) => {
+    const leftIndex = Math.min(...left.map((item) => item.index));
+    const rightIndex = Math.min(...right.map((item) => item.index));
+    return leftIndex - rightIndex;
+  });
 
-  for (const group of uploadsByGroup.values()) {
-    if (group.length === 1) {
-      const onlyUpload = group[0]?.upload;
-      if (onlyUpload?.bvid) {
-        keepBvids.add(onlyUpload.bvid);
-      }
-      continue;
-    }
-
+  const orderedUploads: RecentUpload[] = [];
+  for (const group of orderedGroups) {
     const sortedGroup = [...group].sort(compareUploadPreference);
-    const keeper = sortedGroup[0]?.upload;
-    if (!keeper?.bvid) {
-      continue;
-    }
-
-    keepBvids.add(keeper.bvid);
-    for (const candidate of sortedGroup.slice(1)) {
-      skippedCount += 1;
+    if (sortedGroup.length > 1) {
+      const orderedBvids = sortedGroup.map((item) => item.upload.bvid).filter(Boolean);
       onLog(
-        `Skip duplicate variant ${candidate.upload.bvid} (${candidate.upload.title || "untitled"}) [user ${candidate.upload.mid}] in favor of ${keeper.bvid} (${keeper.title || "untitled"})`,
+        `Queue ${sortedGroup.length} same-session variants serially for summary/comment reuse: ${orderedBvids.join(" -> ")}`,
       );
     }
+
+    orderedUploads.push(...sortedGroup.map((item) => item.upload));
   }
 
-  if (skippedCount > 0) {
-    onLog(`Deduplicated ${skippedCount} same-user title variants before scheduling`);
-  }
+  return orderedUploads;
+}
 
-  return uploads.filter((upload) => keepBvids.has(upload.bvid));
+function buildUploadSchedulingKey(upload: Pick<RecentUpload, "mid" | "title" | "bvid">): string {
+  const normalizedTitle = normalizeUploadTitleVariantKey(upload.title);
+  return `${String(upload.mid ?? "")}\n${normalizedTitle || String(upload.bvid ?? "")}`;
 }
 
 function compareUploadPreference(

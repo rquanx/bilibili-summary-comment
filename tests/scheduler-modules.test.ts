@@ -68,9 +68,10 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
   });
 });
 
-test("syncSummaryUsersRecentVideos deduplicates same-user title variants before scheduling", async () => {
+test("syncSummaryUsersRecentVideos keeps same-user title variants and queues clean-first for reuse", async () => {
   const logMessages: string[] = [];
   const scheduledUploads: Array<{ bvid: string; title: string }> = [];
+  const observedSchedulingKeys: string[] = [];
 
   const result = await syncSummaryUsersRecentVideos({
     summaryUsers: "123",
@@ -112,6 +113,7 @@ test("syncSummaryUsersRecentVideos deduplicates same-user title variants before 
           bvid: String(upload.bvid),
           title: String(upload.title),
         });
+        observedSchedulingKeys.push(String(options.userKeyForUpload?.(upload)));
       }
 
       return {
@@ -124,18 +126,23 @@ test("syncSummaryUsersRecentVideos deduplicates same-user title variants before 
     },
   });
 
-  assert.deepEqual(result.uploads.map((item) => item.bvid), ["BVCLEAN", "BVPLAIN"]);
-  assert.deepEqual(scheduledUploads.map((item) => item.bvid), ["BVCLEAN", "BVPLAIN"]);
+  assert.deepEqual(result.uploads.map((item) => item.bvid), ["BVCLEAN", "BVDANMU", "BVPLAIN"]);
+  assert.deepEqual(scheduledUploads.map((item) => item.bvid), ["BVCLEAN", "BVDANMU", "BVPLAIN"]);
   assert.equal(
     logMessages.includes(
-      "Skip duplicate variant BVDANMU (直播回放 弹幕版) [user 123] in favor of BVCLEAN (直播回放 纯净版)",
+      "Queue 2 same-session variants serially for summary/comment reuse: BVCLEAN -> BVDANMU",
     ),
     true,
   );
-  assert.equal(logMessages.includes("Deduplicated 1 same-user title variants before scheduling"), true);
+  assert.equal(
+    logMessages.includes("Running up to 3 pipelines concurrently with variant-aware serialization"),
+    true,
+  );
+  assert.equal(observedSchedulingKeys[0], observedSchedulingKeys[1]);
+  assert.notEqual(observedSchedulingKeys[1], observedSchedulingKeys[2]);
 });
 
-test("syncSummaryUsersRecentVideos schedules same-user uploads against unique bvid keys", async () => {
+test("syncSummaryUsersRecentVideos serializes related variants under the same session key", async () => {
   const observedKeys: string[] = [];
 
   await syncSummaryUsersRecentVideos({
@@ -147,7 +154,7 @@ test("syncSummaryUsersRecentVideos schedules same-user uploads against unique bv
           mid: 123,
           bvid: "BV1",
           aid: 1,
-          title: "视频一",
+          title: "直播A 弹幕版",
           createdAtUnix: 100,
           createdAt: new Date(100 * 1000).toISOString(),
           source: "123",
@@ -156,9 +163,18 @@ test("syncSummaryUsersRecentVideos schedules same-user uploads against unique bv
           mid: 123,
           bvid: "BV2",
           aid: 2,
-          title: "视频二",
+          title: "直播A 纯净版",
           createdAtUnix: 90,
           createdAt: new Date(90 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BV3",
+          aid: 3,
+          title: "视频二",
+          createdAtUnix: 80,
+          createdAt: new Date(80 * 1000).toISOString(),
           source: "123",
         },
       ],
@@ -173,7 +189,7 @@ test("syncSummaryUsersRecentVideos schedules same-user uploads against unique bv
     },
   });
 
-  assert.deepEqual(observedKeys, ["BV1", "BV2"]);
+  assert.deepEqual(observedKeys, ["123\n直播a", "123\n直播a", "123\n视频二"]);
 });
 
 test("collectRecentUploadsFromUsers skips only-self-visible videos", async () => {
