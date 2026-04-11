@@ -1,6 +1,6 @@
-import { createCliError } from "../cli/errors.ts";
-import { extractCoveredPages, normalizeSummaryMarkers, splitSummaryForComments } from "../summary/format.ts";
-import { markPartsPublished, updateVideoCommentThread } from "../db/index.ts";
+import { createCliError } from "../cli/errors";
+import { extractCoveredPages, normalizeSummaryMarkers, splitSummaryForComments } from "../summary/format";
+import { markPartsPublished, updateVideoCommentThread } from "../db/index";
 
 const sleep = (timeout) =>
   new Promise((resolve) => {

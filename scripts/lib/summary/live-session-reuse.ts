@@ -1,4 +1,4 @@
-import { listVideoParts, listVideos, savePartSummary } from "../db/index.ts";
+import { listVideoParts, listVideos, savePartSummary } from "../db/index";
 
 const TITLE_VARIANT_SUFFIX_PATTERN =
   /\s*[\[(（【]?\s*(?:纯净版|弹幕版|无弹幕版|无弹幕|录播版|熟肉版)\s*[\])）】]?\s*$/u;

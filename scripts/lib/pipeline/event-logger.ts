@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { insertPipelineEvent } from "../db/index.ts";
-import type { Db, PipelineEventInput, PipelineEventLogger, VideoRecord } from "../db/index.ts";
+import { insertPipelineEvent } from "../db/index";
+import type { Db, PipelineEventInput, PipelineEventLogger, VideoRecord } from "../db/index";
 
 export function createPipelineEventLogger({
   db,

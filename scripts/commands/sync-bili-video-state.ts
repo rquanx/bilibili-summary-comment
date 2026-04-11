@@ -1,16 +1,16 @@
 import {
   createClient,
   readCookie,
-} from "../lib/bili/comment-utils.ts";
+} from "../lib/bili/comment-utils";
 import {
   addCookieOptions,
   addDatabaseOption,
   addVideoIdentityOptions,
   createCliCommand,
   runCli,
-} from "../lib/cli/tools.ts";
-import { openDatabase } from "../lib/db/index.ts";
-import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index.ts";
+} from "../lib/cli/tools";
+import { openDatabase } from "../lib/db/index";
+import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index";
 
 const command = addDatabaseOption(
   addVideoIdentityOptions(

@@ -1,4 +1,4 @@
-import { formatErrorMessage } from "./utils.ts";
+import { formatErrorMessage } from "./utils";
 
 const TRANSCRIPTION_FAILURE_TITLE = "\u8f6c\u5f55\u5931\u8d25";
 

@@ -1,5 +1,5 @@
-import { formatSummaryTime, parseSrt } from "../subtitle/srt-utils.ts";
-import { parseSummaryBlocks } from "./format.ts";
+import { formatSummaryTime, parseSrt } from "../subtitle/srt-utils";
+import { parseSummaryBlocks } from "./format";
 
 const SUMMARY_TIMESTAMP_PATTERN = /^(?<timestamp>\d{2}:\d{2}(?::\d{2})?)\s+(?<content>.+)$/u;
 

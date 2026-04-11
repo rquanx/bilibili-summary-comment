@@ -3,8 +3,8 @@ import {
   refreshBiliCookie,
   resolveBiliAuthFile,
   resolveBiliCookieFile,
-} from "../lib/bili/auth.ts";
-import { createCliCommand, runCli } from "../lib/cli/tools.ts";
+} from "../lib/bili/auth";
+import { createCliCommand, runCli } from "../lib/cli/tools";
 
 const command = createCliCommand({
   name: "refresh-bili-cookie",

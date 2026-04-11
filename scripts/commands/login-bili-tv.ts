@@ -1,6 +1,6 @@
 import { TvQrcodeLogin } from "@renmu/bili-api";
-import { saveBiliAuthBundle, resolveBiliAuthFile, resolveBiliCookieFile } from "../lib/bili/auth.ts";
-import { createCliCommand, runCli } from "../lib/cli/tools.ts";
+import { saveBiliAuthBundle, resolveBiliAuthFile, resolveBiliCookieFile } from "../lib/bili/auth";
+import { createCliCommand, runCli } from "../lib/cli/tools";
 
 const command = createCliCommand({
   name: "login-bili-tv",

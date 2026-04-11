@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { Client } from "@renmu/bili-api";
-import { createCliError, errorToJson } from "../cli/errors.ts";
+import { createCliError, errorToJson } from "../cli/errors";
 
 interface CommentArgs extends Record<string, unknown> {
   cookie?: unknown;

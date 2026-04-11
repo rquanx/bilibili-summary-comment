@@ -5,7 +5,7 @@ import type {
   VideoPartRecord,
   VideoPartUpsert,
   VideoRecord,
-} from "./types.ts";
+} from "./types";
 
 export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): VideoRecord | null {
   if (bvid) {

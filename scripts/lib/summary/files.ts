@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot } from "../shared/runtime-tools.ts";
-import { listPendingPublishParts, listVideoParts } from "../db/index.ts";
-import type { Db, SummaryArtifacts, VideoPartRecord, VideoRecord } from "../db/index.ts";
+import { getRepoRoot } from "../shared/runtime-tools";
+import { listPendingPublishParts, listVideoParts } from "../db/index";
+import type { Db, SummaryArtifacts, VideoPartRecord, VideoRecord } from "../db/index";
 
 export function writePartSummaryArtifact({
   bvid,

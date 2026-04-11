@@ -3,7 +3,7 @@ import {
   getType,
   readCookie,
   resolveOid,
-} from "../lib/bili/comment-utils.ts";
+} from "../lib/bili/comment-utils";
 import {
   addCommentTypeOption,
   addCookieOptions,
@@ -12,11 +12,11 @@ import {
   createCliCommand,
   parseOptionalPositiveInteger,
   runCli,
-} from "../lib/cli/tools.ts";
-import { writeSummaryArtifacts } from "../lib/summary/files.ts";
-import { runPublishStage } from "../lib/pipeline/publish-stage.ts";
-import { listPendingPublishParts, openDatabase } from "../lib/db/index.ts";
-import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index.ts";
+} from "../lib/cli/tools";
+import { writeSummaryArtifacts } from "../lib/summary/files";
+import { runPublishStage } from "../lib/pipeline/publish-stage";
+import { listPendingPublishParts, openDatabase } from "../lib/db/index";
+import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index";
 
 const command = addCommentTypeOption(
   addDatabaseOption(

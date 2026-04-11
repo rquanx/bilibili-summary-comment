@@ -1,5 +1,5 @@
-import { formatSummaryTime } from "../subtitle/srt-utils.ts";
-import { normalizeSummaryApiBaseUrl } from "./config.ts";
+import { formatSummaryTime } from "../subtitle/srt-utils";
+import { normalizeSummaryApiBaseUrl } from "./config";
 
 export async function requestSummary({
   pageNo,

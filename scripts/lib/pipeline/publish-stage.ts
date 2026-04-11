@@ -1,13 +1,13 @@
 import fs from "node:fs";
-import { getTopComment } from "../bili/comment-utils.ts";
-import { deleteSummaryThread, postSummaryThread } from "../bili/comment-thread.ts";
-import { writeSummaryArtifacts } from "../summary/files.ts";
+import { getTopComment } from "../bili/comment-utils";
+import { deleteSummaryThread, postSummaryThread } from "../bili/comment-thread";
+import { writeSummaryArtifacts } from "../summary/files";
 import {
   clearVideoPublishRebuildNeeded,
   resetPublishedStateForVideo,
   updateVideoCommentThread,
-} from "../db/index.ts";
-import type { Db, PipelineEventLogger, SummaryArtifacts, VideoRecord } from "../db/index.ts";
+} from "../db/index";
+import type { Db, PipelineEventLogger, SummaryArtifacts, VideoRecord } from "../db/index";
 
 export interface PublishStageResult {
   action: string;

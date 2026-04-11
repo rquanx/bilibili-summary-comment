@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot } from "../scripts/lib/shared/runtime-tools.ts";
+import { getRepoRoot } from "../scripts/lib/shared/runtime-tools";
 
 test("getRepoRoot resolves to the project root", () => {
   const repoRoot = getRepoRoot();

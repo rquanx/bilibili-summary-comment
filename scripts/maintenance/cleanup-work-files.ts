@@ -1,12 +1,12 @@
-import { resolveCleanupConfig } from "../lib/config/app-config.ts";
+import { resolveCleanupConfig } from "../lib/config/app-config";
 import {
   addDatabaseOption,
   addWorkRootOption,
   createCliCommand,
   parsePositiveIntegerArg,
   runCli,
-} from "../lib/cli/tools.ts";
-import { cleanupOldWorkDirectories } from "../lib/scheduler/index.ts";
+} from "../lib/cli/tools";
+import { cleanupOldWorkDirectories } from "../lib/scheduler/index";
 
 const command = addWorkRootOption(
   addDatabaseOption(

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot } from "../shared/runtime-tools.ts";
-import { delay, formatQueueOwnerLabel } from "./utils.ts";
+import { getRepoRoot } from "../shared/runtime-tools";
+import { delay, formatQueueOwnerLabel } from "./utils";
 
 const TRANSCRIPTION_QUEUE_LOCK_NAME = "videocaptioner-asr.lock";
 const TRANSCRIPTION_QUEUE_HEARTBEAT_MS = 60_000;

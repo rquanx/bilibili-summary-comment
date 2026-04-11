@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
-import { getRepoRoot } from "../shared/runtime-tools.ts";
+import { getRepoRoot } from "../shared/runtime-tools";
 
 const DEFAULT_AUTH_FILE = "bili-auth.json";
 const DEFAULT_COOKIE_FILE = "cookie.txt";

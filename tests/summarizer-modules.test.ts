@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveSummaryConfig } from "../scripts/lib/summary/config.ts";
+import { resolveSummaryConfig } from "../scripts/lib/summary/config";
 import {
   buildSummaryHttpRequest,
   buildSummaryPromptInput,
   extractSummaryText,
   resolveSummaryApiTarget,
-} from "../scripts/lib/summary/client.ts";
-import { normalizeSummaryOutput } from "../scripts/lib/summary/output.ts";
+} from "../scripts/lib/summary/client";
+import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
   const config = resolveSummaryConfig(

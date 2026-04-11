@@ -3,8 +3,8 @@ import {
   createCliCommand,
   parsePositiveIntegerArg,
   runCli,
-} from "../lib/cli/tools.ts";
-import { listPipelineEvents, openDatabase } from "../lib/db/index.ts";
+} from "../lib/cli/tools";
+import { listPipelineEvents, openDatabase } from "../lib/db/index";
 
 const command = addDatabaseOption(
   createCliCommand({

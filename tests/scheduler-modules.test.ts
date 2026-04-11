@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner.ts";
-import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency.ts";
-import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets.ts";
-import * as schedulerTasks from "../scripts/lib/scheduler/index.ts";
-import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup.ts";
-import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner.ts";
-import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads.ts";
+import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
+import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency";
+import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets";
+import * as schedulerTasks from "../scripts/lib/scheduler/index";
+import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup";
+import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner";
+import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");

@@ -1,4 +1,4 @@
-import type { Db, PipelineEventInput, PipelineEventRecord } from "./types.ts";
+import type { Db, PipelineEventInput, PipelineEventRecord } from "./types";
 
 export function insertPipelineEvent(db: Db, event: PipelineEventInput): PipelineEventRecord | null {
   const createdAt = new Date().toISOString();
