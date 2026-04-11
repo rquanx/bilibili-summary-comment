@@ -26,97 +26,121 @@ export function buildLiveSessionKey({ title, parts }) {
 }
 
 export function findReusableSummarySource(db, currentVideo, currentParts) {
-  const currentKey = buildLiveSessionKey({
-    title: currentVideo?.title,
-    parts: currentParts,
-  });
-  if (!currentKey) {
+  const liveSessionTitle = normalizeLiveSessionTitle(currentVideo?.title);
+  if (!liveSessionTitle) {
     return null;
   }
 
   const candidates = listVideos(db);
+  let bestCandidate = null;
   for (const candidateVideo of candidates) {
     if (candidateVideo.id === currentVideo.id) {
       continue;
     }
 
-    if (Number(candidateVideo.page_count ?? 0) !== currentParts.length) {
+    if (normalizeLiveSessionTitle(candidateVideo.title) !== liveSessionTitle) {
       continue;
     }
 
     const candidateParts = listVideoParts(db, candidateVideo.id);
-    if (!hasReusableSummaries(candidateParts)) {
-      continue;
-    }
-
-    const candidateKey = buildLiveSessionKey({
-      title: candidateVideo.title,
-      parts: candidateParts,
+    const reusableMatches = findMatchingParts(currentParts, candidateParts, {
+      canReuseTargetPart(part) {
+        return !String(part.summary_text ?? "").trim();
+      },
+      canReuseSourcePart(part) {
+        return Boolean(String(part.summary_text ?? "").trim() && String(part.summary_hash ?? "").trim());
+      },
     });
-    if (candidateKey !== currentKey) {
+    if (reusableMatches.length === 0) {
       continue;
     }
 
-    return {
-      video: candidateVideo,
-      parts: candidateParts,
-      liveSessionKey: currentKey,
-    };
+    if (isBetterCandidate(bestCandidate, candidateVideo, reusableMatches)) {
+      bestCandidate = {
+        video: candidateVideo,
+        parts: candidateParts,
+        matchedPages: reusableMatches.map((match) => match.targetPageNo),
+      };
+    }
   }
 
-  return null;
+  if (!bestCandidate) {
+    return null;
+  }
+
+  return {
+    video: bestCandidate.video,
+    parts: bestCandidate.parts,
+    liveSessionKey: liveSessionTitle,
+    matchedPages: bestCandidate.matchedPages,
+  };
 }
 
 export function reusePartSummaries(db, targetVideoId, sourceParts) {
-  const targetParts = listVideoParts(db, targetVideoId)
-    .map((part) => ({
-      pageNo: Number(part.page_no),
-      partTitle: normalizeText(part.part_title),
-      summaryText: String(part.summary_text ?? "").trim(),
-    }))
-    .sort((left, right) => left.pageNo - right.pageNo);
-  const sourceActiveParts = [...(Array.isArray(sourceParts) ? sourceParts : [])]
-    .map((part) => ({
-      pageNo: Number(part.page_no),
-      partTitle: normalizeText(part.part_title),
-      summaryText: String(part.summary_text ?? "").trim(),
-      summaryHash: String(part.summary_hash ?? "").trim(),
-    }))
-    .sort((left, right) => left.pageNo - right.pageNo);
+  const targetParts = listVideoParts(db, targetVideoId);
+  const sourceActiveParts = Array.isArray(sourceParts) ? sourceParts : [];
   const reusedPages = [];
 
-  for (const [index, part] of sourceActiveParts.entries()) {
-    const targetPart = targetParts[index];
-    if (!targetPart || targetPart.partTitle !== part.partTitle) {
-      continue;
-    }
+  const reusableMatches = findMatchingParts(targetParts, sourceActiveParts, {
+    canReuseTargetPart(part) {
+      return !String(part.summary_text ?? "").trim();
+    },
+    canReuseSourcePart(part) {
+      return Boolean(String(part.summary_text ?? "").trim() && String(part.summary_hash ?? "").trim());
+    },
+  });
 
-    if (targetPart.summaryText) {
-      continue;
-    }
-
-    const summaryText = part.summaryText;
-    const summaryHash = part.summaryHash;
-    if (!summaryText || !summaryHash) {
-      continue;
-    }
-
-    savePartSummary(db, targetVideoId, targetPart.pageNo, {
+  for (const match of reusableMatches) {
+    const summaryText = String(match.sourcePart.summary_text ?? "").trim();
+    const summaryHash = String(match.sourcePart.summary_hash ?? "").trim();
+    savePartSummary(db, targetVideoId, match.targetPageNo, {
       summaryText,
       summaryHash,
     });
-    reusedPages.push(targetPart.pageNo);
+    reusedPages.push(match.targetPageNo);
   }
 
   return reusedPages;
 }
 
-function hasReusableSummaries(parts) {
-  if (!Array.isArray(parts) || parts.length === 0) {
-    return false;
+export function findReusableSubtitleSource(db, currentVideo, targetPart) {
+  const liveSessionTitle = normalizeLiveSessionTitle(currentVideo?.title);
+  const normalizedPartTitle = normalizeText(targetPart?.part_title ?? targetPart?.partTitle ?? "");
+  if (!liveSessionTitle || !normalizedPartTitle) {
+    return null;
   }
 
-  return parts.every((part) => String(part.summary_text ?? "").trim() && String(part.summary_hash ?? "").trim());
+  const candidates = listVideos(db);
+  let bestMatch = null;
+  for (const candidateVideo of candidates) {
+    if (candidateVideo.id === currentVideo.id) {
+      continue;
+    }
+
+    if (normalizeLiveSessionTitle(candidateVideo.title) !== liveSessionTitle) {
+      continue;
+    }
+
+    const candidateParts = listVideoParts(db, candidateVideo.id);
+    const reusableMatches = findMatchingParts([targetPart], candidateParts, {
+      canReuseSourcePart(part) {
+        return Boolean(String(part.subtitle_path ?? "").trim());
+      },
+    });
+    if (reusableMatches.length === 0) {
+      continue;
+    }
+
+    const candidateMatch = reusableMatches[0];
+    if (isBetterSubtitleMatch(bestMatch, candidateVideo, candidateMatch, targetPart)) {
+      bestMatch = {
+        video: candidateVideo,
+        part: candidateMatch.sourcePart,
+      };
+    }
+  }
+
+  return bestMatch;
 }
 
 function normalizeParts(parts) {
@@ -135,4 +159,85 @@ function normalizeText(value) {
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+function findMatchingParts(
+  targetParts,
+  sourceParts,
+  options: {
+    canReuseTargetPart?: (part: Record<string, unknown>) => boolean;
+    canReuseSourcePart?: (part: Record<string, unknown>) => boolean;
+  } = {},
+) {
+  const normalizedTargetParts = normalizeSourceParts(targetParts);
+  const normalizedSourceParts = normalizeSourceParts(sourceParts);
+  const sourceBuckets = new Map();
+  const matches = [];
+
+  for (const sourcePart of normalizedSourceParts) {
+    if (options.canReuseSourcePart && !options.canReuseSourcePart(sourcePart.rawPart)) {
+      continue;
+    }
+
+    const bucket = sourceBuckets.get(sourcePart.partTitle) ?? [];
+    bucket.push(sourcePart);
+    sourceBuckets.set(sourcePart.partTitle, bucket);
+  }
+
+  for (const targetPart of normalizedTargetParts) {
+    if (options.canReuseTargetPart && !options.canReuseTargetPart(targetPart.rawPart)) {
+      continue;
+    }
+
+    const bucket = sourceBuckets.get(targetPart.partTitle);
+    if (!bucket || bucket.length === 0) {
+      continue;
+    }
+
+    const sourcePart = bucket.shift();
+    matches.push({
+      targetPageNo: targetPart.pageNo,
+      targetPart: targetPart.rawPart,
+      sourcePart: sourcePart.rawPart,
+    });
+  }
+
+  return matches;
+}
+
+function normalizeSourceParts(parts) {
+  return [...(Array.isArray(parts) ? parts : [])]
+    .map((part) => ({
+      rawPart: part,
+      pageNo: Number(part?.page_no ?? part?.pageNo ?? 0),
+      partTitle: normalizeText(part?.part_title ?? part?.partTitle ?? ""),
+    }))
+    .filter((part) => part.pageNo > 0 && part.partTitle)
+    .sort((left, right) => left.pageNo - right.pageNo);
+}
+
+function isBetterCandidate(currentCandidate, nextVideo, nextMatches) {
+  if (!currentCandidate) {
+    return true;
+  }
+
+  if (nextMatches.length !== currentCandidate.matchedPages.length) {
+    return nextMatches.length > currentCandidate.matchedPages.length;
+  }
+
+  return String(nextVideo.updated_at ?? "") > String(currentCandidate.video.updated_at ?? "");
+}
+
+function isBetterSubtitleMatch(currentMatch, nextVideo, nextMatch, targetPart) {
+  if (!currentMatch) {
+    return true;
+  }
+
+  const nextSamePage = Number(nextMatch.sourcePart?.page_no ?? 0) === Number(targetPart?.page_no ?? targetPart?.pageNo ?? 0);
+  const currentSamePage = Number(currentMatch.part?.page_no ?? 0) === Number(targetPart?.page_no ?? targetPart?.pageNo ?? 0);
+  if (nextSamePage !== currentSamePage) {
+    return nextSamePage;
+  }
+
+  return String(nextVideo.updated_at ?? "") > String(currentMatch.video.updated_at ?? "");
 }

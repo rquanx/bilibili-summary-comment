@@ -130,7 +130,7 @@ test("syncSummaryUsersRecentVideos keeps same-user title variants and queues ear
   assert.deepEqual(scheduledUploads.map((item) => item.bvid), ["BVCLEAN", "BVDANMU", "BVPLAIN"]);
   assert.equal(
     logMessages.includes(
-      "Queue 2 same-session variants serially for summary/comment reuse: BVCLEAN -> BVDANMU",
+      "Queue 2 same-session variants serially for subtitle/summary/comment reuse: BVCLEAN -> BVDANMU",
     ),
     true,
   );

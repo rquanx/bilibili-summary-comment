@@ -215,7 +215,7 @@ function orderRecentUploadsForVariantReuse(
     if (sortedGroup.length > 1) {
       const orderedBvids = sortedGroup.map((item) => item.upload.bvid).filter(Boolean);
       onLog(
-        `Queue ${sortedGroup.length} same-session variants serially for summary/comment reuse: ${orderedBvids.join(" -> ")}`,
+        `Queue ${sortedGroup.length} same-session variants serially for subtitle/summary/comment reuse: ${orderedBvids.join(" -> ")}`,
       );
     }
 

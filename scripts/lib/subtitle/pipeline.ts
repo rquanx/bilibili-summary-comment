@@ -3,6 +3,7 @@ import path from "node:path";
 import { getRepoRoot, runVenvModule } from "../shared/runtime-tools";
 import { savePartSubtitle } from "../db/index";
 import type { Db } from "../db/index";
+import { findReusableSubtitleSource } from "../summary/live-session-reuse";
 import { tryDownloadBiliSubtitle } from "./bili";
 import { ensureYtDlpCookieFile } from "./cookie-file";
 import { transcribeWithRetries } from "./transcriber";
@@ -75,6 +76,44 @@ export async function ensureSubtitleForPart({
       subtitlePath,
       subtitleSource: "local",
       subtitleLang: null,
+      reused: true,
+    });
+  }
+
+  const reusableSubtitle = findReusableSubtitleSource(
+    db,
+    {
+      id: videoId,
+      bvid,
+      title: videoTitle,
+    },
+    {
+      pageNo,
+      partTitle,
+    },
+  );
+  const reusableSubtitlePath = String(reusableSubtitle?.part?.subtitle_path ?? "").trim();
+  if (reusableSubtitlePath && fs.existsSync(reusableSubtitlePath)) {
+    progress?.logPartStage?.(
+      pageNo,
+      "Subtitle",
+      `Reusing subtitle from ${reusableSubtitle.video.bvid} P${Number(reusableSubtitle.part?.page_no ?? 0)}`,
+    );
+
+    if (path.resolve(reusableSubtitlePath) !== path.resolve(subtitlePath)) {
+      fs.copyFileSync(reusableSubtitlePath, subtitlePath);
+    }
+
+    return finalizeSubtitle({
+      db,
+      videoId,
+      pageNo,
+      cid,
+      partTitle,
+      eventLogger,
+      subtitlePath,
+      subtitleSource: String(reusableSubtitle.part?.subtitle_source ?? "").trim() || "local",
+      subtitleLang: reusableSubtitle.part?.subtitle_lang ?? null,
       reused: true,
     });
   }
