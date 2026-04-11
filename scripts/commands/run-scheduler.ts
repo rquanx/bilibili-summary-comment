@@ -16,6 +16,8 @@ import {
 } from "../lib/bili/auth";
 import { createCoalescedRunner } from "../lib/scheduler/coalesced-runner";
 import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "../lib/scheduler/index";
+import { createWorkFileLogger } from "../lib/shared/logger";
+import type { LogLevel } from "../lib/shared/logger";
 
 const command = addWorkRootOption(
   addDatabaseOption(
@@ -38,19 +40,42 @@ const command = addWorkRootOption(
 
 await runCli({
   command,
+  printResult: false,
   async handler(args) {
     const config = resolveSchedulerConfig(args);
     config.authFile = resolveBiliAuthFile(config.authFile);
     const resolvedCookieFile = resolveBiliCookieFile(config.cookieFile);
     const runningTasks = new Set<string>();
+    const schedulerLogger = createWorkFileLogger({
+      workRoot: config.workRoot,
+      name: "scheduler",
+      context: {
+        scope: "scheduler",
+        cookieFile: resolvedCookieFile,
+        dbPath: config.dbPath,
+      },
+    });
 
     function getErrorMessage(error: unknown) {
       return error instanceof Error ? error.message : "Unknown error";
     }
 
-    function log(message) {
-      process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
+    function log(message, {
+      level = "progress",
+      details = undefined,
+      console = true,
+    }: {
+      level?: LogLevel;
+      details?: Record<string, unknown> | undefined;
+      console?: boolean;
+    } = {}) {
+      schedulerLogger.log(level, message, details);
+      if (console) {
+        process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
+      }
     }
+
+    log(`Detailed log: ${schedulerLogger.filePath}`);
 
     async function runRefreshTask({ force = false } = {}) {
       const bundle = loadBiliAuthBundle(config.authFile);
@@ -94,6 +119,9 @@ await runCli({
         maxConcurrent: config.summaryConcurrency,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
+        logger: schedulerLogger.child({
+          task: "summary",
+        }),
         onLog(message) {
           log(`[summary] ${message}`);
         },
@@ -148,7 +176,13 @@ await runCli({
       try {
         return await task();
       } catch (error) {
-        log(`${name} failed: ${getErrorMessage(error)}`);
+        log(`${name} failed: ${getErrorMessage(error)}`, {
+          level: "error",
+          details: {
+            task: name,
+            error,
+          },
+        });
         return {
           action: `${name}-failed`,
           message: getErrorMessage(error),
@@ -168,7 +202,13 @@ await runCli({
       },
       onFailure(error) {
         const message = getErrorMessage(error);
-        log(`summary failed: ${message}`);
+        log(`summary failed: ${message}`, {
+          level: "error",
+          details: {
+            task: "summary",
+            error,
+          },
+        });
         return {
           action: "summary-failed",
           uploads: 0,

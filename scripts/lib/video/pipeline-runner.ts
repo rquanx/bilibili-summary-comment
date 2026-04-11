@@ -12,6 +12,7 @@ import { createProgressReporter, trimCommandOutput } from "../pipeline/progress"
 import { runPublishStage } from "../pipeline/publish-stage";
 import { resolveSummaryConfig } from "../summary/index";
 import { openDatabase } from "../db/index";
+import { createWorkFileLogger } from "../shared/logger";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index";
 import type { PipelineEventLogger } from "../db/index";
 import type { CommandError } from "../shared/runtime-tools";
@@ -40,9 +41,21 @@ export async function runVideoPipeline(
 
   const snapshot = await fetchVideoSnapshot(client, args);
   const state = syncVideoSnapshotToDb(db, snapshot);
+  const logger = createWorkFileLogger({
+    workRoot,
+    name: "pipeline",
+    label: state.video.bvid,
+    context: {
+      scope: "pipeline",
+      bvid: state.video.bvid,
+      aid: state.video.aid,
+      videoTitle: state.video.title,
+    },
+  });
   const eventLogger = createPipelineEventLogger({
     db,
     video: state.video,
+    logger,
   });
   onEventLogger?.(eventLogger);
   const summaryConfig = resolveSummaryConfig(args);
@@ -50,18 +63,30 @@ export async function runVideoPipeline(
   const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
   const totalParts = state.video.page_count ?? snapshot?.pages?.length ?? 0;
   const pendingPartCount = forceSummary ? state.parts.length : state.pendingSummaryParts.length;
-  const progress = createProgressReporter(state.video, pendingPartCount);
+  const progress = createProgressReporter(state.video, pendingPartCount, {
+    logger,
+  });
+
+  logger.info("Pipeline logger initialized", {
+    logPath: logger.filePath,
+    totalParts,
+    pendingPartCount,
+    forceSummary,
+    publishRequested: Boolean(args.publish),
+  });
+  progress.log(`Detailed log: ${logger.filePath}`);
 
   eventLogger.log({
     scope: "pipeline",
     action: "run",
     status: "started",
     message: `Pipeline started for ${state.video.bvid}`,
-    details: {
-      totalParts,
-      pendingParts: state.pendingSummaryParts.length,
-      forceSummary,
-      publishRequested: Boolean(args.publish),
+      details: {
+        logPath: logger.filePath,
+        totalParts,
+        pendingParts: state.pendingSummaryParts.length,
+        forceSummary,
+        publishRequested: Boolean(args.publish),
       changeSet: state.changeSet,
     },
   });
@@ -186,6 +211,7 @@ export async function runVideoPipeline(
 
     return {
       ok: true,
+      logPath: logger.filePath,
       dbPath,
       video: {
         id: state.video.id,
@@ -208,6 +234,14 @@ export async function runVideoPipeline(
     attachVideoContextToError(error, {
       bvid: state.video.bvid,
       aid: state.video.aid,
+    });
+    attachErrorDetails(error, {
+      logPath: logger.filePath,
+    });
+    logger.error("Pipeline failed", {
+      error,
+      stderr: trimCommandOutput((error as CommandError | undefined)?.stderr, 20_000),
+      stdout: trimCommandOutput((error as CommandError | undefined)?.stdout, 20_000),
     });
     throw error;
   }

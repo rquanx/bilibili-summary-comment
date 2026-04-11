@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildBiliVideoUrl } from "../bili/video-url";
 import { getRepoRoot, runCommand } from "../shared/runtime-tools";
+import { createCompositeWriteStream } from "../shared/logger";
 import type { CommandResult, RunCommandOptions } from "../shared/runtime-tools";
+import type { FileLogger } from "../shared/logger";
 
 export interface PipelineProcessResult extends Record<string, unknown> {
   ok?: boolean;
@@ -26,6 +28,7 @@ interface RunPipelineForBvidOptions {
   workRoot: string;
   bvid: string;
   publish?: boolean;
+  logger?: FileLogger | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
   repoRoot?: string;
 }
@@ -36,6 +39,7 @@ export async function runPipelineForBvid({
   workRoot,
   bvid,
   publish = true,
+  logger = null,
   runCommandImpl = runCommand,
   repoRoot = getRepoRoot(),
 }: RunPipelineForBvidOptions): Promise<PipelineProcessResult> {
@@ -56,9 +60,28 @@ export async function runPipelineForBvid({
   }
   let result;
   try {
+    const stdoutLogStream = logger?.createStream({
+      level: "debug",
+      scope: "pipeline-child",
+      bvid,
+      channel: "stdout",
+    }) ?? null;
+    const stderrLogStream = logger?.createStream({
+      level: "debug",
+      scope: "pipeline-child",
+      bvid,
+      channel: "stderr",
+    }) ?? null;
     result = await runCommandImpl(process.execPath, args, {
       streamOutput: true,
-      outputStream: process.stderr,
+      stdoutStream: stdoutLogStream,
+      stderrStream: createCompositeWriteStream(process.stderr, stderrLogStream),
+      logger,
+      logContext: {
+        scope: "scheduler",
+        action: "run-pipeline",
+        bvid,
+      },
     });
   } catch (error) {
     appendPipelineFailureContextToCommandError(error, bvid);

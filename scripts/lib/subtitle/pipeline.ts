@@ -178,7 +178,16 @@ export async function ensureSubtitleForPart({
     await runVenvModule("yt_dlp", args, {
       venvPath,
       streamOutput: true,
-      outputStream: progress?.outputStream,
+      outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+      logger: progress?.logger ?? null,
+      logContext: {
+        scope: "subtitle",
+        action: "download-audio",
+        bvid,
+        pageNo,
+        cid,
+        partTitle,
+      },
     });
   }
 

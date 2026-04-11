@@ -6,6 +6,7 @@ import type { PipelineUpload } from "./concurrency";
 import type { PipelineRunResult, PipelineFailureResult } from "./concurrency";
 import type { PipelineProcessResult } from "./pipeline-runner";
 import type { SummaryUserTarget } from "./user-targets";
+import type { FileLogger } from "../shared/logger";
 
 export interface RecentUpload extends PipelineUpload {
   mid: number;
@@ -38,6 +39,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
   workRoot?: string;
   publish?: boolean;
   maxConcurrent?: number;
+  logger?: FileLogger | null;
   collectRecentUploadsImpl?: (options: CollectRecentUploadsOptions) => Promise<CollectedUploadsResult>;
   runPipelinesWithConcurrencyImpl?: (
     options: Parameters<typeof runPipelinesWithConcurrency<RecentUpload, PipelineProcessResult>>[0],
@@ -123,6 +125,7 @@ export async function syncSummaryUsersRecentVideos({
   sinceHours = 24,
   publish = true,
   maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
+  logger = null,
   onLog = () => {},
   collectRecentUploadsImpl = collectRecentUploadsFromUsers,
   runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
@@ -173,6 +176,10 @@ export async function syncSummaryUsersRecentVideos({
         workRoot,
         bvid: upload.bvid,
         publish,
+        logger: logger?.child({
+          bvid: upload.bvid,
+          mid: upload.mid,
+        }) ?? null,
       });
     },
   });

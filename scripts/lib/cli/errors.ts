@@ -20,6 +20,7 @@ interface ErrorLike {
   aid?: unknown;
   pageNo?: unknown;
   videoUrl?: unknown;
+  logPath?: unknown;
   failedStep?: unknown;
   failedScope?: unknown;
   failedAction?: unknown;
@@ -101,6 +102,10 @@ export function extractErrorDetails(error: unknown): CliErrorDetails {
   });
   if (videoUrl) {
     details.videoUrl = videoUrl;
+  }
+
+  if (typeof errorLike.logPath === "string" && errorLike.logPath.trim()) {
+    details.logPath = errorLike.logPath.trim();
   }
 
   if (typeof errorLike.failedStep === "string" && errorLike.failedStep.trim()) {

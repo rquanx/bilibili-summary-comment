@@ -110,7 +110,18 @@ export async function transcribeWithRetries({
             venvPath,
             env: transcribeEnv,
             streamOutput: true,
-            outputStream: progress?.outputStream,
+            outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+            logger: progress?.logger ?? null,
+            logContext: {
+              scope: "subtitle",
+              action: "asr-command",
+              bvid,
+              pageNo,
+              cid,
+              partTitle,
+              engine,
+              attempt,
+            },
           });
         });
         eventLogger?.log({

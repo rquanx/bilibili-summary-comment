@@ -7,6 +7,7 @@ import {
   runCli,
 } from "../lib/cli/tools";
 import { syncSummaryUsersRecentVideos } from "../lib/scheduler/index";
+import { createWorkFileLogger } from "../lib/shared/logger";
 import type { PipelineProcessResult } from "../lib/scheduler/pipeline-runner";
 
 const command = addWorkRootOption(
@@ -24,8 +25,18 @@ const command = addWorkRootOption(
 
 await runCli({
   command,
+  printResult: false,
   async handler(args) {
     const config = resolveSummaryUsersConfig(args);
+    const logger = createWorkFileLogger({
+      workRoot: config.workRoot,
+      name: "sync-summary-users",
+      context: {
+        scope: "sync-summary-users",
+        dbPath: config.dbPath,
+      },
+    });
+    process.stderr.write(`[sync-summary-users] Detailed log: ${logger.filePath}\n`);
 
     const result = await syncSummaryUsersRecentVideos({
       summaryUsers: config.summaryUsers,
@@ -34,7 +45,9 @@ await runCli({
       maxConcurrent: config.summaryConcurrency,
       dbPath: config.dbPath,
       workRoot: config.workRoot,
+      logger,
       onLog(message) {
+        logger.progress(message);
         process.stderr.write(`[sync-summary-users] ${message}\n`);
       },
     });
@@ -43,8 +56,13 @@ await runCli({
       process.exitCode = 1;
     }
 
+    process.stderr.write(
+      `[sync-summary-users] Finished: uploads=${result.uploads.length}, success=${result.runs.length}, failures=${result.failures.length}\n`,
+    );
+
     return {
       ok: result.failures.length === 0,
+      logPath: logger.filePath,
       summaryUsers: result.summaryUsers,
       uploadCount: result.uploads.length,
       successCount: result.runs.length,

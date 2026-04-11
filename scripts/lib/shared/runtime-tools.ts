@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import type { StdioOptions } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { config as loadDotEnvConfig } from "dotenv";
+import type { FileLogger, LogContext } from "./logger";
 
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 
@@ -25,6 +26,10 @@ export interface RunCommandOptions {
   stdio?: StdioOptions;
   streamOutput?: boolean;
   outputStream?: Pick<NodeJS.WritableStream, "write"> | null;
+  stdoutStream?: Pick<NodeJS.WritableStream, "write"> | null;
+  stderrStream?: Pick<NodeJS.WritableStream, "write"> | null;
+  logger?: FileLogger | null;
+  logContext?: LogContext;
 }
 
 export interface RunVenvModuleOptions extends RunCommandOptions {
@@ -78,6 +83,16 @@ export async function runVenvModule(
 export async function runCommand(command: string, args: string[], options: RunCommandOptions = {}): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const outputStream = options.outputStream ?? process.stderr;
+    const stdoutStream = options.stdoutStream ?? outputStream;
+    const stderrStream = options.stderrStream ?? outputStream;
+    const logger = options.logger ?? null;
+    const logContext = options.logContext ?? {};
+    logger?.debug("Starting command", {
+      ...logContext,
+      command,
+      args,
+      cwd: options.cwd ?? getRepoRoot(),
+    });
     const child = spawn(command, args, {
       cwd: options.cwd ?? getRepoRoot(),
       env: { ...process.env, ...(options.env ?? {}) },
@@ -87,14 +102,15 @@ export async function runCommand(command: string, args: string[], options: RunCo
 
     let stdout = "";
     let stderr = "";
-    let streamedEndsWithNewline = true;
+    let stdoutEndsWithNewline = true;
+    let stderrEndsWithNewline = true;
 
     if (child.stdout) {
       child.stdout.on("data", (chunk) => {
         stdout += chunk.toString();
-        if (options.streamOutput && outputStream) {
-          outputStream.write(chunk);
-          streamedEndsWithNewline = /[\r\n]$/.test(chunk.toString());
+        if (options.streamOutput && stdoutStream) {
+          stdoutStream.write(chunk);
+          stdoutEndsWithNewline = /[\r\n]$/.test(chunk.toString());
         }
       });
     }
@@ -102,20 +118,40 @@ export async function runCommand(command: string, args: string[], options: RunCo
     if (child.stderr) {
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
-        if (options.streamOutput && outputStream) {
-          outputStream.write(chunk);
-          streamedEndsWithNewline = /[\r\n]$/.test(chunk.toString());
+        if (options.streamOutput && stderrStream) {
+          stderrStream.write(chunk);
+          stderrEndsWithNewline = /[\r\n]$/.test(chunk.toString());
         }
       });
     }
 
-    child.on("error", reject);
+    child.on("error", (error) => {
+      logger?.error("Command process error", {
+        ...logContext,
+        command,
+        args,
+        error,
+      });
+      reject(error);
+    });
     child.on("close", (code) => {
-      if (options.streamOutput && outputStream && !streamedEndsWithNewline) {
-        outputStream.write("\n");
+      if (options.streamOutput && stdoutStream && !stdoutEndsWithNewline) {
+        stdoutStream.write("\n");
+      }
+
+      if (options.streamOutput && stderrStream && !stderrEndsWithNewline) {
+        stderrStream.write("\n");
       }
 
       if (code === 0) {
+        logger?.info("Command completed", {
+          ...logContext,
+          command,
+          args,
+          code,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length,
+        });
         resolve({ code, stdout, stderr });
         return;
       }
@@ -124,6 +160,14 @@ export async function runCommand(command: string, args: string[], options: RunCo
       error.code = code;
       error.stdout = stdout;
       error.stderr = stderr;
+      logger?.error("Command failed", {
+        ...logContext,
+        command,
+        args,
+        code,
+        stdoutLength: stdout.length,
+        stderrLength: stderr.length,
+      });
       reject(error);
     });
   });
