@@ -1,4 +1,5 @@
 export { openDatabase } from "./database";
+export { runInTransaction } from "./database";
 export type {
   Db,
   PipelineEventInput,

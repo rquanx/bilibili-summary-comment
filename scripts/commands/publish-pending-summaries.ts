@@ -42,44 +42,48 @@ await runCli({
     const oid = await resolveOid(client, args);
     const dbPath = typeof args.db === "string" && args.db.trim() ? args.db : "work/pipeline.sqlite3";
     const db = openDatabase(dbPath);
-    const snapshot = await fetchVideoSnapshot(client, args);
-    const state = syncVideoSnapshotToDb(db, snapshot);
-    const pendingParts = listPendingPublishParts(db, state.video.id);
-    const artifacts = writeSummaryArtifacts(db, state.video);
-    const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
+    try {
+      const snapshot = await fetchVideoSnapshot(client, args);
+      const state = syncVideoSnapshotToDb(db, snapshot);
+      const pendingParts = listPendingPublishParts(db, state.video.id);
+      const artifacts = writeSummaryArtifacts(db, state.video);
+      const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
 
-    if (pendingParts.length === 0 && !needsRebuildPublish) {
+      if (pendingParts.length === 0 && !needsRebuildPublish) {
+        return {
+          ok: true,
+          dbPath,
+          oid,
+          type,
+          message: "No pending summaries to publish.",
+          pendingPublishPages: [],
+        };
+      }
+
+      const result = await runPublishStage({
+        client,
+        db,
+        video: state.video,
+        artifacts,
+        oid,
+        type,
+        forcedRootRpid: parseOptionalPositiveInteger(args["root-rpid"], "--root-rpid"),
+      });
+
       return {
         ok: true,
+        action: result.action,
         dbPath,
         oid,
         type,
-        message: "No pending summaries to publish.",
-        pendingPublishPages: [],
+        rootCommentRpid: result.rootCommentRpid ?? null,
+        rebuild: Boolean(result.rebuild),
+        pendingPublishPages: pendingParts.map((part) => part.page_no),
+        coveredPagesFromMessage: result.coveredPagesFromMessage ?? [],
+        createdComments: result.createdComments ?? [],
       };
+    } finally {
+      db.close?.();
     }
-
-    const result = await runPublishStage({
-      client,
-      db,
-      video: state.video,
-      artifacts,
-      oid,
-      type,
-      forcedRootRpid: parseOptionalPositiveInteger(args["root-rpid"], "--root-rpid"),
-    });
-
-    return {
-      ok: true,
-      action: result.action,
-      dbPath,
-      oid,
-      type,
-      rootCommentRpid: result.rootCommentRpid ?? null,
-      rebuild: Boolean(result.rebuild),
-      pendingPublishPages: pendingParts.map((part) => part.page_no),
-      coveredPagesFromMessage: result.coveredPagesFromMessage ?? [],
-      createdComments: result.createdComments ?? [],
-    };
   },
 });

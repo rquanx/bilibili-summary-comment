@@ -27,6 +27,7 @@ const command = addWorkRootOption(
       .option("--auth-file <path>", "Optional. TV auth file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
+      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg)
       .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
@@ -90,6 +91,7 @@ await runCli({
         summaryUsers: config.summaryUsers,
         cookieFile: resolvedCookieFile,
         sinceHours: config.summarySinceHours,
+        maxConcurrent: config.summaryConcurrency,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
         onLog(message) {
@@ -208,6 +210,7 @@ await runCli({
       mode: "daemon",
       timezone: config.timezone ?? "system",
       summaryUsers: config.summaryUsers,
+      summaryConcurrency: config.summaryConcurrency,
       refreshDays: config.refreshDays,
       cleanupDays: config.cleanupDays,
     };

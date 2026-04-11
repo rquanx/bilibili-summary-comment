@@ -14,3 +14,15 @@ export function openDatabase(databasePath: string): DatabaseSync {
   migrateDatabase(db);
   return db;
 }
+
+export function runInTransaction<T>(db: Pick<DatabaseSync, "exec">, work: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = work();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}

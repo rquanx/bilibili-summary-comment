@@ -23,6 +23,7 @@ const summaryUsersConfigSchema = z.object({
   summaryUsers: z.string(),
   cookieFile: nonEmptyStringSchema,
   sinceHours: positiveIntegerLikeSchema,
+  summaryConcurrency: positiveIntegerLikeSchema,
   dbPath: nonEmptyStringSchema,
   workRoot: nonEmptyStringSchema,
 });
@@ -32,6 +33,7 @@ const schedulerConfigSchema = z.object({
   authFile: optionalTrimmedStringSchema,
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
+  summaryConcurrency: positiveIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
   dbPath: nonEmptyStringSchema,
@@ -48,6 +50,7 @@ interface AppConfigOptions extends Record<string, unknown> {
   timezone?: unknown;
   ["work-root"]?: unknown;
   ["cleanup-days"]?: unknown;
+  ["summary-concurrency"]?: unknown;
   ["summary-users"]?: unknown;
   ["cookie-file"]?: unknown;
   ["summary-since-hours"]?: unknown;
@@ -68,6 +71,7 @@ export function resolveSummaryUsersConfig(options: AppConfigOptions = {}): Summa
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE ?? "cookie.txt",
     sinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
+    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
     workRoot: options["work-root"] ?? process.env.WORK_ROOT ?? "work",
   });
@@ -79,6 +83,7 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE,
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
+    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
     refreshDays: options["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30,
     cleanupDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",

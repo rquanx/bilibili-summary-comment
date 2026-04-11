@@ -37,6 +37,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
   dbPath?: string;
   workRoot?: string;
   publish?: boolean;
+  maxConcurrent?: number;
   collectRecentUploadsImpl?: (options: CollectRecentUploadsOptions) => Promise<CollectedUploadsResult>;
   runPipelinesWithConcurrencyImpl?: (
     options: Parameters<typeof runPipelinesWithConcurrency<RecentUpload, PipelineProcessResult>>[0],
@@ -121,6 +122,7 @@ export async function syncSummaryUsersRecentVideos({
   workRoot = "work",
   sinceHours = 24,
   publish = true,
+  maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
   onLog = () => {},
   collectRecentUploadsImpl = collectRecentUploadsFromUsers,
   runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
@@ -155,10 +157,11 @@ export async function syncSummaryUsersRecentVideos({
     };
   }
 
-  onLog(`Running up to ${SUMMARY_PIPELINE_MAX_CONCURRENCY} pipelines concurrently after variant deduplication`);
+  const safeMaxConcurrent = Math.max(1, Number(maxConcurrent) || SUMMARY_PIPELINE_MAX_CONCURRENCY);
+  onLog(`Running up to ${safeMaxConcurrent} pipelines concurrently after variant deduplication`);
   const { runs, failures } = await runPipelinesWithConcurrencyImpl({
     uploads: effectiveCollected.uploads,
-    maxConcurrent: SUMMARY_PIPELINE_MAX_CONCURRENCY,
+    maxConcurrent: safeMaxConcurrent,
     userKeyForUpload(upload) {
       return String(upload.bvid ?? "");
     },

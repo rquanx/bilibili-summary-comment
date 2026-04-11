@@ -17,7 +17,8 @@ const command = addWorkRootOption(
     })
       .option("--cookie-file <path>", "Optional. Cookie file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
-      .option("--summary-since-hours <hours>", "Optional. How many recent hours to scan.", parsePositiveIntegerArg),
+      .option("--summary-since-hours <hours>", "Optional. How many recent hours to scan.", parsePositiveIntegerArg)
+      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg),
   ),
 );
 
@@ -30,6 +31,7 @@ await runCli({
       summaryUsers: config.summaryUsers,
       cookieFile: config.cookieFile,
       sinceHours: config.sinceHours,
+      maxConcurrent: config.summaryConcurrency,
       dbPath: config.dbPath,
       workRoot: config.workRoot,
       onLog(message) {
@@ -47,6 +49,7 @@ await runCli({
       uploadCount: result.uploads.length,
       successCount: result.runs.length,
       failureCount: result.failures.length,
+      summaryConcurrency: config.summaryConcurrency,
       runs: result.runs.map((item) => ({
         mid: item.mid,
         bvid: item.bvid,
