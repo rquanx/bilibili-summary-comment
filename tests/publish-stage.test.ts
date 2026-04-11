@@ -140,7 +140,7 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
     );
 
     const callTypes = calls.map((entry) => entry.type);
-    assert.deepEqual(callTypes, ["list", "add", "top", "list", "delete", "delete"]);
+    assert.deepEqual(callTypes, ["list", "add", "top", "list", "list", "list", "delete", "delete"]);
     assert.deepEqual(
       calls.filter((entry) => entry.type === "delete").map((entry) => entry.payload.rpid).sort((a, b) => a - b),
       [555001, 555002],

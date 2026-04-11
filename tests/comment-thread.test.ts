@@ -120,7 +120,7 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
 
     const topCalls = calls.filter((entry) => entry.type === "top");
     assert.equal(topCalls.length, 2);
-    assert.equal(calls.filter((entry) => entry.type === "list").length, 1);
+    assert.equal(calls.filter((entry) => entry.type === "list").length, 3);
 
     const persistedVideo = getVideoByIdentity(db, { bvid: "BVcomment123456" });
     assert.equal(persistedVideo?.root_comment_rpid, 800001);
@@ -220,6 +220,102 @@ test("postSummaryThread does not mark parts published when the new comment threa
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [0]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread rejects threads that disappear before the final visibility check", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  let listCallCount = 0;
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentTransient",
+      aid: 123450002,
+      title: "Transient Comment Thread Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst page",
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const client = {
+      reply: {
+        async list() {
+          listCallCount += 1;
+          if (listCallCount === 1) {
+            return {
+              page: {
+                count: 1,
+              },
+              upper: {
+                top: {
+                  rpid: 920001,
+                  count: 0,
+                },
+              },
+            };
+          }
+
+          return {
+            page: {
+              count: 0,
+            },
+            replies: null,
+            upper: {
+              top: null,
+            },
+            top: null,
+          };
+        },
+        async add() {
+          return {
+            rpid: 920001,
+          };
+        },
+        async top() {
+          return {
+            ok: true,
+          };
+        },
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        postSummaryThread({
+          client,
+          oid: video.aid,
+          type: 1,
+          message: "<1P>\nfirst page",
+          db,
+          videoId: video.id,
+          topCommentState: {
+            hasTopComment: false,
+            topComment: null,
+          },
+          sleepImpl: async () => {},
+        }),
+      /Published comment thread is not visible on the video page/u,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentTransient" });
+    assert.equal(persistedVideo?.root_comment_rpid, null);
+    assert.equal(persistedVideo?.top_comment_rpid, null);
+    assert.equal(listCallCount, 3);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

@@ -125,6 +125,7 @@ async function assertCommentThreadVisible({
   let lastObservedPageCount = null;
   let lastHasTopComment = false;
   let foundRootComment = false;
+  let threadVisible = false;
 
   for (let attempt = 0; attempt < THREAD_VISIBILITY_MAX_ATTEMPTS; attempt += 1) {
     const response = await client.reply.list({
@@ -141,18 +142,18 @@ async function assertCommentThreadVisible({
     lastObservedReplyCount = rootComment ? normalizeCommentCount(rootComment.count ?? rootComment.rcount) : null;
     lastObservedPageCount = normalizeCommentCount(response?.page?.count);
     lastHasTopComment = Boolean(response?.upper?.top ?? response?.top);
-
-    if (rootComment && (expectedReplyCount === null || lastObservedReplyCount >= expectedReplyCount)) {
-      return {
-        rootComment,
-        observedReplyCount: lastObservedReplyCount,
-        pageCount: lastObservedPageCount,
-      };
-    }
+    threadVisible = Boolean(rootComment) && (expectedReplyCount === null || lastObservedReplyCount >= expectedReplyCount);
 
     if (attempt < THREAD_VISIBILITY_MAX_ATTEMPTS - 1) {
       await sleepImpl(THREAD_VISIBILITY_RETRY_DELAY_MS);
     }
+  }
+
+  if (threadVisible) {
+    return {
+      observedReplyCount: lastObservedReplyCount,
+      pageCount: lastObservedPageCount,
+    };
   }
 
   throw createCliError("Published comment thread is not visible on the video page", {
