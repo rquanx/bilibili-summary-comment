@@ -32,8 +32,6 @@ export function formatTranscriptionTarget({
   partTitle,
 }: QueueOwnerLike): string {
   const pieces = [
-    String(bvid ?? "").trim(),
-    String(videoTitle ?? "").trim(),
     `P${pageNo}`,
     String(partTitle ?? "").trim(),
   ].filter(Boolean);

@@ -97,7 +97,7 @@ export async function runVideoPipeline(
     },
   });
 
-  progress.log(`Video synced: ${state.video.title} (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
+  progress.log(`Video synced: (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
   if (needsRebuildPublish) {
     eventLogger.log({
       scope: "publish",
