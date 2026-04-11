@@ -234,14 +234,14 @@ function compareUploadPreference(
   left: { upload: RecentUpload; index: number },
   right: { upload: RecentUpload; index: number },
 ): number {
-  const variantDiff = getUploadTitleVariantPriority(left.upload.title) - getUploadTitleVariantPriority(right.upload.title);
-  if (variantDiff !== 0) {
-    return variantDiff;
-  }
-
   const createdAtDiff = left.upload.createdAtUnix - right.upload.createdAtUnix;
   if (createdAtDiff !== 0) {
     return createdAtDiff;
+  }
+
+  const variantDiff = getUploadTitleVariantPriority(left.upload.title) - getUploadTitleVariantPriority(right.upload.title);
+  if (variantDiff !== 0) {
+    return variantDiff;
   }
 
   return left.index - right.index;

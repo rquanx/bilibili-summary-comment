@@ -156,6 +156,19 @@ export async function runVideoPipeline(
       });
     }
 
+    const reusedSummaryFrom = generation.reusedSummarySource
+      ? {
+          bvid: generation.reusedSummarySource.video.bvid,
+          title: generation.reusedSummarySource.video.title,
+          reusedPages: generation.reusedSummarySource.reusedPages,
+        }
+      : null;
+    if (reusedSummaryFrom) {
+      progress.log(
+        `Same-session reuse source: ${reusedSummaryFrom.bvid} (${reusedSummaryFrom.title}), pages=${reusedSummaryFrom.reusedPages.join(",")}`,
+      );
+    }
+
     progress.log(`Pipeline complete, generated ${generation.summaryResults.length} summaries`);
     const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
     eventLogger.log({
@@ -165,6 +178,7 @@ export async function runVideoPipeline(
       message: `Pipeline completed for ${state.video.bvid}`,
       details: {
         generatedPages: generation.summaryResults.map((item) => item.pageNo),
+        reusedSummaryFrom,
         publishRequested: Boolean(args.publish),
         publishNeedsRebuild: finalPublishNeedsRebuild,
       },
@@ -186,13 +200,7 @@ export async function runVideoPipeline(
       publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,
       subtitleResults: generation.subtitleResults,
       summaryResults: generation.summaryResults,
-      reusedSummaryFrom: generation.reusedSummarySource
-        ? {
-            bvid: generation.reusedSummarySource.video.bvid,
-            title: generation.reusedSummarySource.video.title,
-            reusedPages: generation.reusedSummarySource.reusedPages,
-          }
-        : null,
+      reusedSummaryFrom,
       artifacts: generation.artifacts,
       publishResult,
     };

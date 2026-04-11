@@ -68,7 +68,7 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
   });
 });
 
-test("syncSummaryUsersRecentVideos keeps same-user title variants and queues clean-first for reuse", async () => {
+test("syncSummaryUsersRecentVideos keeps same-user title variants and queues earliest variants first for reuse", async () => {
   const logMessages: string[] = [];
   const scheduledUploads: Array<{ bvid: string; title: string }> = [];
   const observedSchedulingKeys: string[] = [];
@@ -190,6 +190,46 @@ test("syncSummaryUsersRecentVideos serializes related variants under the same se
   });
 
   assert.deepEqual(observedKeys, ["123\n直播a", "123\n直播a", "123\n视频二"]);
+});
+
+test("syncSummaryUsersRecentVideos does not force clean variants ahead of earlier danmu uploads", async () => {
+  const scheduledBvids: string[] = [];
+
+  await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BVCLEAN",
+          aid: 1,
+          title: "直播B 纯净版",
+          createdAtUnix: 120,
+          createdAt: new Date(120 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BVDANMU",
+          aid: 2,
+          title: "直播B 弹幕版",
+          createdAtUnix: 60,
+          createdAt: new Date(60 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    async runPipelinesWithConcurrencyImpl(options) {
+      scheduledBvids.push(...(options.uploads ?? []).map((upload) => String(upload.bvid)));
+      return {
+        runs: [],
+        failures: [],
+      };
+    },
+  });
+
+  assert.deepEqual(scheduledBvids, ["BVDANMU", "BVCLEAN"]);
 });
 
 test("collectRecentUploadsFromUsers skips only-self-visible videos", async () => {

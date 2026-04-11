@@ -21,11 +21,17 @@ export async function runGenerationStage({
 }) {
   let currentParts = listVideoParts(db, video.id);
   let reusedSummarySource = null;
+  let reuseCandidateVideo = null;
   const hasPendingSummaries = currentParts.some((part) => !String(part.summary_text ?? "").trim());
+  let reuseLookupAttempted = false;
+  let reuseLookupMatchedSource = false;
 
   if (!forceSummary && hasPendingSummaries) {
+    reuseLookupAttempted = true;
     reusedSummarySource = findReusableSummarySource(db, video, currentParts);
     if (reusedSummarySource) {
+      reuseLookupMatchedSource = true;
+      reuseCandidateVideo = reusedSummarySource.video;
       const reusedPages = reusePartSummaries(db, video.id, reusedSummarySource.parts);
       currentParts = listVideoParts(db, video.id);
       if (reusedPages.length > 0) {
@@ -68,6 +74,24 @@ export async function runGenerationStage({
     progress?.log(
       `Reused ${reusedSummarySource.reusedPages.length} summaries from ${reusedSummarySource.video.bvid} (${reusedSummarySource.video.title})`,
     );
+  } else if (reuseLookupAttempted) {
+    const reuseSkippedMessage = reuseLookupMatchedSource
+      ? "Found same-session summary source but no pending pages matched for reuse"
+      : "No reusable same-session summary source found";
+    eventLogger?.log({
+      scope: "summary",
+      action: "reuse",
+      status: "skipped",
+      message: reuseSkippedMessage,
+      details: reuseLookupMatchedSource
+        ? {
+            sourceBvid: reuseCandidateVideo?.bvid ?? null,
+            sourceTitle: reuseCandidateVideo?.title ?? null,
+          }
+        : {
+            pendingParts: currentParts.filter((part) => !String(part.summary_text ?? "").trim()).map((part) => part.page_no),
+          },
+    });
   }
   if (targetParts.length === 0) {
     eventLogger?.log({
