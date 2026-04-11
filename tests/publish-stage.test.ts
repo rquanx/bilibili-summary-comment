@@ -60,16 +60,40 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
 
     const calls = [];
     let nextRpid = 900001;
+    let listCallCount = 0;
     const client = {
       reply: {
         async list() {
           calls.push({ type: "list" });
+          listCallCount += 1;
+          if (listCallCount === 1) {
+            return {
+              upper: {
+                top: {
+                  rpid: 555002,
+                  content: {
+                    message: "old top thread",
+                  },
+                },
+              },
+            };
+          }
+
           return {
+            page: {
+              count: 1,
+            },
             upper: {
               top: {
-                rpid: 555002,
+                rpid: 900001,
+                count: 1,
+                replies: [
+                  {
+                    rpid: 900002,
+                  },
+                ],
                 content: {
-                  message: "old top thread",
+                  message: "new top thread",
                 },
               },
             },
@@ -116,7 +140,7 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
     );
 
     const callTypes = calls.map((entry) => entry.type);
-    assert.deepEqual(callTypes, ["list", "add", "top", "delete", "delete"]);
+    assert.deepEqual(callTypes, ["list", "add", "top", "list", "delete", "delete"]);
     assert.deepEqual(
       calls.filter((entry) => entry.type === "delete").map((entry) => entry.payload.rpid).sort((a, b) => a - b),
       [555001, 555002],

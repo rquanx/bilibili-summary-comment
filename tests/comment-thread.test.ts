@@ -11,6 +11,8 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const firstPageText = `first page ${"A".repeat(640)}`;
+  const secondPageText = `second page ${"B".repeat(640)}`;
 
   try {
     const video = upsertVideo(db, {
@@ -26,7 +28,7 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
       cid: 101,
       partTitle: "P1",
       durationSec: 10,
-      summaryText: "<1P>\nfirst page",
+      summaryText: `<1P>\n${firstPageText}`,
       summaryHash: "hash-1",
       published: false,
       isDeleted: false,
@@ -37,7 +39,7 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
       cid: 202,
       partTitle: "P2",
       durationSec: 10,
-      summaryText: "<2P>\nsecond page",
+      summaryText: `<2P>\n${secondPageText}`,
       summaryHash: "hash-2",
       published: false,
       isDeleted: false,
@@ -45,7 +47,7 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
 
     const calls = [];
     let nextRpid = 800001;
-    const topError = Object.assign(new Error("啥都木有"), {
+    const topError = Object.assign(new Error("\u5565\u90fd\u6728\u6709"), {
       code: -404,
       statusCode: 200,
       path: "https://api.bilibili.com/x/v2/reply/top",
@@ -53,12 +55,31 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
       rawResponse: {
         data: {
           code: -404,
-          message: "啥都木有",
+          message: "\u5565\u90fd\u6728\u6709",
         },
       },
     });
     const client = {
       reply: {
+        async list() {
+          calls.push({ type: "list" });
+          return {
+            page: {
+              count: 1,
+            },
+            replies: [
+              {
+                rpid: 800001,
+                count: 1,
+                replies: [
+                  {
+                    rpid: 800002,
+                  },
+                ],
+              },
+            ],
+          };
+        },
         async add(payload) {
           calls.push({ type: "add", payload });
           return {
@@ -76,13 +97,14 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
       client,
       oid: video.aid,
       type: 1,
-      message: ["<1P>", "first page", "", "<2P>", "second page"].join("\n"),
+      message: ["<1P>", firstPageText, "", "<2P>", secondPageText].join("\n"),
       db,
       videoId: video.id,
       topCommentState: {
         hasTopComment: false,
         topComment: null,
       },
+      sleepImpl: async () => {},
     });
 
     assert.equal(result.rootCommentRpid, 800001);
@@ -93,11 +115,12 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
     assert.equal(result.warnings[0].code, -404);
     assert.deepEqual(result.warnings[0].responseData, {
       code: -404,
-      message: "啥都木有",
+      message: "\u5565\u90fd\u6728\u6709",
     });
 
     const topCalls = calls.filter((entry) => entry.type === "top");
     assert.equal(topCalls.length, 2);
+    assert.equal(calls.filter((entry) => entry.type === "list").length, 1);
 
     const persistedVideo = getVideoByIdentity(db, { bvid: "BVcomment123456" });
     assert.equal(persistedVideo?.root_comment_rpid, 800001);
@@ -106,6 +129,97 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [800001, 800001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread does not mark parts published when the new comment thread is not visible", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentInvisible",
+      aid: 123450001,
+      title: "Invisible Comment Thread Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst page",
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const client = {
+      reply: {
+        async list() {
+          return {
+            page: {
+              count: 0,
+            },
+            replies: null,
+            upper: {
+              top: null,
+            },
+            top: null,
+          };
+        },
+        async add() {
+          return {
+            rpid: 910001,
+          };
+        },
+        async top() {
+          return {
+            ok: true,
+          };
+        },
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        postSummaryThread({
+          client,
+          oid: video.aid,
+          type: 1,
+          message: "<1P>\nfirst page",
+          db,
+          videoId: video.id,
+          topCommentState: {
+            hasTopComment: false,
+            topComment: null,
+          },
+          sleepImpl: async () => {},
+        }),
+      (error) => {
+        assert.ok(error && typeof error === "object");
+        const candidate = error as { message?: unknown; details?: Record<string, unknown> };
+        assert.equal(candidate.message, "Published comment thread is not visible on the video page");
+        assert.equal(candidate.details?.rootRpid, 910001);
+        assert.equal(candidate.details?.pageCount, 0);
+        assert.equal(candidate.details?.foundRootComment, false);
+        return true;
+      },
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentInvisible" });
+    assert.equal(persistedVideo?.root_comment_rpid, null);
+    assert.equal(persistedVideo?.top_comment_rpid, null);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [0]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
