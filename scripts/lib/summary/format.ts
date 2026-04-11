@@ -84,7 +84,7 @@ export function groupSummaryBlocksByPage(text) {
 }
 
 export function splitSummaryForComments(text, maxLength = 1000) {
-  const blocks = parseSummaryBlocks(text);
+  const blocks = parseSummaryBlocks(text).flatMap((block) => splitSummaryBlockForComments(block, maxLength));
   if (blocks.length === 0) {
     return [];
   }
@@ -124,6 +124,94 @@ export function splitSummaryForComments(text, maxLength = 1000) {
   }
 
   return chunks;
+}
+
+function splitSummaryBlockForComments(block, maxLength) {
+  if (block.text.length <= maxLength) {
+    return [block];
+  }
+
+  const body = extractBlockBody(block.text, block.marker);
+  const maxBodyLength = maxLength - block.marker.length - 1;
+  if (maxBodyLength <= 0) {
+    throw new Error(`Summary block ${block.marker} exceeds comment max length ${maxLength}`);
+  }
+
+  const bodyChunks = splitBlockBodyText(body, maxBodyLength);
+  return bodyChunks.map((bodyChunk) => ({
+    ...block,
+    text: `${block.marker} ${bodyChunk}`.trim(),
+  }));
+}
+
+function extractBlockBody(blockText, marker) {
+  const normalizedText = String(blockText ?? "").trim();
+  if (!normalizedText.startsWith(marker)) {
+    return normalizedText;
+  }
+
+  return normalizedText.slice(marker.length).trim();
+}
+
+function splitBlockBodyText(text, maxBodyLength) {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) {
+    return [""];
+  }
+
+  const chunks = [];
+  let remaining = normalized;
+
+  while (remaining.length > maxBodyLength) {
+    const splitIndex = findPreferredSplitIndex(remaining, maxBodyLength);
+    const head = remaining.slice(0, splitIndex).trimEnd();
+    if (!head) {
+      break;
+    }
+
+    chunks.push(head);
+    remaining = remaining.slice(splitIndex).trimStart();
+  }
+
+  if (remaining) {
+    chunks.push(remaining);
+  }
+
+  return chunks.filter(Boolean);
+}
+
+function findPreferredSplitIndex(text, maxBodyLength) {
+  const safeMaxLength = Math.max(1, Number(maxBodyLength) || 1);
+  const maxIndex = Math.min(text.length, safeMaxLength);
+  const minimumPreferredIndex = Math.max(1, Math.floor(maxIndex * 0.6));
+  const preferredPatterns = [
+    /\n{2,}/gu,
+    /\n/gu,
+    /[。！？；]/gu,
+    /[，、]/gu,
+    /\s+/gu,
+  ];
+
+  for (const pattern of preferredPatterns) {
+    const candidate = findLastPatternBoundary(text, pattern, maxIndex);
+    if (candidate >= minimumPreferredIndex) {
+      return candidate;
+    }
+  }
+
+  return maxIndex;
+}
+
+function findLastPatternBoundary(text, pattern, maxIndex) {
+  let lastIndex = -1;
+  for (const match of text.slice(0, maxIndex).matchAll(pattern)) {
+    const boundaryIndex = Number(match.index ?? -1) + String(match[0] ?? "").length;
+    if (boundaryIndex > 0 && boundaryIndex <= maxIndex) {
+      lastIndex = boundaryIndex;
+    }
+  }
+
+  return lastIndex;
 }
 
 function splitLines(text) {

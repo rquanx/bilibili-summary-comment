@@ -7,6 +7,7 @@ import {
   extractSummaryText,
   resolveSummaryApiTarget,
 } from "../scripts/lib/summary/client";
+import { splitSummaryForComments } from "../scripts/lib/summary/format";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
@@ -120,4 +121,18 @@ test("normalizeSummaryOutput aligns timestamped lines to subtitle cue starts", (
   });
 
   assert.equal(normalized, "<1P>\n00:08 开始连麦\n00:16 开始唱歌");
+});
+
+test("splitSummaryForComments splits oversized page blocks into multiple comment-safe chunks", () => {
+  const repeatedLine = "这一段内容很长，需要继续拆分。";
+  const longBody = Array.from({ length: 120 }, () => repeatedLine).join("");
+  const chunks = splitSummaryForComments(`<1P> ${longBody}`, 1000);
+
+  assert.ok(chunks.length > 1);
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.pages),
+    Array.from({ length: chunks.length }, () => [1]),
+  );
+  assert.ok(chunks.every((chunk) => chunk.message.length <= 1000));
+  assert.ok(chunks.every((chunk) => chunk.message.startsWith("<1P>")));
 });
