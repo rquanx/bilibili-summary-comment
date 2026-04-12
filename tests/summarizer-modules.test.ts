@@ -71,6 +71,7 @@ test("buildSummaryPromptInput uses raw subtitles when there are no parsed segmen
   assert.equal(userPrompt.page, 3);
   assert.equal(userPrompt.segments, null);
   assert.equal(userPrompt.rawSubtitleTextWhenSegmentParsingFailed, "raw subtitle text");
+  assert.match(promptInput.systemPrompt, /3#时间 空格 总结/u);
 });
 
 test("extractSummaryText reads responses output arrays", () => {
@@ -91,7 +92,7 @@ test("extractSummaryText reads responses output arrays", () => {
 test("normalizeSummaryOutput merges same-page blocks into one block", () => {
   const normalized = normalizeSummaryOutput("<1P>\n00:01 first\n\n<1P>\n00:20 second", 1);
 
-  assert.equal(normalized, "<1P>\n00:01 first\n\n00:20 second");
+  assert.equal(normalized, "<1P>\n1#00:01 first\n\n1#00:20 second");
 });
 
 test("normalizeSummaryOutput removes timestamps from single-line summaries", () => {
@@ -120,7 +121,13 @@ test("normalizeSummaryOutput aligns timestamped lines to subtitle cue starts", (
     subtitleText,
   });
 
-  assert.equal(normalized, "<1P>\n00:08 开始连麦\n00:16 开始唱歌");
+  assert.equal(normalized, "<1P>\n1#00:08 开始连麦\n1#00:16 开始唱歌");
+});
+
+test("normalizeSummaryOutput keeps page-prefixed timestamps and normalizes page number in multi-line output", () => {
+  const normalized = normalizeSummaryOutput("<23P>\n99#03:03 继续聊天\n00:20 展示照片", 23);
+
+  assert.equal(normalized, "<23P>\n23#03:03 继续聊天\n23#00:20 展示照片");
 });
 
 test("splitSummaryForComments splits oversized page blocks into multiple comment-safe chunks", () => {

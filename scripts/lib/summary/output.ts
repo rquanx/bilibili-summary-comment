@@ -1,7 +1,7 @@
 import { formatSummaryTime, parseSrt } from "../subtitle/srt-utils";
 import { parseSummaryBlocks } from "./format";
 
-const SUMMARY_TIMESTAMP_PATTERN = /^(?<timestamp>\d{2}:\d{2}(?::\d{2})?)\s+(?<content>.+)$/u;
+const SUMMARY_TIMESTAMP_PATTERN = /^(?:(?<page>\d+)#)?(?<timestamp>\d{2}:\d{2}(?::\d{2})?)\s+(?<content>.+)$/u;
 
 export function normalizeSummaryOutput(
   text: string | null | undefined,
@@ -42,16 +42,12 @@ export function normalizeSummaryOutput(
     return singleLine ? `<${pageNo}P> ${singleLine}`.trim() : `<${pageNo}P>`;
   }
 
-  const alignedBody = alignSummaryTimestamps(compactBody, options.subtitleText);
+  const alignedBody = alignSummaryTimestamps(compactBody, pageNo, options.subtitleText);
   return [`<${pageNo}P>`, ...alignedBody].join("\n").trim();
 }
 
-function alignSummaryTimestamps(lines: string[], subtitleText: string | null | undefined) {
+function alignSummaryTimestamps(lines: string[], pageNo: number, subtitleText: string | null | undefined) {
   const cueStarts = parseCueStarts(subtitleText);
-  if (cueStarts.length === 0) {
-    return lines;
-  }
-
   const alignedLines = [];
   let minimumCueIndex = 0;
 
@@ -68,20 +64,21 @@ function alignSummaryTimestamps(lines: string[], subtitleText: string | null | u
       continue;
     }
 
+    const content = match.groups?.content?.trim() ?? "";
     const summarySec = parseSummaryTimestamp(match.groups?.timestamp ?? "");
-    if (!Number.isFinite(summarySec)) {
-      alignedLines.push(line);
+    if (!Number.isFinite(summarySec) || cueStarts.length === 0) {
+      alignedLines.push(formatSummaryIndexLine(pageNo, match.groups?.timestamp ?? "", content));
       continue;
     }
 
     const alignedCueIndex = findNearestCueIndex(cueStarts, summarySec, minimumCueIndex);
     if (alignedCueIndex === null) {
-      alignedLines.push(line);
+      alignedLines.push(formatSummaryIndexLine(pageNo, match.groups?.timestamp ?? "", content));
       continue;
     }
 
     minimumCueIndex = alignedCueIndex;
-    alignedLines.push(`${formatSummaryTime(cueStarts[alignedCueIndex])} ${match.groups?.content?.trim() ?? ""}`.trim());
+    alignedLines.push(formatSummaryIndexLine(pageNo, formatSummaryTime(cueStarts[alignedCueIndex]), content));
   }
 
   return alignedLines;
@@ -148,4 +145,14 @@ function trimTrailingEmptyLines(lines: string[]) {
     result.pop();
   }
   return result;
+}
+
+function formatSummaryIndexLine(pageNo: number, timestamp: string, content: string) {
+  const normalizedTimestamp = String(timestamp ?? "").trim();
+  const normalizedContent = String(content ?? "").trim();
+  if (!normalizedTimestamp) {
+    return normalizedContent;
+  }
+
+  return `${pageNo}#${normalizedTimestamp} ${normalizedContent}`.trim();
 }
