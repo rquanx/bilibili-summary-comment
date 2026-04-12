@@ -72,6 +72,7 @@ test("buildSummaryPromptInput uses raw subtitles when there are no parsed segmen
   assert.equal(userPrompt.segments, null);
   assert.equal(userPrompt.rawSubtitleTextWhenSegmentParsingFailed, "raw subtitle text");
   assert.match(promptInput.systemPrompt, /3#时间 空格 总结/u);
+  assert.match(promptInput.systemPrompt, /<3P> 3#00:00/u);
 });
 
 test("extractSummaryText reads responses output arrays", () => {
@@ -95,10 +96,16 @@ test("normalizeSummaryOutput merges same-page blocks into one block", () => {
   assert.equal(normalized, "<1P>\n1#00:01 first\n\n1#00:20 second");
 });
 
-test("normalizeSummaryOutput removes timestamps from single-line summaries", () => {
+test("normalizeSummaryOutput forces single-line summaries to use page-prefixed 00:00 markers", () => {
   const normalized = normalizeSummaryOutput("<3P> 00:00 主播撒娇质问哥哥不想跟我玩吗", 3);
 
-  assert.equal(normalized, "<3P> 主播撒娇质问哥哥不想跟我玩吗");
+  assert.equal(normalized, "<3P> 3#00:00 主播撒娇质问哥哥不想跟我玩吗");
+});
+
+test("normalizeSummaryOutput adds page-prefixed 00:00 markers to untimestamped single-line summaries", () => {
+  const normalized = normalizeSummaryOutput("<3P> 主播撒娇质问哥哥不想跟我玩吗", 3);
+
+  assert.equal(normalized, "<3P> 3#00:00 主播撒娇质问哥哥不想跟我玩吗");
 });
 
 test("normalizeSummaryOutput aligns timestamped lines to subtitle cue starts", () => {

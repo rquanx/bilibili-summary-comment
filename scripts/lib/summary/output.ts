@@ -39,7 +39,7 @@ export function normalizeSummaryOutput(
   const nonEmptyBodyLines = compactBody.filter((line) => line.trim() !== "");
   if (nonEmptyBodyLines.length <= 1) {
     const singleLine = stripLeadingTimestamp(nonEmptyBodyLines[0] ?? "");
-    return singleLine ? `<${pageNo}P> ${singleLine}`.trim() : `<${pageNo}P>`;
+    return singleLine ? `<${pageNo}P> ${formatSummaryIndexLine(pageNo, "00:00", singleLine)}`.trim() : `<${pageNo}P>`;
   }
 
   const alignedBody = alignSummaryTimestamps(compactBody, pageNo, options.subtitleText);
