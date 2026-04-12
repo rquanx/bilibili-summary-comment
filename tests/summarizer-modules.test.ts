@@ -75,6 +75,20 @@ test("buildSummaryPromptInput uses raw subtitles when there are no parsed segmen
   assert.match(promptInput.systemPrompt, /<3P> 3#00:00/u);
 });
 
+test("buildSummaryPromptInput tells the model not to mistake BGM for singing", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 1,
+    partTitle: "P1",
+    durationSec: 120,
+    subtitleText: "背景放着六月里的小雨",
+    segments: [],
+  });
+
+  assert.match(promptInput.systemPrompt, /背景音乐/u);
+  assert.match(promptInput.systemPrompt, /禁止写成主播在唱/u);
+  assert.match(promptInput.systemPrompt, /不足以证明主播在唱/u);
+});
+
 test("extractSummaryText reads responses output arrays", () => {
   const text = extractSummaryText({
     output: [
