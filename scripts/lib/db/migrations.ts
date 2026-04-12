@@ -21,6 +21,7 @@ export function migrateDatabase(db) {
 
   migrateVideoPartsTable(db);
   createPipelineEventsTable(db);
+  createGapNotificationsTable(db);
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_video_parts_video_id ON video_parts(video_id);
@@ -29,6 +30,8 @@ export function migrateDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_created_at ON pipeline_events(created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_bvid_created_at ON pipeline_events(bvid, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_run_id ON pipeline_events(run_id, created_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gap_notifications_gap_key ON gap_notifications(gap_key);
+    CREATE INDEX IF NOT EXISTS idx_gap_notifications_bvid_notified_at ON gap_notifications(bvid, notified_at DESC, id DESC);
   `);
   db.exec("DROP INDEX IF EXISTS idx_video_parts_video_active_page");
 }
@@ -169,6 +172,27 @@ function createPipelineEventsTable(db) {
       details_json TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+function createGapNotificationsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gap_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gap_key TEXT NOT NULL,
+      bvid TEXT NOT NULL,
+      video_title TEXT,
+      from_page_no INTEGER NOT NULL,
+      from_cid INTEGER NOT NULL,
+      to_page_no INTEGER NOT NULL,
+      to_cid INTEGER NOT NULL,
+      gap_start_at TEXT NOT NULL,
+      gap_end_at TEXT NOT NULL,
+      gap_seconds INTEGER NOT NULL,
+      notified_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )
   `);
 }

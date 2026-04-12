@@ -15,7 +15,11 @@ import {
   resolveBiliCookieFile,
 } from "../lib/bili/auth";
 import { createCoalescedRunner } from "../lib/scheduler/coalesced-runner";
-import { cleanupOldWorkDirectories, syncSummaryUsersRecentVideos } from "../lib/scheduler/index";
+import {
+  cleanupOldWorkDirectories,
+  runRecentVideoGapCheck,
+  syncSummaryUsersRecentVideos,
+} from "../lib/scheduler/index";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { LogLevel } from "../lib/shared/logger";
 
@@ -34,7 +38,7 @@ const command = addWorkRootOption(
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
       .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
-      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | cleanup | all."),
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | gap-check | cleanup | all."),
   ),
 );
 
@@ -202,6 +206,37 @@ await runCli({
       };
     }
 
+    async function runGapCheckTask() {
+      log("Checking recent uploads for missing video gaps");
+      const result = await runRecentVideoGapCheck({
+        summaryUsers: config.summaryUsers,
+        cookieFile: resolvedCookieFile,
+        dbPath: config.dbPath,
+        workRoot: config.workRoot,
+        timezone: config.timezone ?? null,
+        onLog(message) {
+          log(`[gap-check] ${message}`);
+        },
+      });
+      log(
+        `Gap check finished: checked=${result.checkedVideos.length}, newGaps=${result.newGaps.length}, notified=${result.notifiedGapCount}`,
+        {
+          details: {
+            task: "gap-check",
+            snapshotPath: result.snapshotPath,
+          },
+        },
+      );
+      return {
+        action: "gap-check",
+        checkedVideos: result.checkedVideos.length,
+        newGaps: result.newGaps.length,
+        notifiedGaps: result.notifiedGapCount,
+        alreadyNotifiedGaps: result.alreadyNotifiedGapCount,
+        snapshotPath: result.snapshotPath,
+      };
+    }
+
     const runExclusive = (name, task) => async () => {
       if (runningTasks.has(name)) {
         log(`Skip ${name}: previous run still in progress`);
@@ -256,11 +291,13 @@ await runCli({
       },
     });
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
+    const gapCheckRunner = runExclusive("gap-check", runGapCheckTask);
 
     if (args.once) {
       const result = await runOnce(args.once, {
         refreshRunner,
         summaryRunner,
+        gapCheckRunner,
         cleanupRunner,
       });
       return {
@@ -274,17 +311,19 @@ await runCli({
     if (args["run-on-start"]) {
       await refreshRunner();
       await summaryRunner();
+      await gapCheckRunner();
       await cleanupRunner();
     }
 
     const scheduledTasks = [
       cron.schedule("0 * * * *", summaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
       cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
     ];
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0, refresh=daily@03:15 when due, cleanup=daily@03:45");
+    log("Cron plan: summary=hourly@minute0, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
 
     attachSignalHandlers(scheduledTasks, log);
 
@@ -323,12 +362,15 @@ async function runOnce(target, runners) {
       return [await runners.refreshRunner()];
     case "summary":
       return [await runners.summaryRunner()];
+    case "gap-check":
+      return [await runners.gapCheckRunner()];
     case "cleanup":
       return [await runners.cleanupRunner()];
     case "all":
       return [
         await runners.refreshRunner(),
         await runners.summaryRunner(),
+        await runners.gapCheckRunner(),
         await runners.cleanupRunner(),
       ];
     default:

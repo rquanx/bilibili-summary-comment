@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
+import { getGapNotificationByKey, hasGapNotification, saveGapNotification } from "../scripts/lib/db/gap-notification-storage";
 import { insertPipelineEvent, listPipelineEvents } from "../scripts/lib/db/pipeline-event-storage";
 import {
   getVideoByIdentity,
@@ -73,8 +74,52 @@ test("storage modules preserve video and event workflows after the split", async
   }
 });
 
+test("gap notification storage deduplicates notifications by gap key", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-storage-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const first = saveGapNotification(db, {
+      gapKey: "BV1gap|101|202|2026-04-12 01:00:00|2026-04-12 01:00:15|15",
+      bvid: "BV1gap",
+      videoTitle: "Gap Storage Test",
+      fromPageNo: 1,
+      fromCid: 101,
+      toPageNo: 2,
+      toCid: 202,
+      gapStartAt: "2026-04-12 01:00:00",
+      gapEndAt: "2026-04-12 01:00:15",
+      gapSeconds: 15,
+      notifiedAt: "2026-04-12T02:00:00.000Z",
+    });
+    const second = saveGapNotification(db, {
+      gapKey: "BV1gap|101|202|2026-04-12 01:00:00|2026-04-12 01:00:15|15",
+      bvid: "BV1gap",
+      videoTitle: "Gap Storage Test Updated",
+      fromPageNo: 1,
+      fromCid: 101,
+      toPageNo: 2,
+      toCid: 202,
+      gapStartAt: "2026-04-12 01:00:00",
+      gapEndAt: "2026-04-12 01:00:15",
+      gapSeconds: 15,
+      notifiedAt: "2026-04-12T03:00:00.000Z",
+    });
+
+    assert.equal(first?.gap_key, second?.gap_key);
+    assert.equal(hasGapNotification(db, first?.gap_key ?? ""), true);
+    assert.equal(getGapNotificationByKey(db, first?.gap_key ?? "")?.video_title, "Gap Storage Test Updated");
+    assert.equal(getGapNotificationByKey(db, first?.gap_key ?? "")?.notified_at, "2026-04-12T03:00:00.000Z");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("storage barrel re-exports the split modules", () => {
   assert.equal(storage.openDatabase, openDatabase);
   assert.equal(storage.upsertVideo, upsertVideo);
   assert.equal(storage.insertPipelineEvent, insertPipelineEvent);
+  assert.equal(storage.saveGapNotification, saveGapNotification);
 });

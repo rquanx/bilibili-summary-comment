@@ -3,11 +3,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { openDatabase } from "../scripts/lib/db/database";
 import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
 import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency";
 import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets";
 import * as schedulerTasks from "../scripts/lib/scheduler/index";
 import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup";
+import {
+  detectGapsFromVideoSnapshot,
+  readGapCheckDailySnapshot,
+  runRecentVideoGapCheck,
+  upsertGapCheckDailySnapshot,
+} from "../scripts/lib/scheduler/gap-check";
 import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner";
 import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads";
 
@@ -285,6 +292,175 @@ test("collectRecentUploadsFromUsers skips only-self-visible videos", async () =>
   ]);
 });
 
+test("detectGapsFromVideoSnapshot flags only intervals larger than the threshold", () => {
+  const gaps = detectGapsFromVideoSnapshot({
+    bvid: "BV1GAPTEST",
+    title: "Gap Test Video",
+    pages: [
+      {
+        pageNo: 1,
+        cid: 101,
+        partTitle: "Gap Test 2026.04.12 01.00.00",
+        durationSec: 10,
+      },
+      {
+        pageNo: 2,
+        cid: 202,
+        partTitle: "Gap Test 2026.04.12 01.00.12",
+        durationSec: 10,
+      },
+      {
+        pageNo: 3,
+        cid: 303,
+        partTitle: "Gap Test 2026.04.12 01.00.30",
+        durationSec: 5,
+      },
+    ],
+  }, 5);
+
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].fromPageNo, 2);
+  assert.equal(gaps[0].toPageNo, 3);
+  assert.equal(gaps[0].gapSeconds, 8);
+});
+
+test("upsertGapCheckDailySnapshot keeps only the latest record per bvid for the day", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-snapshot-"));
+  const now = new Date("2026-04-12T01:00:00.000Z");
+
+  try {
+    const snapshotPath = upsertGapCheckDailySnapshot({
+      repoRoot: tempRoot,
+      workRoot: "work",
+      now,
+      videoRecord: {
+        bvid: "BV1SNAP",
+        title: "First Title",
+        checkedAt: "2026-04-12T01:00:00.000Z",
+        gapCount: 1,
+        gaps: [
+          {
+            gapKey: "gap-1",
+            bvid: "BV1SNAP",
+            title: "First Title",
+            fromPageNo: 1,
+            fromCid: 101,
+            fromPartTitle: "P1",
+            fromEndAt: "2026-04-12 01:00:10",
+            toPageNo: 2,
+            toCid: 202,
+            toPartTitle: "P2",
+            toStartAt: "2026-04-12 01:00:20",
+            gapSeconds: 10,
+          },
+        ],
+      },
+    });
+
+    upsertGapCheckDailySnapshot({
+      repoRoot: tempRoot,
+      workRoot: "work",
+      now: new Date("2026-04-12T02:00:00.000Z"),
+      videoRecord: {
+        bvid: "BV1SNAP",
+        title: "Updated Title",
+        checkedAt: "2026-04-12T02:00:00.000Z",
+        gapCount: 0,
+        gaps: [],
+      },
+    });
+
+    const snapshot = readGapCheckDailySnapshot(snapshotPath, "2026-04-12");
+    assert.equal(snapshot.videos.length, 1);
+    assert.equal(snapshot.videos[0].title, "Updated Title");
+    assert.equal(snapshot.videos[0].gapCount, 0);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runRecentVideoGapCheck sends notifications only for previously unseen gaps", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-run-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const notifyCalls: Array<string[]> = [];
+  const snapshot = {
+    bvid: "BV1RUN",
+    aid: 1,
+    title: "Gap Run Test",
+    pageCount: 2,
+    pages: [
+      {
+        pageNo: 1,
+        cid: 101,
+        partTitle: "Gap Run 2026.04.12 01.00.00",
+        durationSec: 10,
+      },
+      {
+        pageNo: 2,
+        cid: 202,
+        partTitle: "Gap Run 2026.04.12 01.00.20",
+        durationSec: 10,
+      },
+    ],
+  };
+
+  try {
+    openDatabase(dbPath).close?.();
+
+    const runOptions = {
+      summaryUsers: "123",
+      cookieFile: "cookie.txt",
+      dbPath,
+      workRoot: "work",
+      repoRoot: tempRoot,
+      now: new Date("2026-04-12T03:00:00.000Z"),
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [{ mid: 123, source: "123" }],
+        uploads: [
+          {
+            mid: 123,
+            bvid: "BV1RUN",
+            aid: 1,
+            title: "Gap Run Test",
+            createdAtUnix: 1,
+            createdAt: "2026-04-12T01:00:00.000Z",
+            source: "123",
+          },
+        ],
+      }),
+      readCookieStringImpl: () => "SESSDATA=fake",
+      createClientImpl: (() => ({})) as any,
+      fetchVideoSnapshotImpl: async () => snapshot,
+      notifyNewGapsImpl: async ({ gaps }) => {
+        notifyCalls.push(gaps.map((gap) => gap.gapKey));
+        return {
+          sent: true,
+          skipped: false,
+        } as const;
+      },
+    };
+
+    const firstRun = await runRecentVideoGapCheck(runOptions);
+    const secondRun = await runRecentVideoGapCheck({
+      ...runOptions,
+      now: new Date("2026-04-12T04:00:00.000Z"),
+    });
+
+    assert.equal(firstRun.newGaps.length, 1);
+    assert.equal(firstRun.notifiedGapCount, 1);
+    assert.equal(secondRun.newGaps.length, 0);
+    assert.equal(secondRun.alreadyNotifiedGapCount, 1);
+    assert.deepEqual(notifyCalls, [[firstRun.checkedVideos[0].gaps[0].gapKey]]);
+
+    const snapshotPath = path.join(tempRoot, "work", "logs", "gap-check", "2026-04-12.json");
+    const dailySnapshot = readGapCheckDailySnapshot(snapshotPath, "2026-04-12");
+    assert.equal(dailySnapshot.videos.length, 1);
+    assert.equal(dailySnapshot.videos[0].checkedAt, "2026-04-12T04:00:00.000Z");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("createCoalescedRunner reruns once after overlapping triggers while work is in progress", async () => {
   const runningTasks = new Set<string>();
   const logMessages: string[] = [];
@@ -516,4 +692,5 @@ test("scheduler-tasks barrel re-exports split modules", () => {
   assert.equal(schedulerTasks.parseSummaryUsers, parseSummaryUsers);
   assert.equal(schedulerTasks.runPipelinesWithConcurrency, runPipelinesWithConcurrency);
   assert.equal(schedulerTasks.cleanupOldWorkDirectories, cleanupOldWorkDirectories);
+  assert.equal(schedulerTasks.runRecentVideoGapCheck, runRecentVideoGapCheck);
 });

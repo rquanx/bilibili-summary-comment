@@ -2,6 +2,8 @@ export { openDatabase } from "./database";
 export { runInTransaction } from "./database";
 export type {
   Db,
+  GapNotificationInsert,
+  GapNotificationRecord,
   PipelineEventInput,
   PipelineEventLogger,
   PipelineEventRecord,
@@ -16,6 +18,11 @@ export type {
   VideoSnapshotPage,
   VideoState,
 } from "./types";
+export {
+  getGapNotificationByKey,
+  hasGapNotification,
+  saveGapNotification,
+} from "./gap-notification-storage";
 export {
   clearVideoPublishRebuildNeeded,
   getActiveVideoPartByPageNo,

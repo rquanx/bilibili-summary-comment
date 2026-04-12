@@ -142,6 +142,37 @@ export interface PipelineEventRecord {
   created_at: string;
 }
 
+export interface GapNotificationRecord {
+  id: number;
+  gap_key: string;
+  bvid: string;
+  video_title: string | null;
+  from_page_no: number;
+  from_cid: number;
+  to_page_no: number;
+  to_cid: number;
+  gap_start_at: string;
+  gap_end_at: string;
+  gap_seconds: number;
+  notified_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GapNotificationInsert {
+  gapKey: string;
+  bvid: string;
+  videoTitle?: string | null;
+  fromPageNo: number;
+  fromCid: number;
+  toPageNo: number;
+  toCid: number;
+  gapStartAt: string;
+  gapEndAt: string;
+  gapSeconds: number;
+  notifiedAt?: string | null;
+}
+
 export interface PipelineEventLogger {
   runId: string;
   log(event: PipelineEventInput): PipelineEventRecord | null;
