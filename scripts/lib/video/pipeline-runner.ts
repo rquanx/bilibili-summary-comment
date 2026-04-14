@@ -8,7 +8,7 @@ import { attachVideoContextToError } from "../bili/video-url";
 import { attachErrorDetails, errorToJson, extractErrorDetails } from "../cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
-import { createProgressReporter, trimCommandOutput } from "../pipeline/progress";
+import { createProgressReporter, formatBlockingErrorDetail, trimCommandOutput } from "../pipeline/progress";
 import { runPublishStage } from "../pipeline/publish-stage";
 import { resolveSummaryConfig } from "../summary/index";
 import { openDatabase } from "../db/index";
@@ -157,6 +157,7 @@ export async function runVideoPipeline(
           progress,
         });
       } catch (error) {
+        progress.log(`Publish blocked: ${formatBlockingErrorDetail(error)}`);
         attachVideoContextToError(error, {
           bvid: state.video.bvid,
           aid: state.video.aid,
@@ -246,6 +247,7 @@ export async function runVideoPipeline(
     attachErrorDetails(error, {
       logPath: logger.filePath,
     });
+    progress.log(`Pipeline failed: ${formatBlockingErrorDetail(error)}`);
     logger.error("Pipeline failed", {
       error,
       stderr: trimCommandOutput((error as CommandError | undefined)?.stderr, 20_000),

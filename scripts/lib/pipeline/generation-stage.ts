@@ -4,6 +4,7 @@ import { ensureSubtitleForPart } from "../subtitle/pipeline";
 import { summarizePartFromSubtitle } from "../summary/index";
 import { attachErrorDetails } from "../cli/errors";
 import { listVideoParts } from "../db/index";
+import { formatBlockingErrorDetail } from "./progress";
 
 export async function runGenerationStage({
   client,
@@ -147,6 +148,7 @@ export async function runGenerationStage({
         eventLogger,
       });
     } catch (error) {
+      progress?.logPart(currentIndex, part, "Failed", `Subtitle step blocked: ${formatBlockingErrorDetail(error)}`);
       attachErrorDetails(error, {
         bvid: video.bvid,
         failedStep: "subtitle",
@@ -189,6 +191,7 @@ export async function runGenerationStage({
         eventLogger,
       });
     } catch (error) {
+      progress?.logPart(currentIndex, part, "Failed", `Summary step blocked: ${formatBlockingErrorDetail(error)}`);
       attachErrorDetails(error, {
         bvid: video.bvid,
         failedStep: "summary",
@@ -213,6 +216,7 @@ export async function runGenerationStage({
   try {
     artifacts = writeSummaryArtifacts(db, video, workRoot);
   } catch (error) {
+    progress?.log(`Artifact write blocked: ${formatBlockingErrorDetail(error)}`);
     attachErrorDetails(error, {
       bvid: video.bvid,
       failedStep: "artifacts",

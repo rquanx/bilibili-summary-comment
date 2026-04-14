@@ -75,8 +75,30 @@ export function trimCommandOutput(output, maxLength = 4000) {
   return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed;
 }
 
+export function formatBlockingErrorDetail(error, maxLength = 300) {
+  const message = extractErrorMessage(error);
+  const normalized = message.replace(/\s+/gu, " ").trim();
+  if (!normalized) {
+    return "Unknown error";
+  }
+
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
 function formatProgressTime(date = new Date()) {
   return date.toTimeString().slice(0, 8);
+}
+
+function extractErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object" && "message" in error) {
+    return String(error.message ?? "");
+  }
+
+  return String(error ?? "");
 }
 
 function formatPartLabel(pageNo, partTitle) {
