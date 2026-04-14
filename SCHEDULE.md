@@ -12,7 +12,7 @@
 
 ## 1. 先准备可刷新的 B 站授权
 
-如果你希望“自动刷新 cookie”，不能只依赖现成的 `cookie.txt`。
+如果你希望“自动刷新授权”，关键文件是可刷新的 `bili-auth.json`，而不是单独一份 `cookie.txt`。
 
 自动刷新依赖 `@renmu/bili-api` 的 TV 登录返回内容，也就是：
 
@@ -32,12 +32,13 @@ bili-auth.json
 npm run login:bili
 ```
 
-运行后脚本会输出二维码 URL。扫码登录成功后会自动写入：
+运行后脚本会在 terminal 中输出可扫码二维码，并同时打印登录 URL。扫码登录成功后默认会自动写入：
 
 - `bili-auth.json`
-- `cookie.txt`
 
-后续定时刷新和总结流水线都会继续复用这两个文件。
+如果 `bili-auth.json` 已存在，会自动递增为 `bili-auth_2.json`、`bili-auth_3.json`……
+
+后续定时刷新和总结流水线默认都会继续复用这些 `bili-auth*.json` 文件。
 
 ## 2. 调度相关环境变量
 
@@ -59,7 +60,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `BILI_AUTH_FILE`
   TV 登录授权文件路径，默认 `bili-auth.json`。
 - `BILI_COOKIE_FILE`
-  cookie 文件路径，默认 `cookie.txt`。
+  可选。cookie 文件路径；默认调度不会回退到 cookie 文件，仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用。
 - `BILI_REFRESH_DAYS`
   授权超过多少天后触发刷新，默认 `30`。
 - `WORK_CLEANUP_DAYS`
@@ -86,7 +87,7 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 - 每小时整点：
   扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，默认自动发布。
 - 每天 `03:15`：
-  检查 `bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新 cookie。
+  检查 `bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新授权信息。
 - 每天 `03:45`：
   清理数据库里最后扫描时间早于 `WORK_CLEANUP_DAYS` 天之前的 `work/<BV号>` 目录。
 
@@ -107,7 +108,7 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 npm run login:bili
 ```
 
-手动刷新 cookie：
+手动刷新授权：
 
 ```bash
 npm run refresh:cookie
@@ -164,7 +165,7 @@ npm run start
 
 如果你使用的是 `npm run build` 生成的 `dist/`：
 
-- 构建脚本会复制运行时需要的 `.env`、cookie、授权文件、SQLite 和 `sql/`
+- 构建脚本会复制运行时需要的 `.env`、授权文件、可选 cookie 文件、SQLite 和 `sql/`
 - 调度器在 `dist` 环境里会优先直接调用编译后的 `run-video-pipeline.js`
 - 因此适合做一个相对稳定的部署快照
 
@@ -172,7 +173,7 @@ npm run start
 
 如果常驻调度没有按预期工作，建议按这个顺序排查：
 
-1. `npm run login:bili` 是否已经成功生成 `bili-auth.json` 和 `cookie.txt`
+1. `npm run login:bili` 是否已经成功生成 `bili-auth.json` 或对应的 `bili-auth_*.json`
 2. `.env` 里的 `SUMMARY_USERS`、`CRON_TIMEZONE` 是否配置正确
 3. `npm run sync:users` 能否手工跑通
 4. `npm run inspect:events -- --since-hours 24 --limit 100` 是否能看到最近事件

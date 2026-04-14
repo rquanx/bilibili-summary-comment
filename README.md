@@ -15,7 +15,7 @@
 - 当视频分 P 顺序发生插入、删除、重排时，自动标记“已发布线程需要重建”
 - 对同标题且分 P 结构一致的录播自动复用历史总结，减少重复生成
 - 扫描指定 UP 最近投稿时，会把同一场录播的不同标题变体串行排队，优先跑更早的版本，便于复用总结和评论线程
-- 支持 TV 二维码登录、refresh token 刷新 cookie、定时巡检、工作目录清理、事件巡检和 `dist` 打包
+- 支持 TV 终端二维码登录、refresh token 刷新授权、定时巡检、工作目录清理、事件巡检和 `dist` 打包
 - 自动加载仓库根目录 `.env`
 
 ## 设计原则
@@ -137,7 +137,7 @@ npm run setup:sh
 4. 跑一条视频的完整流水线
 
    ```bash
-   npm run pipeline -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --publish
+   npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --publish
    ```
 
 ## 配置
@@ -148,14 +148,15 @@ npm run setup:sh
 
 默认文件：
 
-- `cookie.txt`
 - `bili-auth.json`
 
 说明：
 
-- `cookie.txt` 用于日常请求
-- `bili-auth.json` 保存 TV 登录返回的 `access_token` / `refresh_token` 与 cookie 信息，供后续自动刷新
-- 如果改了路径，可以用 `BILI_COOKIE_FILE`、`BILI_AUTH_FILE` 或对应命令行参数覆盖
+- `bili-auth.json` 保存 TV 登录返回的 `access_token` / `refresh_token` 与 cookie 信息，是默认的凭据来源
+- 如果根目录已存在 `bili-auth.json`，再次执行 `npm run login:bili` 会自动写入 `bili-auth_2.json`，后续依次递增
+- 多用户调度时，`SUMMARY_USERS` 会按顺序优先匹配 `bili-auth_1.json`、`bili-auth_2.json`……，找不到再回退到基础文件 `bili-auth.json`
+- `cookie.txt` / `BILI_COOKIE_FILE` 现在只作为兼容参数保留；默认流程不会再回退到 cookie 文件，只有你显式传了 `--cookie-file` 时才会直接使用 cookie
+- 如果改了路径，优先使用 `BILI_AUTH_FILE` 或对应命令行参数覆盖；`BILI_COOKIE_FILE` 仅在你明确需要传入或额外输出 cookie 文件时使用
 
 ### 2. 总结模型配置
 
@@ -211,8 +212,8 @@ SUMMARY_MODEL=glm-5
 - `SUMMARY_USERS`：逗号或换行分隔的 Bilibili 空间链接或 UID
 - `SUMMARY_SINCE_HOURS`：扫描最近多少小时的投稿，默认 `24`
 - `SUMMARY_PIPELINE_CONCURRENCY`：同时最多跑多少条视频流水线，默认 `3`
-- `BILI_COOKIE_FILE`：cookie 文件路径，默认 `cookie.txt`
 - `BILI_AUTH_FILE`：授权文件路径，默认 `bili-auth.json`
+- `BILI_COOKIE_FILE`：可选。cookie 文件路径；仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用
 - `BILI_REFRESH_DAYS`：授权超过多少天后触发刷新，默认 `30`
 - `WORK_CLEANUP_DAYS`：清理多少天前的工作目录，默认 `2`
 - `PIPELINE_DB_PATH`：SQLite 路径，默认 `work/pipeline.sqlite3`
@@ -227,61 +228,61 @@ SUMMARY_MODEL=glm-5
 只生成字幕和总结，不发布：
 
 ```bash
-npm run pipeline -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx
+npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 生成后直接发布：
 
 ```bash
-npm run pipeline -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --publish
+npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --publish
 ```
 
 强制重新生成所有分 P 总结：
 
 ```bash
-npm run pipeline -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --force-summary
+npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --force-summary
 ```
 
 改用其他 ASR：
 
 ```bash
-npm run pipeline -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --asr bijian
+npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --asr bijian
 ```
 
 ### 2. 只同步视频与分 P 状态
 
 ```bash
-npm run sync:video -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx
+npm run sync:video -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 ### 3. 手工导入总结
 
 ```bash
-npm run import:summary -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --summary-file work/BVxxxxxxxxxx/summary.md
+npm run import:summary -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --summary-file work/BVxxxxxxxxxx/summary.md
 ```
 
 ### 4. 只发布未发布总结
 
 ```bash
-npm run publish:pending -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx
+npm run publish:pending -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 如果想强制回复到某条根评论：
 
 ```bash
-npm run publish:pending -- --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --root-rpid 1234567890
+npm run publish:pending -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --root-rpid 1234567890
 ```
 
 ### 5. 查询当前置顶评论
 
 ```bash
-tsx scripts/commands/get-bili-top-comment.ts --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx
+tsx scripts/commands/get-bili-top-comment.ts --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 ### 6. 手工发送一份总结
 
 ```bash
-tsx scripts/commands/post-bili-summary.ts --cookie-file ./cookie.txt --bvid BVxxxxxxxxxx --message-file work/BVxxxxxxxxxx/pending-summary.md
+tsx scripts/commands/post-bili-summary.ts --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --message-file work/BVxxxxxxxxxx/pending-summary.md
 ```
 
 ### 7. 初始化 TV 登录
@@ -290,16 +291,27 @@ tsx scripts/commands/post-bili-summary.ts --cookie-file ./cookie.txt --bvid BVxx
 npm run login:bili
 ```
 
-运行后脚本会输出二维码 URL。扫码成功后会写入：
+运行后脚本会在 terminal 中直接输出可扫码二维码，并同时打印登录 URL 作为兜底。
+
+默认会写入：
 
 - `bili-auth.json`
-- `cookie.txt`
 
-### 8. 刷新 cookie
+如果该文件已存在，会自动递增为 `bili-auth_2.json`、`bili-auth_3.json`……
+
+如果你仍然需要额外产出 cookie 文件，可以显式传：
+
+```bash
+tsx scripts/commands/login-bili-tv.ts --auth-file ./secrets/bili-auth.json --cookie-file ./secrets/cookie.txt
+```
+
+### 8. 刷新授权
 
 ```bash
 npm run refresh:cookie
 ```
+
+默认会刷新授权文件中的 token 与 cookie 信息；如果你显式传了 `--cookie-file`，也会同步写出 cookie 文本文件。
 
 也支持直接传 token：
 
@@ -310,12 +322,13 @@ tsx scripts/commands/refresh-bili-cookie.ts --access-token <token> --refresh-tok
 ### 9. 扫描指定用户最近投稿并跑流水线
 
 ```bash
-npm run sync:users -- --cookie-file ./cookie.txt --summary-users "https://space.bilibili.com/1,https://space.bilibili.com/2"
+npm run sync:users -- --auth-file ./bili-auth.json --summary-users "https://space.bilibili.com/1,https://space.bilibili.com/2"
 ```
 
 说明：
 
 - 该命令当前默认会为命中的视频执行完整流水线并自动发布
+- 多账号时建议按用户顺序准备 `bili-auth_1.json`、`bili-auth_2.json`……；第 1 个用户也可以直接使用基础文件 `bili-auth.json`
 - 同一 UP、同一场录播的不同标题变体会串行运行，避免并发抢占同一份总结 / 评论线程
 
 ### 10. 清理旧工作目录
