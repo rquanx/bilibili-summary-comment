@@ -27,6 +27,8 @@ export async function fetchVideoSnapshot(client: Client, args: Record<string, un
     aid: Number(view.aid),
     title: view.title ?? "",
     pageCount: pages.length,
+    ownerMid: Number.isInteger(Number(view.owner?.mid)) ? Number(view.owner.mid) : null,
+    ownerName: typeof view.owner?.name === "string" ? view.owner.name : null,
     pages: pages.map((page) => ({
       pageNo: Number(page.page),
       cid: Number(page.cid),

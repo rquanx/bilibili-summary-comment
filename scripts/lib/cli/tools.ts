@@ -71,7 +71,8 @@ export function addSummaryApiOptions(command: Command): Command {
     .option("--model <model>", "Optional. Summary model override.")
     .option("--api-key <key>", "Optional. Summary API key override.")
     .option("--api-base-url <url>", "Optional. Summary API base URL override.")
-    .option("--api-format <format>", "Optional. Summary API format override.");
+    .option("--api-format <format>", "Optional. Summary API format override.")
+    .option("--prompt-config <path>", "Optional. Summary prompt config path override.");
 }
 
 export function addMessageOptions(command: Command): Command {

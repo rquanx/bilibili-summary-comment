@@ -109,3 +109,36 @@ test("video-state barrel re-exports the split modules", () => {
   assert.equal(videoState.fetchVideoSnapshot, fetchVideoSnapshot);
   assert.equal(videoState.syncVideoSnapshotToDb, syncVideoSnapshotToDb);
 });
+
+test("fetchVideoSnapshot includes owner metadata when available", async () => {
+  const snapshot = await fetchVideoSnapshot({
+    video: {
+      async detail() {
+        return {
+          View: {
+            bvid: "BVowner123456",
+            aid: 456789,
+            title: "Owner Test",
+            owner: {
+              mid: 3690976520440286,
+              name: "知识主播",
+            },
+            pages: [
+              {
+                page: 1,
+                cid: 1001,
+                part: "P1",
+                duration: 90,
+              },
+            ],
+          },
+        };
+      },
+    },
+  } as any, {
+    bvid: "BVowner123456",
+  });
+
+  assert.equal(snapshot.ownerMid, 3690976520440286);
+  assert.equal(snapshot.ownerName, "知识主播");
+});

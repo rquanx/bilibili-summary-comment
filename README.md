@@ -512,3 +512,55 @@ work/pipeline.sqlite3
 
 - [SETUP.md](./SETUP.md)：环境准备、首跑与验证
 - [SCHEDULE.md](./SCHEDULE.md)：定时任务与部署方式
+
+## 按用户定制 Summary Prompt
+
+项目现在支持通过独立配置文件按用户定制 summary prompt，默认读取 `config/summary-prompts.json`，并按 `defaults -> preset -> user` 的顺序合并附加规则。
+
+可通过环境变量或命令行覆盖路径：
+
+```dotenv
+SUMMARY_PROMPT_CONFIG=config/summary-prompts.json
+```
+
+```bash
+npm run pipeline -- --bvid BVxxxxxxxxxx --prompt-config ./config/summary-prompts.json
+```
+
+配置示例：
+
+```json
+{
+  "defaults": {
+    "extraRules": []
+  },
+  "presets": {
+    "live-entertainment": {
+      "displayName": "娱乐主播",
+      "extraRules": []
+    },
+    "live-knowledge": {
+      "displayName": "知识主播",
+      "extraRules": [
+        "如果当前分P是知识、观点、分析密集型内容，不要只压缩成过短的提纲式概述；在保持可读性的前提下，适度展开核心知识点、结论、论证依据和限制条件。"
+      ]
+    }
+  },
+  "users": {
+    "3690987547265027": {
+      "preset": "live-entertainment"
+    },
+    "3690976520440286": {
+      "preset": "live-knowledge"
+    }
+  }
+}
+```
+
+说明：
+
+- `defaults.extraRules` 会追加到所有用户的基础 prompt 后面
+- `presets` 用来管理一类主播的共用风格
+- `users.<mid>.preset` 负责把具体用户绑定到某个 preset
+- `users.<mid>.extraRules` 可继续追加更细的用户规则
+- 附加规则不会替换基础格式约束，仍然保留现有 `<nP>` 和时间点输出规则

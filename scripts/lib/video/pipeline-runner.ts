@@ -118,6 +118,8 @@ export async function runVideoPipeline(
         client,
         db,
         video: state.video,
+        summaryOwnerMid: snapshot.ownerMid ?? null,
+        summaryOwnerName: snapshot.ownerName ?? null,
         cookie,
         cookieFile: args["cookie-file"] ?? null,
         workRoot,

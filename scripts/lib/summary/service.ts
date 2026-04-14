@@ -5,6 +5,7 @@ import { savePartSummary } from "../db/index";
 import { writePartSummaryArtifact } from "./files";
 import { requestSummary } from "./client";
 import { normalizeSummaryOutput } from "./output";
+import { resolveSummaryPromptProfile } from "./prompt-config";
 
 export async function summarizePartFromSubtitle({
   db,
@@ -19,6 +20,9 @@ export async function summarizePartFromSubtitle({
   apiKey,
   apiBaseUrl,
   apiFormat,
+  promptConfigPath = null,
+  ownerMid = null,
+  ownerName = null,
   workRoot = "work",
   eventLogger = null,
 }) {
@@ -44,12 +48,17 @@ export async function summarizePartFromSubtitle({
   try {
     const subtitleText = fs.readFileSync(subtitlePath, "utf8");
     const segments = buildSummarySegmentsFromSrt(subtitleText, durationSec);
+    const promptProfile = resolveSummaryPromptProfile({
+      ownerMid,
+      promptConfigPath,
+    });
     const pageSummary = await requestSummary({
       pageNo,
       partTitle,
       durationSec,
       subtitleText,
       segments,
+      promptProfile,
       model,
       apiKey,
       apiBaseUrl,
@@ -86,6 +95,10 @@ export async function summarizePartFromSubtitle({
         segmentCount: segments.length,
         summaryHash,
         summaryPath: partSummaryPath,
+        summaryPromptOwnerMid: promptProfile.ownerMid,
+        summaryPromptOwnerName: ownerName,
+        summaryPromptPreset: promptProfile.preset ?? null,
+        summaryPromptExtraRuleCount: promptProfile.extraRules.length,
       },
     });
 

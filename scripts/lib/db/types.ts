@@ -82,6 +82,8 @@ export interface VideoSnapshot {
   aid: number;
   title: string;
   pageCount: number;
+  ownerMid?: number | null;
+  ownerName?: string | null;
   pages: VideoSnapshotPage[];
 }
 

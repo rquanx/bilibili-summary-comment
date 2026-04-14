@@ -11,6 +11,7 @@ const typeScriptCliPath = path.join(repoRoot, "node_modules", "typescript", "lib
 
 const STATIC_RUNTIME_ASSETS = [
   ".env",
+  "config",
   "cookie.txt",
   ".auth/bili-auth.json",
   "work/bili-auth.json",

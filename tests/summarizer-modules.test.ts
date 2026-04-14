@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { resolveSummaryConfig } from "../scripts/lib/summary/config";
 import {
   buildSummaryHttpRequest,
@@ -9,6 +12,7 @@ import {
 } from "../scripts/lib/summary/client";
 import { splitSummaryForComments } from "../scripts/lib/summary/format";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
+import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
   const config = resolveSummaryConfig(
@@ -16,6 +20,7 @@ test("resolveSummaryConfig normalizes args and env values", () => {
       model: "gpt-test",
       "api-base-url": "https://example.com/v1/",
       "api-format": "OPENAI-CHAT",
+      "prompt-config": "config/custom-prompts.json",
     },
     {
       SUMMARY_API_KEY: "key-123",
@@ -26,6 +31,7 @@ test("resolveSummaryConfig normalizes args and env values", () => {
   assert.equal(config.apiKey, "key-123");
   assert.equal(config.apiBaseUrl, "https://example.com/v1");
   assert.equal(config.apiFormat, "openai-chat");
+  assert.equal(config.promptConfigPath, "config/custom-prompts.json");
 });
 
 test("resolveSummaryApiTarget infers responses endpoint in auto mode", () => {
@@ -87,6 +93,91 @@ test("buildSummaryPromptInput tells the model not to mistake BGM for singing", (
   assert.match(promptInput.systemPrompt, /背景音乐/u);
   assert.match(promptInput.systemPrompt, /禁止写成主播在唱/u);
   assert.match(promptInput.systemPrompt, /不足以证明主播在唱/u);
+});
+
+test("buildSummaryPromptInput keeps the base prompt generic across stream types", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 4,
+    partTitle: "P4",
+    durationSec: 300,
+    subtitleText: "raw subtitle text",
+    segments: [],
+  });
+
+  assert.match(promptInput.systemPrompt, /关键知识点/u);
+  assert.match(promptInput.systemPrompt, /核心观点/u);
+  assert.doesNotMatch(promptInput.systemPrompt, /优先保留观众最可能想回看的节目性内容/u);
+});
+
+test("resolveSummaryPromptProfile merges defaults, preset, and user overrides", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-prompt-config-"));
+  const promptConfigPath = path.join(tempRoot, "summary-prompts.json");
+  fs.writeFileSync(promptConfigPath, JSON.stringify({
+    defaults: {
+      extraRules: ["默认规则"],
+    },
+    presets: {
+      knowledge: {
+        displayName: "知识主播",
+        extraRules: ["预设规则"],
+      },
+    },
+    users: {
+      "3690976520440286": {
+        preset: "knowledge",
+        extraRules: ["用户规则"],
+      },
+    },
+  }, null, 2));
+
+  try {
+    const profile = resolveSummaryPromptProfile({
+      ownerMid: 3690976520440286,
+      promptConfigPath,
+    });
+
+    assert.equal(profile.displayName, "知识主播");
+    assert.equal(profile.preset, "knowledge");
+    assert.deepEqual(profile.extraRules, ["默认规则", "预设规则", "用户规则"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildSummaryPromptInput appends per-user prompt rules", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 2,
+    partTitle: "P2",
+    durationSec: 180,
+    subtitleText: "raw subtitle text",
+    segments: [],
+    promptProfile: {
+      displayName: "知识主播",
+      extraRules: ["不要过度简略", "重点展开知识点"],
+    },
+  });
+
+  assert.match(promptInput.systemPrompt, /知识主播/u);
+  assert.match(promptInput.systemPrompt, /不要过度简略/u);
+  assert.match(promptInput.systemPrompt, /重点展开知识点/u);
+});
+
+test("buildSummaryPromptInput can append entertainment-specific preset rules outside the base prompt", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 5,
+    partTitle: "P5",
+    durationSec: 240,
+    subtitleText: "raw subtitle text",
+    segments: [],
+    promptProfile: {
+      displayName: "娱乐主播",
+      extraRules: ["优先保留观众最可能想回看的节目性内容：连麦对象、表演、唱歌、PK。"],
+    },
+  });
+
+  assert.match(promptInput.systemPrompt, /娱乐主播/u);
+  assert.match(promptInput.systemPrompt, /节目性内容/u);
+  assert.match(promptInput.systemPrompt, /连麦对象/u);
 });
 
 test("extractSummaryText reads responses output arrays", () => {
