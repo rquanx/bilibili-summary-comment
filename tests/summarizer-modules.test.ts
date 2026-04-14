@@ -106,6 +106,8 @@ test("buildSummaryPromptInput keeps the base prompt generic across stream types"
 
   assert.match(promptInput.systemPrompt, /关键知识点/u);
   assert.match(promptInput.systemPrompt, /核心观点/u);
+  assert.match(promptInput.systemPrompt, /默认不要把 summary 写得过短/u);
+  assert.match(promptInput.systemPrompt, /把关键背景、动作、原因、结果或结论交代完整/u);
   assert.doesNotMatch(promptInput.systemPrompt, /优先保留观众最可能想回看的节目性内容/u);
 });
 
@@ -160,6 +162,23 @@ test("buildSummaryPromptInput appends per-user prompt rules", () => {
   assert.match(promptInput.systemPrompt, /知识主播/u);
   assert.match(promptInput.systemPrompt, /不要过度简略/u);
   assert.match(promptInput.systemPrompt, /重点展开知识点/u);
+});
+
+test("buildSummaryPromptInput can append deeper knowledge-interpretation rules", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 6,
+    partTitle: "P6",
+    durationSec: 420,
+    subtitleText: "raw subtitle text",
+    segments: [],
+    promptProfile: {
+      displayName: "知识主播",
+      extraRules: ["重点知识、关键论证和容易误解的部分，可以追加更多解释或解读。"],
+    },
+  });
+
+  assert.match(promptInput.systemPrompt, /重点知识/u);
+  assert.match(promptInput.systemPrompt, /更多解释或解读/u);
 });
 
 test("buildSummaryPromptInput can append entertainment-specific preset rules outside the base prompt", () => {
