@@ -21,7 +21,8 @@ const cleanupConfigSchema = z.object({
 
 const summaryUsersConfigSchema = z.object({
   summaryUsers: z.string(),
-  cookieFile: nonEmptyStringSchema,
+  authFile: nonEmptyStringSchema,
+  cookieFile: optionalTrimmedStringSchema,
   sinceHours: positiveIntegerLikeSchema,
   summaryConcurrency: positiveIntegerLikeSchema,
   dbPath: nonEmptyStringSchema,
@@ -29,8 +30,8 @@ const summaryUsersConfigSchema = z.object({
 });
 
 const schedulerConfigSchema = z.object({
-  cookieFile: nonEmptyStringSchema,
-  authFile: optionalTrimmedStringSchema,
+  authFile: nonEmptyStringSchema,
+  cookieFile: optionalTrimmedStringSchema,
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
   summaryConcurrency: positiveIntegerLikeSchema,
@@ -69,7 +70,8 @@ export function resolveCleanupConfig(options: AppConfigOptions = {}): CleanupCon
 export function resolveSummaryUsersConfig(options: AppConfigOptions = {}): SummaryUsersConfig {
   return summaryUsersConfigSchema.parse({
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
-    cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE ?? "cookie.txt",
+    authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? "bili-auth.json",
+    cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     sinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
     summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
@@ -79,8 +81,8 @@ export function resolveSummaryUsersConfig(options: AppConfigOptions = {}): Summa
 
 export function resolveSchedulerConfig(options: AppConfigOptions = {}): SchedulerConfig {
   return schedulerConfigSchema.parse({
-    cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE ?? "cookie.txt",
-    authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE,
+    authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? "bili-auth.json",
+    cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
     summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readCookieStringFromAuthFile } from "../bili/auth";
 import { createClient } from "../bili/comment-utils";
 import { hasGapNotification, openDatabase, saveGapNotification } from "../db/index";
 import { getRepoRoot } from "../shared/runtime-tools";
@@ -7,7 +8,6 @@ import { formatErrorMessage } from "../subtitle/utils";
 import { sendServerChanNotification } from "../subtitle/notifier";
 import { fetchVideoSnapshot } from "../video/index";
 import { collectRecentUploadsFromUsers } from "./uploads";
-import { readCookieString } from "./pipeline-runner";
 
 const PART_TIMESTAMP_RE = /^(?<title>.*?)(?<date>\d{4}\.\d{2}\.\d{2})\s+(?<time>\d{2}\.\d{2}\.\d{2})\s*$/u;
 
@@ -71,6 +71,7 @@ interface GapCheckRunResult {
 
 interface RunRecentVideoGapCheckOptions {
   summaryUsers?: unknown;
+  authFile?: string;
   cookieFile?: string;
   dbPath?: string;
   workRoot?: string;
@@ -81,7 +82,7 @@ interface RunRecentVideoGapCheckOptions {
   now?: Date;
   repoRoot?: string;
   collectRecentUploadsImpl?: typeof collectRecentUploadsFromUsers;
-  readCookieStringImpl?: typeof readCookieString;
+  readCookieStringFromAuthFileImpl?: typeof readCookieStringFromAuthFile;
   createClientImpl?: typeof createClient;
   fetchVideoSnapshotImpl?: typeof fetchVideoSnapshot;
   openDatabaseImpl?: typeof openDatabase;
@@ -105,7 +106,8 @@ interface DailySnapshotUpdateOptions {
 
 export async function runRecentVideoGapCheck({
   summaryUsers,
-  cookieFile = "cookie.txt",
+  authFile = "bili-auth.json",
+  cookieFile = undefined,
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
   sinceHours = DEFAULT_GAP_CHECK_SINCE_HOURS,
@@ -115,7 +117,7 @@ export async function runRecentVideoGapCheck({
   now = new Date(),
   repoRoot = getRepoRoot(),
   collectRecentUploadsImpl = collectRecentUploadsFromUsers,
-  readCookieStringImpl = readCookieString,
+  readCookieStringFromAuthFileImpl = readCookieStringFromAuthFile,
   createClientImpl = createClient,
   fetchVideoSnapshotImpl = fetchVideoSnapshot,
   openDatabaseImpl = openDatabase,
@@ -126,6 +128,7 @@ export async function runRecentVideoGapCheck({
 }: RunRecentVideoGapCheckOptions = {}): Promise<GapCheckRunResult> {
   const collected = await collectRecentUploadsImpl({
     summaryUsers,
+    authFile,
     cookieFile,
     sinceHours,
     onLog,
@@ -157,17 +160,23 @@ export async function runRecentVideoGapCheck({
     };
   }
 
-  const cookie = readCookieStringImpl(cookieFile, { repoRoot });
-  const client = createClientImpl(cookie);
   const db = openDatabaseImpl(path.resolve(repoRoot, dbPath));
   const checkedVideos: GapCheckDailyVideoRecord[] = [];
   const newGaps: GapRecord[] = [];
   let alreadyNotifiedGapCount = 0;
   let snapshotPath: string | null = null;
+  const clientCache = new Map<string, ReturnType<typeof createClient>>();
 
   try {
     for (const upload of collected.uploads) {
       onLog(`Checking recent upload for missing gaps: ${upload.bvid} (${upload.title || "untitled"})`);
+      const uploadAuthFile = String(upload.authFile ?? authFile).trim();
+      const clientKey = `auth:${uploadAuthFile}`;
+      let client = clientCache.get(clientKey);
+      if (!client) {
+        client = createClientImpl(readCookieStringFromAuthFileImpl(uploadAuthFile));
+        clientCache.set(clientKey, client);
+      }
 
       let videoRecord: GapCheckDailyVideoRecord;
       try {

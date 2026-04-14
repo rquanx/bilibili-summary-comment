@@ -23,7 +23,8 @@ interface PipelineFailurePayload extends Record<string, unknown> {
 }
 
 interface RunPipelineForBvidOptions {
-  cookieFile: string;
+  authFile?: string | null;
+  cookieFile?: string | null;
   dbPath: string;
   workRoot: string;
   bvid: string;
@@ -36,6 +37,7 @@ interface RunPipelineForBvidOptions {
 }
 
 export async function runPipelineForBvid({
+  authFile = null,
   cookieFile,
   dbPath,
   workRoot,
@@ -49,16 +51,13 @@ export async function runPipelineForBvid({
 }: RunPipelineForBvidOptions): Promise<PipelineProcessResult> {
   const scriptPath = resolvePipelineEntryScript(repoRoot);
   const args = buildNodeScriptArgs(scriptPath);
-  args.push(
-    "--cookie-file",
-    path.resolve(repoRoot, cookieFile),
-    "--bvid",
-    bvid,
-    "--db",
-    path.resolve(repoRoot, dbPath),
-    "--work-root",
-    workRoot,
-  );
+  if (authFile) {
+    args.push("--auth-file", path.resolve(repoRoot, authFile));
+  }
+  if (cookieFile) {
+    args.push("--cookie-file", path.resolve(repoRoot, cookieFile));
+  }
+  args.push("--bvid", bvid, "--db", path.resolve(repoRoot, dbPath), "--work-root", workRoot);
   if (publish) {
     args.push("--publish");
   }

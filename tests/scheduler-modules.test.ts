@@ -4,8 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
+import { resolveAuthFileForUser } from "../scripts/lib/scheduler/auth-files";
 import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
 import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency";
+import { resolveCookieFileForUser } from "../scripts/lib/scheduler/cookie-files";
 import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets";
 import * as schedulerTasks from "../scripts/lib/scheduler/index";
 import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup";
@@ -25,6 +27,64 @@ test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
     { mid: 123, source: "123" },
     { mid: 456, source: "https://space.bilibili.com/456" },
   ]);
+});
+
+test("resolveCookieFileForUser falls back from indexed cookie to cookie_1 then base cookie", () => {
+  assert.equal(resolveCookieFileForUser("cookie.txt", 2, {
+    repoRoot: "D:\\repo",
+    existsSync(targetPath) {
+      return targetPath === "D:\\repo\\cookie_1.txt";
+    },
+  }), "D:\\repo\\cookie_1.txt");
+
+  assert.equal(resolveCookieFileForUser("cookie.txt", 3, {
+    repoRoot: "D:\\repo",
+    existsSync(targetPath) {
+      return targetPath === "D:\\repo\\cookie.txt";
+    },
+  }), "D:\\repo\\cookie.txt");
+});
+
+test("resolveAuthFileForUser falls back from indexed auth to auth_1 then base auth", () => {
+  assert.equal(resolveAuthFileForUser("bili-auth.json", 2, {
+    repoRoot: "D:\\repo",
+    existsSync(targetPath) {
+      return targetPath === "D:\\repo\\bili-auth_1.json";
+    },
+  }), "D:\\repo\\bili-auth_1.json");
+
+  assert.equal(resolveAuthFileForUser("bili-auth.json", 3, {
+    repoRoot: "D:\\repo",
+    existsSync(targetPath) {
+      return targetPath === "D:\\repo\\bili-auth.json";
+    },
+  }), "D:\\repo\\bili-auth.json");
+});
+
+test("resolveCookieFileForUser throws when no candidate cookie file exists", () => {
+  assert.throws(
+    () =>
+      resolveCookieFileForUser("cookie.txt", 2, {
+        repoRoot: "D:\\repo",
+        existsSync() {
+          return false;
+        },
+      }),
+    /Missing cookie file for summary user #2/u,
+  );
+});
+
+test("resolveAuthFileForUser throws when no candidate auth file exists", () => {
+  assert.throws(
+    () =>
+      resolveAuthFileForUser("bili-auth.json", 2, {
+        repoRoot: "D:\\repo",
+        existsSync() {
+          return false;
+        },
+      }),
+    /Missing auth file for summary user #2/u,
+  );
 });
 
 test("runPipelinesWithConcurrency keeps per-user work serialized while allowing parallel users", async () => {
@@ -245,7 +305,10 @@ test("collectRecentUploadsFromUsers skips only-self-visible videos", async () =>
 
   const result = await collectRecentUploadsFromUsers({
     summaryUsers: "123",
-    readCookieStringImpl: () => "SESSDATA=fake",
+    findAuthFileForUserImpl() {
+      return path.resolve("bili-auth.json");
+    },
+    readCookieStringFromAuthFileImpl: () => "SESSDATA=fake",
     createClientImpl: (() => ({
       user: {
         async getVideos() {
@@ -290,6 +353,65 @@ test("collectRecentUploadsFromUsers skips only-self-visible videos", async () =>
     "Skip only-self-visible video BVPRIVATE (Private)",
     "Skip only-self-visible video BVPRIVATE2 (Private Legacy)",
   ]);
+});
+
+test("collectRecentUploadsFromUsers uses per-user indexed auth files", async () => {
+  const authReads: string[] = [];
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  const result = await collectRecentUploadsFromUsers({
+    summaryUsers: "123,456",
+    authFile: "bili-auth.json",
+    findAuthFileForUserImpl(_authFile, userIndex) {
+      return path.resolve(`bili-auth_${userIndex}.json`);
+    },
+    readCookieStringFromAuthFileImpl(authFile) {
+      authReads.push(authFile);
+      return `auth:${path.basename(authFile)}`;
+    },
+    createClientImpl: ((cookieHeader: string) => ({
+      user: {
+        async getVideos({ mid }) {
+          return {
+            list: {
+              vlist: [
+                {
+                  aid: Number(mid),
+                  bvid: `BV${mid}`,
+                  title: cookieHeader,
+                  created: nowUnix,
+                },
+              ],
+            },
+          };
+        },
+      },
+    })) as any,
+  });
+
+  assert.deepEqual(authReads, [
+    path.resolve("bili-auth_1.json"),
+    path.resolve("bili-auth_2.json"),
+  ]);
+  assert.deepEqual(
+    result.uploads.map((item) => ({
+      bvid: item.bvid,
+      authFile: item.authFile,
+      title: item.title,
+    })),
+    [
+      {
+        bvid: "BV123",
+        authFile: path.resolve("bili-auth_1.json"),
+        title: "auth:bili-auth_1.json",
+      },
+      {
+        bvid: "BV456",
+        authFile: path.resolve("bili-auth_2.json"),
+        title: "auth:bili-auth_2.json",
+      },
+    ],
+  );
 });
 
 test("detectGapsFromVideoSnapshot flags only intervals larger than the threshold", () => {
@@ -409,7 +531,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
 
     const runOptions = {
       summaryUsers: "123",
-      cookieFile: "cookie.txt",
+      authFile: "bili-auth.json",
       dbPath,
       workRoot: "work",
       repoRoot: tempRoot,
@@ -422,13 +544,14 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
             bvid: "BV1RUN",
             aid: 1,
             title: "Gap Run Test",
+            authFile: path.join(tempRoot, "bili-auth.json"),
             createdAtUnix: 1,
             createdAt: "2026-04-12T01:00:00.000Z",
             source: "123",
           },
         ],
       }),
-      readCookieStringImpl: () => "SESSDATA=fake",
+      readCookieStringFromAuthFileImpl: () => "SESSDATA=fake",
       createClientImpl: (() => ({})) as any,
       fetchVideoSnapshotImpl: async () => snapshot,
       notifyNewGapsImpl: async ({ gaps }) => {
@@ -459,6 +582,78 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("runRecentVideoGapCheck uses the upload-specific auth file when present", async () => {
+  const authReads: string[] = [];
+  const observedClients: string[] = [];
+
+  const result = await runRecentVideoGapCheck({
+    summaryUsers: "123,456",
+    authFile: "bili-auth.json",
+    dbPath: path.join(os.tmpdir(), `pipeline-${Date.now()}-auth.sqlite3`),
+    workRoot: "work",
+    repoRoot: "D:\\repo",
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [
+        { mid: 123, source: "123" },
+        { mid: 456, source: "456" },
+      ],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BV1",
+          aid: 1,
+          title: "Video 1",
+          authFile: "D:\\repo\\bili-auth_1.json",
+          createdAtUnix: 2,
+          createdAt: "2026-04-12T01:00:00.000Z",
+          source: "123",
+        },
+        {
+          mid: 456,
+          bvid: "BV2",
+          aid: 2,
+          title: "Video 2",
+          authFile: "D:\\repo\\bili-auth_2.json",
+          createdAtUnix: 1,
+          createdAt: "2026-04-12T00:00:00.000Z",
+          source: "456",
+        },
+      ],
+    }),
+    readCookieStringFromAuthFileImpl(authFile) {
+      authReads.push(String(authFile));
+      return `auth:${path.basename(String(authFile))}`;
+    },
+    createClientImpl: ((cookieHeader: string) => ({ cookieHeader })) as any,
+    fetchVideoSnapshotImpl: async (client, { bvid }) => {
+      observedClients.push(String((client as { cookieHeader?: string }).cookieHeader));
+      return {
+        bvid: String(bvid),
+        aid: 1,
+        title: String(bvid),
+        pageCount: 1,
+        pages: [
+          {
+            pageNo: 1,
+            cid: 101,
+            partTitle: "Gap Run 2026.04.12 01.00.00",
+            durationSec: 10,
+          },
+        ],
+      };
+    },
+    notifyNewGapsImpl: async () => ({
+      sent: false,
+      skipped: true,
+      reason: "empty-gaps",
+    }) as const,
+  });
+
+  assert.equal(result.checkedVideos.length, 2);
+  assert.deepEqual(authReads, ["D:\\repo\\bili-auth_1.json", "D:\\repo\\bili-auth_2.json"]);
+  assert.deepEqual(observedClients, ["auth:bili-auth_1.json", "auth:bili-auth_2.json"]);
 });
 
 test("createCoalescedRunner reruns once after overlapping triggers while work is in progress", async () => {

@@ -42,7 +42,8 @@ export function addCookieOptions(command: Command, { required = false }: { requi
   const optionText = required ? "Required." : "Optional.";
   return command
     .option("--cookie <cookie>", `${optionText} Bilibili cookie string.`)
-    .option("--cookie-file <path>", `${optionText} Bilibili cookie file path.`);
+    .option("--cookie-file <path>", `${optionText} Bilibili cookie file path.`)
+    .option("--auth-file <path>", `${optionText} Bilibili auth JSON path.`);
 }
 
 export function addVideoIdentityOptions(command: Command): Command {

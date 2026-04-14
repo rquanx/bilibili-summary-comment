@@ -50,8 +50,12 @@ function runTypeScriptBuild() {
 function copyRuntimeAssets(): string[] {
   const envConfig = readDotEnvConfig();
   const copiedAssets: string[] = [];
+  const indexedAuthAssets = expandIndexedSiblingAssets(["bili-auth.json", "work/bili-auth.json", envConfig.BILI_AUTH_FILE]);
+  const indexedCookieAssets = expandIndexedSiblingAssets(["cookie.txt", envConfig.BILI_COOKIE_FILE]);
   const assetCandidates = uniqueStrings([
     ...STATIC_RUNTIME_ASSETS,
+    ...indexedAuthAssets,
+    ...indexedCookieAssets,
     envConfig.BILI_COOKIE_FILE,
     envConfig.BILI_AUTH_FILE,
     envConfig.PIPELINE_DB_PATH,
@@ -118,4 +122,44 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
 
 function toPosixPath(targetPath: string): string {
   return targetPath.split(path.sep).join("/");
+}
+
+function expandIndexedSiblingAssets(assetPaths: Array<string | undefined>): string[] {
+  const discoveredAssets = new Set<string>();
+
+  for (const assetPath of assetPaths) {
+    const normalizedAssetPath = String(assetPath ?? "").trim();
+    if (!normalizedAssetPath) {
+      continue;
+    }
+
+    const resolvedAssetPath = resolveRepoAssetPath(normalizedAssetPath);
+    if (!resolvedAssetPath) {
+      continue;
+    }
+
+    const parsedAssetPath = path.parse(resolvedAssetPath);
+    if (!fs.existsSync(parsedAssetPath.dir)) {
+      continue;
+    }
+
+    const siblingMatcher = new RegExp(`^${escapeRegExp(parsedAssetPath.name)}_\\d+${escapeRegExp(parsedAssetPath.ext)}$`, "u");
+    for (const entry of fs.readdirSync(parsedAssetPath.dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !siblingMatcher.test(entry.name)) {
+        continue;
+      }
+
+      const siblingPath = path.join(parsedAssetPath.dir, entry.name);
+      const relativePath = path.relative(repoRoot, siblingPath);
+      if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+        discoveredAssets.add(relativePath);
+      }
+    }
+  }
+
+  return [...discoveredAssets];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

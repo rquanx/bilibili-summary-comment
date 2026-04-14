@@ -19,7 +19,9 @@ await runCli({
   command,
   async handler(args) {
     const authFile = resolveBiliAuthFile(args["auth-file"]);
-    const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
+    const cookieFile = typeof args["cookie-file"] === "string" && args["cookie-file"].trim()
+      ? resolveBiliCookieFile(args["cookie-file"])
+      : null;
     const result = await refreshBiliCookie({
       authFile,
       cookieFile,

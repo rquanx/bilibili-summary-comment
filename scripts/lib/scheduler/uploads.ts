@@ -1,6 +1,8 @@
 import { createClient } from "../bili/comment-utils";
 import { runPipelinesWithConcurrency, SUMMARY_PIPELINE_MAX_CONCURRENCY } from "./concurrency";
-import { runPipelineForBvid, readCookieString } from "./pipeline-runner";
+import { readCookieStringFromAuthFile } from "../bili/auth";
+import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
+import { runPipelineForBvid } from "./pipeline-runner";
 import { parseSummaryUsers } from "./user-targets";
 import type { PipelineUpload } from "./concurrency";
 import type { PipelineRunResult, PipelineFailureResult } from "./concurrency";
@@ -13,6 +15,7 @@ export interface RecentUpload extends PipelineUpload {
   bvid: string;
   aid: number | null;
   title: string;
+  authFile?: string | null;
   createdAtUnix: number;
   createdAt: string;
   source: string;
@@ -27,10 +30,12 @@ type UploadTitleVariant = "clean" | "plain" | "danmu";
 
 interface CollectRecentUploadsOptions {
   summaryUsers?: unknown;
+  authFile?: string;
   cookieFile?: string;
   sinceHours?: number;
   onLog?: (message: string) => void;
-  readCookieStringImpl?: (cookieFile: string) => string;
+  findAuthFileForUserImpl?: typeof findAuthFileForUser;
+  readCookieStringFromAuthFileImpl?: typeof readCookieStringFromAuthFile;
   createClientImpl?: typeof createClient;
 }
 
@@ -54,10 +59,12 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
 
 export async function collectRecentUploadsFromUsers({
   summaryUsers,
-  cookieFile = "cookie.txt",
+  authFile = "bili-auth.json",
+  cookieFile: _cookieFile = undefined,
   sinceHours = 24,
   onLog = () => {},
-  readCookieStringImpl = readCookieString,
+  findAuthFileForUserImpl = findAuthFileForUser,
+  readCookieStringFromAuthFileImpl = readCookieStringFromAuthFile,
   createClientImpl = createClient,
 }: CollectRecentUploadsOptions = {}): Promise<CollectedUploadsResult> {
   const targets = parseSummaryUsers(summaryUsers);
@@ -68,12 +75,24 @@ export async function collectRecentUploadsFromUsers({
     };
   }
 
-  const cookie = readCookieStringImpl(cookieFile);
-  const client = createClientImpl(cookie);
   const cutoffUnix = Math.floor(Date.now() / 1000) - Math.max(1, Number(sinceHours) || 24) * 3600;
   const uploadMap = new Map<string, RecentUpload>();
+  const clientCache = new Map<string, ReturnType<typeof createClient>>();
 
-  for (const target of targets) {
+  for (const [targetIndex, target] of targets.entries()) {
+    const userIndex = targetIndex + 1;
+    const resolvedAuthFile = findAuthFileForUserImpl(authFile, userIndex);
+    if (!resolvedAuthFile) {
+      throw new Error(`Missing auth file for summary user #${userIndex}. Tried: ${buildAuthFileCandidates(authFile, userIndex).join(", ")}`);
+    }
+
+    const clientKey = `auth:${resolvedAuthFile}`;
+    let client = clientCache.get(clientKey);
+    if (!client) {
+      client = createClientImpl(readCookieStringFromAuthFileImpl(resolvedAuthFile));
+      clientCache.set(clientKey, client);
+    }
+
     onLog(`Fetching recent uploads for uid ${target.mid}`);
     const response = await client.user.getVideos({
       mid: target.mid,
@@ -105,6 +124,7 @@ export async function collectRecentUploadsFromUsers({
         bvid,
         aid: Number(video?.aid ?? 0) || null,
         title: String(video?.title ?? "").trim(),
+        authFile: resolvedAuthFile,
         createdAtUnix,
         createdAt: new Date(createdAtUnix * 1000).toISOString(),
         source: target.source,
@@ -121,7 +141,7 @@ export async function collectRecentUploadsFromUsers({
 
 export async function syncSummaryUsersRecentVideos({
   summaryUsers,
-  cookieFile = "cookie.txt",
+  authFile = "bili-auth.json",
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
   logDay = null,
@@ -137,7 +157,7 @@ export async function syncSummaryUsersRecentVideos({
 }: SyncSummaryUsersRecentVideosOptions = {}) {
   const collected = await collectRecentUploadsImpl({
     summaryUsers,
-    cookieFile,
+    authFile,
     sinceHours,
     onLog,
   });
@@ -175,7 +195,8 @@ export async function syncSummaryUsersRecentVideos({
     async runUpload(upload) {
       onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"}) [user ${upload.mid}]`);
       return runPipelineForBvidImpl({
-        cookieFile,
+        authFile: upload.authFile ?? null,
+        cookieFile: null,
         dbPath,
         workRoot,
         bvid: upload.bvid,

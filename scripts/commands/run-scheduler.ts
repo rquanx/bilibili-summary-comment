@@ -48,7 +48,7 @@ await runCli({
   async handler(args) {
     const config = resolveSchedulerConfig(args);
     config.authFile = resolveBiliAuthFile(config.authFile);
-    const resolvedCookieFile = resolveBiliCookieFile(config.cookieFile);
+    const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
     const runningTasks = new Set<string>();
     const schedulerLogger = createWorkFileLogger({
       workRoot: config.workRoot,
@@ -139,7 +139,8 @@ await runCli({
       writeConsole("Scanning SUMMARY_USERS recent uploads");
       const result = await syncSummaryUsersRecentVideos({
         summaryUsers: config.summaryUsers,
-        cookieFile: resolvedCookieFile,
+        authFile: config.authFile,
+        cookieFile: resolvedCookieFile ?? undefined,
         sinceHours: config.summarySinceHours,
         maxConcurrent: config.summaryConcurrency,
         dbPath: config.dbPath,
@@ -210,7 +211,8 @@ await runCli({
       log("Checking recent uploads for missing video gaps");
       const result = await runRecentVideoGapCheck({
         summaryUsers: config.summaryUsers,
-        cookieFile: resolvedCookieFile,
+        authFile: config.authFile,
+        cookieFile: resolvedCookieFile ?? undefined,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
         timezone: config.timezone ?? null,

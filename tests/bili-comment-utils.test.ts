@@ -5,13 +5,69 @@ import { CliError } from "../scripts/lib/cli/errors";
 
 test("readCookie throws CliError when cookie inputs are missing", () => {
   assert.throws(
-    () => readCookie({}),
+    () => readCookie({}, {
+      existsSync() {
+        return false;
+      },
+    }),
     (error) => {
       assert.ok(error instanceof CliError);
-      assert.equal(error.message, "Missing required option: --cookie or --cookie-file");
+      assert.equal(error.message, "Missing required option: --cookie, --cookie-file, or --auth-file");
       return true;
     },
   );
+});
+
+test("readCookie falls back to auth json before the default cookie file", () => {
+  const cookie = readCookie({}, {
+    existsSync(targetPath) {
+      return String(targetPath).endsWith("bili-auth.json");
+    },
+    readCookieStringFromAuthFileImpl(authFile) {
+      return `auth:${authFile}`;
+    },
+    resolveBiliAuthFileImpl() {
+      return "D:\\repo\\bili-auth.json";
+    },
+  });
+
+  assert.equal(cookie, "auth:D:\\repo\\bili-auth.json");
+});
+
+test("readCookie still supports an explicit auth file override", () => {
+  const cookie = readCookie(
+    {
+      "auth-file": "./secrets/bili-auth-2.json",
+    },
+    {
+      readCookieStringFromAuthFileImpl(authFile) {
+        return `auth:${authFile}`;
+      },
+      resolveBiliAuthFileImpl(authFile) {
+        return `D:\\repo\\${String(authFile ?? "").replace(/\//g, "\\")}`;
+      },
+    },
+  );
+
+  assert.equal(cookie, "auth:D:\\repo\\.\\secrets\\bili-auth-2.json");
+});
+
+test("readCookie still honors an explicit cookie file before auth fallback", () => {
+  const cookie = readCookie(
+    {
+      "cookie-file": "D:\\repo\\cookie.txt",
+    },
+    {
+      readTextFileImpl(filePath) {
+        return `cookie:${filePath}`;
+      },
+      readCookieStringFromAuthFileImpl() {
+        return "auth:unused";
+      },
+    },
+  );
+
+  assert.equal(cookie, "cookie:D:\\repo\\cookie.txt");
 });
 
 test("getType preserves the invalid input in CliError details", () => {

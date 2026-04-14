@@ -1,10 +1,15 @@
 import fs from "node:fs";
 import { Client } from "@renmu/bili-api";
+import {
+  readCookieStringFromAuthFile,
+  resolveBiliAuthFile,
+} from "./auth";
 import { createCliError, errorToJson } from "../cli/errors";
 
 interface CommentArgs extends Record<string, unknown> {
   cookie?: unknown;
   "cookie-file"?: unknown;
+  "auth-file"?: unknown;
   message?: unknown;
   "message-file"?: unknown;
   type?: unknown;
@@ -52,16 +57,38 @@ export function printErrorJson(error: unknown, fallbackMessage = "Unknown error"
   process.exitCode = 1;
 }
 
-export function readCookie(args: CommentArgs): string {
+export function readCookie(
+  args: CommentArgs,
+  {
+    existsSync = fs.existsSync as (filePath: fs.PathLike) => boolean,
+    readTextFileImpl = readTextFile,
+    readCookieStringFromAuthFileImpl = readCookieStringFromAuthFile,
+    resolveBiliAuthFileImpl = resolveBiliAuthFile,
+  }: {
+    existsSync?: (filePath: fs.PathLike) => boolean;
+    readTextFileImpl?: (filePath: string) => string;
+    readCookieStringFromAuthFileImpl?: (authFile: string) => string;
+    resolveBiliAuthFileImpl?: (filePath?: string | null) => string;
+  } = {},
+): string {
   if (typeof args.cookie === "string" && args.cookie.trim()) {
     return args.cookie.trim();
   }
 
   if (typeof args["cookie-file"] === "string" && args["cookie-file"].trim()) {
-    return readTextFile(args["cookie-file"]).trim();
+    return readTextFileImpl(args["cookie-file"]).trim();
   }
 
-  throw createCliError("Missing required option: --cookie or --cookie-file");
+  if (typeof args["auth-file"] === "string" && args["auth-file"].trim()) {
+    return readCookieStringFromAuthFileImpl(resolveBiliAuthFileImpl(args["auth-file"])).trim();
+  }
+
+  const defaultAuthFile = resolveBiliAuthFileImpl(null);
+  if (existsSync(defaultAuthFile)) {
+    return readCookieStringFromAuthFileImpl(defaultAuthFile).trim();
+  }
+
+  throw createCliError("Missing required option: --cookie, --cookie-file, or --auth-file");
 }
 
 export function readMessage(args: CommentArgs): string {

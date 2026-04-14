@@ -7,6 +7,7 @@ import {
   runCli,
 } from "../lib/cli/tools";
 import { syncSummaryUsersRecentVideos } from "../lib/scheduler/index";
+import { resolveBiliCookieFile } from "../lib/bili/auth";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { PipelineProcessResult } from "../lib/scheduler/pipeline-runner";
 
@@ -16,6 +17,7 @@ const command = addWorkRootOption(
       name: "sync-summary-users",
       description: "Scan recent uploads from configured users and run the pipeline.",
     })
+      .option("--auth-file <path>", "Optional. Auth file path.")
       .option("--cookie-file <path>", "Optional. Cookie file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. How many recent hours to scan.", parsePositiveIntegerArg)
@@ -28,6 +30,7 @@ await runCli({
   printResult: false,
   async handler(args) {
     const config = resolveSummaryUsersConfig(args);
+    const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
     const startedAt = new Date();
     const logDay = formatLogDay(startedAt);
     const logGroup = createLogGroupName("summary", "sync-summary-users", startedAt);
@@ -45,7 +48,8 @@ await runCli({
 
     const result = await syncSummaryUsersRecentVideos({
       summaryUsers: config.summaryUsers,
-      cookieFile: config.cookieFile,
+      authFile: config.authFile,
+      cookieFile: resolvedCookieFile ?? undefined,
       sinceHours: config.sinceHours,
       maxConcurrent: config.summaryConcurrency,
       dbPath: config.dbPath,
