@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { openDatabase } from "../scripts/lib/db/database";
+import { listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
 import { resolveSummaryConfig } from "../scripts/lib/summary/config";
 import {
   buildSummaryHttpRequest,
@@ -13,6 +15,11 @@ import {
 import { splitSummaryForComments } from "../scripts/lib/summary/format";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
+import {
+  requestSummaryWithFallback,
+  shouldRetrySummaryWithGlm5,
+  summarizePartFromSubtitle,
+} from "../scripts/lib/summary/service";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
   const config = resolveSummaryConfig(
@@ -62,6 +69,91 @@ test("buildSummaryHttpRequest creates chat-completions payloads", () => {
       { role: "user", content: "user" },
     ],
   });
+});
+
+test("shouldRetrySummaryWithGlm5 only matches kimi prompt_tokens compatibility errors", () => {
+  assert.equal(
+    shouldRetrySummaryWithGlm5({
+      model: "kimi-k2.5",
+      error: new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"Cannot read properties of undefined (reading 'prompt_tokens')\"}"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryWithGlm5({
+      model: "glm-5",
+      error: new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"Cannot read properties of undefined (reading 'prompt_tokens')\"}"),
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldRetrySummaryWithGlm5({
+      model: "kimi-k2.5",
+      error: new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"different error\"}"),
+    }),
+    false,
+  );
+});
+
+test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_tokens errors", async () => {
+  const calls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "kimi-k2.5") {
+        throw new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"Cannot read properties of undefined (reading 'prompt_tokens')\"}");
+      }
+      return "<2P> 2#00:00 fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "kimi-prompt_tokens-error");
+  assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
+});
+
+test("requestSummaryWithFallback does not retry non-matching errors", async () => {
+  const calls = [];
+
+  await assert.rejects(
+    requestSummaryWithFallback({
+      requestArgs: {
+        pageNo: 2,
+        partTitle: "P2",
+        durationSec: 120,
+        subtitleText: "subtitle text",
+        segments: [],
+        promptProfile: null,
+        model: "kimi-k2.5",
+        apiKey: "key-123",
+        apiBaseUrl: "https://example.com/v1",
+        apiFormat: "openai-chat",
+      },
+      requestSummaryImpl: async (args) => {
+        calls.push(args.model);
+        throw new Error("Summary request failed: 429 Too Many Requests");
+      },
+    }),
+    /429 Too Many Requests/u,
+  );
+
+  assert.deepEqual(calls, ["kimi-k2.5"]);
 });
 
 test("buildSummaryPromptInput uses raw subtitles when there are no parsed segments", () => {
@@ -273,4 +365,90 @@ test("splitSummaryForComments splits oversized page blocks into multiple comment
   );
   assert.ok(chunks.every((chunk) => chunk.message.length <= 1000));
   assert.ok(chunks.every((chunk) => chunk.message.startsWith("<1P>")));
+});
+
+test("summarizePartFromSubtitle records fallback success metadata when glm-5 retry succeeds", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const subtitlePath = path.join(tempRoot, "p2.srt");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  fs.writeFileSync(subtitlePath, [
+    "1",
+    "00:00:00,000 --> 00:00:03,000",
+    "测试字幕",
+    "",
+  ].join("\n"), "utf8");
+
+  const events = [];
+  const requestModels = [];
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVtestfallback",
+      aid: 123456,
+      title: "Fallback Summary Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 180,
+      subtitlePath,
+      isDeleted: false,
+    });
+
+    const result = await summarizePartFromSubtitle({
+      db,
+      videoId: video.id,
+      bvid: video.bvid,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 180,
+      subtitlePath,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+      workRoot,
+      eventLogger: {
+        log(event) {
+          events.push(event);
+        },
+      },
+      requestSummaryImpl: async (args) => {
+        requestModels.push(args.model);
+        if (args.model === "kimi-k2.5") {
+          throw new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"Cannot read properties of undefined (reading 'prompt_tokens')\"}");
+        }
+        return "<2P> 2#00:00 fallback summary";
+      },
+    });
+
+    assert.deepEqual(requestModels, ["kimi-k2.5", "glm-5"]);
+    assert.equal(result.modelUsed, "glm-5");
+    assert.equal(result.fallbackUsed, true);
+
+    const fallbackStarted = events.find((event) => event.action === "llm-fallback" && event.status === "started");
+    assert.ok(fallbackStarted);
+    assert.equal(fallbackStarted.details.failedModel, "kimi-k2.5");
+    assert.equal(fallbackStarted.details.fallbackModel, "glm-5");
+
+    const llmSucceeded = events.find((event) => event.action === "llm" && event.status === "succeeded");
+    assert.ok(llmSucceeded);
+    assert.equal(llmSucceeded.details.model, "glm-5");
+    assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
+    assert.equal(llmSucceeded.details.fallbackUsed, true);
+
+    const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 2);
+    assert.equal(savedPart.summary_text, "<2P> 2#00:00 fallback summary");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
 });

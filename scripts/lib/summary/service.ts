@@ -7,6 +7,56 @@ import { requestSummary } from "./client";
 import { normalizeSummaryOutput } from "./output";
 import { resolveSummaryPromptProfile } from "./prompt-config";
 
+const KIMI_PRIMARY_MODEL = "kimi-k2.5";
+const GLM_FALLBACK_MODEL = "glm-5";
+const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
+
+export function shouldRetrySummaryWithGlm5({ model, error }) {
+  const normalizedModel = String(model ?? "").trim().toLowerCase();
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return normalizedModel === KIMI_PRIMARY_MODEL && KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message);
+}
+
+export async function requestSummaryWithFallback({
+  requestArgs,
+  requestSummaryImpl = requestSummary,
+  onFallback = null,
+}) {
+  try {
+    const summaryText = await requestSummaryImpl(requestArgs);
+    return {
+      summaryText,
+      modelUsed: requestArgs.model,
+      fallbackUsed: false,
+      fallbackReason: null,
+    };
+  } catch (error) {
+    if (!shouldRetrySummaryWithGlm5({ model: requestArgs.model, error })) {
+      throw error;
+    }
+
+    const fallbackReason = "kimi-prompt_tokens-error";
+    await onFallback?.({
+      failedModel: requestArgs.model,
+      fallbackModel: GLM_FALLBACK_MODEL,
+      fallbackReason,
+      error,
+    });
+
+    const summaryText = await requestSummaryImpl({
+      ...requestArgs,
+      model: GLM_FALLBACK_MODEL,
+    });
+
+    return {
+      summaryText,
+      modelUsed: GLM_FALLBACK_MODEL,
+      fallbackUsed: true,
+      fallbackReason,
+    };
+  }
+}
+
 export async function summarizePartFromSubtitle({
   db,
   videoId,
@@ -25,6 +75,7 @@ export async function summarizePartFromSubtitle({
   ownerName = null,
   workRoot = "work",
   eventLogger = null,
+  requestSummaryImpl = requestSummary,
 }) {
   if (!apiKey) {
     throw new Error("Missing summary API key. Set SUMMARY_API_KEY or OPENAI_API_KEY.");
@@ -52,7 +103,7 @@ export async function summarizePartFromSubtitle({
       ownerMid,
       promptConfigPath,
     });
-    const pageSummary = await requestSummary({
+    const summaryRequest = {
       pageNo,
       partTitle,
       durationSec,
@@ -63,7 +114,30 @@ export async function summarizePartFromSubtitle({
       apiKey,
       apiBaseUrl,
       apiFormat,
+    };
+    const summaryAttempt = await requestSummaryWithFallback({
+      requestArgs: summaryRequest,
+      requestSummaryImpl,
+      onFallback: async ({ failedModel, fallbackModel, fallbackReason, error }) => {
+        eventLogger?.log({
+          scope: "summary",
+          action: "llm-fallback",
+          status: "started",
+          pageNo,
+          cid,
+          partTitle,
+          message: `Retrying summary with fallback model ${fallbackModel}`,
+          details: {
+            failedModel,
+            fallbackModel,
+            fallbackReason,
+            originalError: error instanceof Error ? error.message : String(error ?? ""),
+            subtitlePath,
+          },
+        });
+      },
     });
+    const pageSummary = summaryAttempt.summaryText;
 
     const normalizedSummary = normalizeSummaryOutput(pageSummary, pageNo, {
       subtitleText,
@@ -91,7 +165,10 @@ export async function summarizePartFromSubtitle({
       partTitle,
       message: `LLM summary ready for P${pageNo}`,
       details: {
-        model,
+        model: summaryAttempt.modelUsed,
+        requestedModel: model,
+        fallbackUsed: summaryAttempt.fallbackUsed,
+        fallbackReason: summaryAttempt.fallbackReason,
         segmentCount: segments.length,
         summaryHash,
         summaryPath: partSummaryPath,
@@ -102,12 +179,32 @@ export async function summarizePartFromSubtitle({
       },
     });
 
+    if (summaryAttempt.fallbackUsed) {
+      eventLogger?.log({
+        scope: "summary",
+        action: "llm-fallback",
+        status: "succeeded",
+        pageNo,
+        cid,
+        partTitle,
+        message: `Fallback summary succeeded with ${summaryAttempt.modelUsed}`,
+        details: {
+          requestedModel: model,
+          modelUsed: summaryAttempt.modelUsed,
+          fallbackReason: summaryAttempt.fallbackReason,
+          subtitlePath,
+        },
+      });
+    }
+
     return {
       pageNo,
       summaryText: normalized.trim(),
       summaryHash,
       summaryPath: partSummaryPath,
       dbRow: saved,
+      modelUsed: summaryAttempt.modelUsed,
+      fallbackUsed: summaryAttempt.fallbackUsed,
     };
   } catch (error) {
     eventLogger?.log({
@@ -121,6 +218,7 @@ export async function summarizePartFromSubtitle({
       details: {
         model,
         subtitlePath,
+        fallbackEligible: shouldRetrySummaryWithGlm5({ model, error }),
       },
     });
     throw error;
