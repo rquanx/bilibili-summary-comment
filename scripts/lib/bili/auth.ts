@@ -3,7 +3,8 @@ import path from "node:path";
 import { TvQrcodeLogin } from "@renmu/bili-api";
 import { getRepoRoot } from "../shared/runtime-tools";
 
-const DEFAULT_AUTH_FILE = "bili-auth.json";
+const DEFAULT_AUTH_DIR = ".auth";
+export const DEFAULT_AUTH_FILE = path.posix.join(DEFAULT_AUTH_DIR, "bili-auth.json");
 const DEFAULT_COOKIE_FILE = "cookie.txt";
 
 export function resolveBiliAuthFile(filePath = null) {

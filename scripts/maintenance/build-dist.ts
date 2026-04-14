@@ -12,7 +12,7 @@ const typeScriptCliPath = path.join(repoRoot, "node_modules", "typescript", "lib
 const STATIC_RUNTIME_ASSETS = [
   ".env",
   "cookie.txt",
-  "bili-auth.json",
+  ".auth/bili-auth.json",
   "work/bili-auth.json",
   "work/pipeline.sqlite3",
   "sql",
@@ -50,7 +50,7 @@ function runTypeScriptBuild() {
 function copyRuntimeAssets(): string[] {
   const envConfig = readDotEnvConfig();
   const copiedAssets: string[] = [];
-  const indexedAuthAssets = expandIndexedSiblingAssets(["bili-auth.json", "work/bili-auth.json", envConfig.BILI_AUTH_FILE]);
+  const indexedAuthAssets = expandIndexedSiblingAssets([".auth/bili-auth.json", "work/bili-auth.json", envConfig.BILI_AUTH_FILE]);
   const indexedCookieAssets = expandIndexedSiblingAssets(["cookie.txt", envConfig.BILI_COOKIE_FILE]);
   const assetCandidates = uniqueStrings([
     ...STATIC_RUNTIME_ASSETS,

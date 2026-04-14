@@ -1,6 +1,6 @@
 import { createClient } from "../bili/comment-utils";
 import { runPipelinesWithConcurrency, SUMMARY_PIPELINE_MAX_CONCURRENCY } from "./concurrency";
-import { readCookieStringFromAuthFile } from "../bili/auth";
+import { DEFAULT_AUTH_FILE, readCookieStringFromAuthFile } from "../bili/auth";
 import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
 import { runPipelineForBvid } from "./pipeline-runner";
 import { parseSummaryUsers } from "./user-targets";
@@ -59,7 +59,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
 
 export async function collectRecentUploadsFromUsers({
   summaryUsers,
-  authFile = "bili-auth.json",
+  authFile = DEFAULT_AUTH_FILE,
   cookieFile: _cookieFile = undefined,
   sinceHours = 24,
   onLog = () => {},
@@ -141,7 +141,7 @@ export async function collectRecentUploadsFromUsers({
 
 export async function syncSummaryUsersRecentVideos({
   summaryUsers,
-  authFile = "bili-auth.json",
+  authFile = DEFAULT_AUTH_FILE,
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
   logDay = null,

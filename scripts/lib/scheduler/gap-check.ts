@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { readCookieStringFromAuthFile } from "../bili/auth";
+import { DEFAULT_AUTH_FILE, readCookieStringFromAuthFile } from "../bili/auth";
 import { createClient } from "../bili/comment-utils";
 import { hasGapNotification, openDatabase, saveGapNotification } from "../db/index";
 import { getRepoRoot } from "../shared/runtime-tools";
@@ -106,7 +106,7 @@ interface DailySnapshotUpdateOptions {
 
 export async function runRecentVideoGapCheck({
   summaryUsers,
-  authFile = "bili-auth.json",
+  authFile = DEFAULT_AUTH_FILE,
   cookieFile = undefined,
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",

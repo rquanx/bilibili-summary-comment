@@ -46,19 +46,19 @@ test("resolveCookieFileForUser falls back from indexed cookie to cookie_1 then b
 });
 
 test("resolveAuthFileForUser falls back from indexed auth to auth_1 then base auth", () => {
-  assert.equal(resolveAuthFileForUser("bili-auth.json", 2, {
+  assert.equal(resolveAuthFileForUser(".auth/bili-auth.json", 2, {
     repoRoot: "D:\\repo",
     existsSync(targetPath) {
-      return targetPath === "D:\\repo\\bili-auth_1.json";
+      return targetPath === "D:\\repo\\.auth\\bili-auth_1.json";
     },
-  }), "D:\\repo\\bili-auth_1.json");
+  }), "D:\\repo\\.auth\\bili-auth_1.json");
 
-  assert.equal(resolveAuthFileForUser("bili-auth.json", 3, {
+  assert.equal(resolveAuthFileForUser(".auth/bili-auth.json", 3, {
     repoRoot: "D:\\repo",
     existsSync(targetPath) {
-      return targetPath === "D:\\repo\\bili-auth.json";
+      return targetPath === "D:\\repo\\.auth\\bili-auth.json";
     },
-  }), "D:\\repo\\bili-auth.json");
+  }), "D:\\repo\\.auth\\bili-auth.json");
 });
 
 test("resolveCookieFileForUser throws when no candidate cookie file exists", () => {
@@ -77,7 +77,7 @@ test("resolveCookieFileForUser throws when no candidate cookie file exists", () 
 test("resolveAuthFileForUser throws when no candidate auth file exists", () => {
   assert.throws(
     () =>
-      resolveAuthFileForUser("bili-auth.json", 2, {
+      resolveAuthFileForUser(".auth/bili-auth.json", 2, {
         repoRoot: "D:\\repo",
         existsSync() {
           return false;
@@ -306,7 +306,7 @@ test("collectRecentUploadsFromUsers skips only-self-visible videos", async () =>
   const result = await collectRecentUploadsFromUsers({
     summaryUsers: "123",
     findAuthFileForUserImpl() {
-      return path.resolve("bili-auth.json");
+      return path.resolve(".auth", "bili-auth.json");
     },
     readCookieStringFromAuthFileImpl: () => "SESSDATA=fake",
     createClientImpl: (() => ({
@@ -361,9 +361,9 @@ test("collectRecentUploadsFromUsers uses per-user indexed auth files", async () 
 
   const result = await collectRecentUploadsFromUsers({
     summaryUsers: "123,456",
-    authFile: "bili-auth.json",
+    authFile: ".auth/bili-auth.json",
     findAuthFileForUserImpl(_authFile, userIndex) {
-      return path.resolve(`bili-auth_${userIndex}.json`);
+      return path.resolve(".auth", `bili-auth_${userIndex}.json`);
     },
     readCookieStringFromAuthFileImpl(authFile) {
       authReads.push(authFile);
@@ -390,8 +390,8 @@ test("collectRecentUploadsFromUsers uses per-user indexed auth files", async () 
   });
 
   assert.deepEqual(authReads, [
-    path.resolve("bili-auth_1.json"),
-    path.resolve("bili-auth_2.json"),
+    path.resolve(".auth", "bili-auth_1.json"),
+    path.resolve(".auth", "bili-auth_2.json"),
   ]);
   assert.deepEqual(
     result.uploads.map((item) => ({
@@ -402,12 +402,12 @@ test("collectRecentUploadsFromUsers uses per-user indexed auth files", async () 
     [
       {
         bvid: "BV123",
-        authFile: path.resolve("bili-auth_1.json"),
+        authFile: path.resolve(".auth", "bili-auth_1.json"),
         title: "auth:bili-auth_1.json",
       },
       {
         bvid: "BV456",
-        authFile: path.resolve("bili-auth_2.json"),
+        authFile: path.resolve(".auth", "bili-auth_2.json"),
         title: "auth:bili-auth_2.json",
       },
     ],
@@ -531,7 +531,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
 
     const runOptions = {
       summaryUsers: "123",
-      authFile: "bili-auth.json",
+      authFile: ".auth/bili-auth.json",
       dbPath,
       workRoot: "work",
       repoRoot: tempRoot,
@@ -544,7 +544,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
             bvid: "BV1RUN",
             aid: 1,
             title: "Gap Run Test",
-            authFile: path.join(tempRoot, "bili-auth.json"),
+            authFile: path.join(tempRoot, ".auth", "bili-auth.json"),
             createdAtUnix: 1,
             createdAt: "2026-04-12T01:00:00.000Z",
             source: "123",
@@ -590,7 +590,7 @@ test("runRecentVideoGapCheck uses the upload-specific auth file when present", a
 
   const result = await runRecentVideoGapCheck({
     summaryUsers: "123,456",
-    authFile: "bili-auth.json",
+    authFile: ".auth/bili-auth.json",
     dbPath: path.join(os.tmpdir(), `pipeline-${Date.now()}-auth.sqlite3`),
     workRoot: "work",
     repoRoot: "D:\\repo",
@@ -605,7 +605,7 @@ test("runRecentVideoGapCheck uses the upload-specific auth file when present", a
           bvid: "BV1",
           aid: 1,
           title: "Video 1",
-          authFile: "D:\\repo\\bili-auth_1.json",
+          authFile: "D:\\repo\\.auth\\bili-auth_1.json",
           createdAtUnix: 2,
           createdAt: "2026-04-12T01:00:00.000Z",
           source: "123",
@@ -615,7 +615,7 @@ test("runRecentVideoGapCheck uses the upload-specific auth file when present", a
           bvid: "BV2",
           aid: 2,
           title: "Video 2",
-          authFile: "D:\\repo\\bili-auth_2.json",
+          authFile: "D:\\repo\\.auth\\bili-auth_2.json",
           createdAtUnix: 1,
           createdAt: "2026-04-12T00:00:00.000Z",
           source: "456",
@@ -652,7 +652,7 @@ test("runRecentVideoGapCheck uses the upload-specific auth file when present", a
   });
 
   assert.equal(result.checkedVideos.length, 2);
-  assert.deepEqual(authReads, ["D:\\repo\\bili-auth_1.json", "D:\\repo\\bili-auth_2.json"]);
+  assert.deepEqual(authReads, ["D:\\repo\\.auth\\bili-auth_1.json", "D:\\repo\\.auth\\bili-auth_2.json"]);
   assert.deepEqual(observedClients, ["auth:bili-auth_1.json", "auth:bili-auth_2.json"]);
 });
 

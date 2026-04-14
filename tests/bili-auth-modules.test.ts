@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveBiliLoginOutputFiles, saveBiliAuthBundle } from "../scripts/lib/bili/auth";
+import { DEFAULT_AUTH_FILE, resolveBiliLoginOutputFiles, saveBiliAuthBundle } from "../scripts/lib/bili/auth";
 
 test("resolveBiliLoginOutputFiles auto-increments auth file names and does not auto-create cookie outputs", () => {
   const result = resolveBiliLoginOutputFiles({
     repoRoot: "D:\\repo",
     existsSync(targetPath) {
-      return targetPath === "D:\\repo\\bili-auth.json";
+      return targetPath === "D:\\repo\\.auth\\bili-auth.json";
     },
     readdirSync() {
       return [];
@@ -17,7 +17,7 @@ test("resolveBiliLoginOutputFiles auto-increments auth file names and does not a
   });
 
   assert.deepEqual(result, {
-    authFile: "D:\\repo\\bili-auth_2.json",
+    authFile: "D:\\repo\\.auth\\bili-auth_2.json",
     cookieFile: null,
     slot: 2,
   });
@@ -25,7 +25,7 @@ test("resolveBiliLoginOutputFiles auto-increments auth file names and does not a
 
 test("saveBiliAuthBundle writes only the auth json when cookie output is omitted", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-auth-only-"));
-  const authFile = path.join(tempRoot, "bili-auth.json");
+  const authFile = path.join(tempRoot, ".auth", "bili-auth.json");
 
   try {
     const result = saveBiliAuthBundle({
@@ -56,4 +56,8 @@ test("saveBiliAuthBundle writes only the auth json when cookie output is omitted
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("DEFAULT_AUTH_FILE stores auth bundles under the hidden auth directory", () => {
+  assert.equal(DEFAULT_AUTH_FILE, ".auth/bili-auth.json");
 });

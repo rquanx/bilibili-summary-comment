@@ -21,17 +21,17 @@ test("readCookie throws CliError when cookie inputs are missing", () => {
 test("readCookie falls back to auth json before the default cookie file", () => {
   const cookie = readCookie({}, {
     existsSync(targetPath) {
-      return String(targetPath).endsWith("bili-auth.json");
+      return String(targetPath).endsWith("\\.auth\\bili-auth.json");
     },
     readCookieStringFromAuthFileImpl(authFile) {
       return `auth:${authFile}`;
     },
     resolveBiliAuthFileImpl() {
-      return "D:\\repo\\bili-auth.json";
+      return "D:\\repo\\.auth\\bili-auth.json";
     },
   });
 
-  assert.equal(cookie, "auth:D:\\repo\\bili-auth.json");
+  assert.equal(cookie, "auth:D:\\repo\\.auth\\bili-auth.json");
 });
 
 test("readCookie still supports an explicit auth file override", () => {
