@@ -14,6 +14,48 @@ export function resolveBiliCookieFile(filePath = null) {
   return path.resolve(getRepoRoot(), filePath ?? process.env.BILI_COOKIE_FILE ?? DEFAULT_COOKIE_FILE);
 }
 
+export function resolveBiliLoginOutputFiles({
+  authFile = null,
+  cookieFile = null,
+  repoRoot = getRepoRoot(),
+  existsSync = fs.existsSync,
+  readdirSync = fs.readdirSync,
+}: {
+  authFile?: string | null;
+  cookieFile?: string | null;
+  repoRoot?: string;
+  existsSync?: (targetPath: fs.PathLike) => boolean;
+  readdirSync?: typeof fs.readdirSync;
+} = {}) {
+  const explicitAuthFile = typeof authFile === "string" && authFile.trim() ? authFile.trim() : null;
+  const explicitCookieFile = typeof cookieFile === "string" && cookieFile.trim() ? cookieFile.trim() : null;
+  const resolvedAuthFile = path.resolve(repoRoot, explicitAuthFile ?? process.env.BILI_AUTH_FILE ?? DEFAULT_AUTH_FILE);
+  const resolvedCookieFile = explicitCookieFile
+    ? path.resolve(repoRoot, explicitCookieFile)
+    : null;
+
+  if (explicitAuthFile && explicitCookieFile) {
+    return {
+      authFile: resolvedAuthFile,
+      cookieFile: resolvedCookieFile,
+      slot: normalizeIndexedFileSlot(resolvedAuthFile),
+    };
+  }
+
+  const slot = explicitAuthFile
+    ? normalizeIndexedFileSlot(resolvedAuthFile)
+    : findNextAvailableIndexedFileSlot(resolvedAuthFile, {
+        existsSync,
+        readdirSync,
+      });
+
+  return {
+    authFile: explicitAuthFile ? resolvedAuthFile : buildIndexedSiblingPath(resolvedAuthFile, slot),
+    cookieFile: resolvedCookieFile,
+    slot,
+  };
+}
+
 export function loadBiliAuthBundle(authFile = resolveBiliAuthFile()) {
   if (!fs.existsSync(authFile)) {
     return null;
@@ -72,6 +114,20 @@ export function buildCookieStringFromBundle(bundle) {
   return cookies.map((item) => `${item.name}=${item.value}`).join("; ");
 }
 
+export function readCookieStringFromAuthFile(authFile = resolveBiliAuthFile()) {
+  const bundle = loadBiliAuthBundle(authFile);
+  if (!bundle) {
+    throw new Error(`Bilibili auth file not found: ${authFile}`);
+  }
+
+  const cookieString = buildCookieStringFromBundle(bundle).trim();
+  if (!cookieString) {
+    throw new Error(`Bilibili auth file does not contain a usable cookie: ${authFile}`);
+  }
+
+  return cookieString;
+}
+
 export function normalizeBiliAuthBundle(rawData, source = "unknown") {
   const authState = extractBiliAuthState(rawData);
   const cookies = normalizeCookieEntries(authState.cookieInfo);
@@ -105,13 +161,15 @@ export function saveBiliAuthBundle({
   rawData,
   source = "unknown",
   authFile = resolveBiliAuthFile(),
-  cookieFile = resolveBiliCookieFile(),
+  cookieFile = null,
 }) {
   const bundle = normalizeBiliAuthBundle(rawData, source);
   const cookieString = buildCookieStringFromBundle(bundle);
 
   writeFileAtomic(authFile, `${JSON.stringify(bundle, null, 2)}\n`);
-  writeFileAtomic(cookieFile, `${cookieString}\n`);
+  if (typeof cookieFile === "string" && cookieFile.trim()) {
+    writeFileAtomic(cookieFile, `${cookieString}\n`);
+  }
 
   return {
     bundle,
@@ -123,7 +181,7 @@ export function saveBiliAuthBundle({
 
 export async function refreshBiliCookie({
   authFile = resolveBiliAuthFile(),
-  cookieFile = resolveBiliCookieFile(),
+  cookieFile = null,
   accessToken = null,
   refreshToken = null,
 } = {}) {
@@ -158,6 +216,77 @@ function writeFileAtomic(targetPath, content) {
   const tempPath = `${resolvedPath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tempPath, content, "utf8");
   fs.renameSync(tempPath, resolvedPath);
+}
+
+function findNextAvailableIndexedFileSlot(
+  filePath: string,
+  {
+    existsSync = fs.existsSync,
+    readdirSync = fs.readdirSync,
+  }: {
+    existsSync?: (targetPath: fs.PathLike) => boolean;
+    readdirSync?: typeof fs.readdirSync;
+  } = {},
+) {
+  const resolvedPath = path.resolve(filePath);
+  const parsedPath = path.parse(resolvedPath);
+  let maxSlot = existsSync(resolvedPath) ? 1 : 0;
+
+  if (existsSync(parsedPath.dir)) {
+    const siblingPattern = new RegExp(`^${escapeRegExp(parsedPath.name)}_(\\d+)${escapeRegExp(parsedPath.ext)}$`, "u");
+    for (const entry of readdirSync(parsedPath.dir, { withFileTypes: true })) {
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const match = siblingPattern.exec(entry.name);
+      if (!match) {
+        continue;
+      }
+
+      const slot = Number(match[1]);
+      if (Number.isInteger(slot) && slot > maxSlot) {
+        maxSlot = slot;
+      }
+    }
+  }
+
+  return maxSlot + 1 || 1;
+}
+
+function buildIndexedSiblingPath(filePath: string, slot: number) {
+  const normalizedSlot = normalizeIndexedFileSlot(slot);
+  if (normalizedSlot <= 1) {
+    return path.resolve(filePath);
+  }
+
+  const parsedPath = path.parse(path.resolve(filePath));
+  return path.join(parsedPath.dir, `${parsedPath.name}_${normalizedSlot}${parsedPath.ext}`);
+}
+
+function normalizeIndexedFileSlot(value: unknown) {
+  const resolvedPath = typeof value === "string" ? path.resolve(value) : "";
+  if (resolvedPath) {
+    const parsedPath = path.parse(resolvedPath);
+    const indexedMatch = parsedPath.name.match(/_(\d+)$/u);
+    if (indexedMatch) {
+      const indexedSlot = Number(indexedMatch[1]);
+      if (Number.isInteger(indexedSlot) && indexedSlot > 0) {
+        return indexedSlot;
+      }
+    }
+  }
+
+  const numericValue = Number(value);
+  if (Number.isInteger(numericValue) && numericValue > 0) {
+    return numericValue;
+  }
+
+  return 1;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeCookieEntries(cookieInfo) {

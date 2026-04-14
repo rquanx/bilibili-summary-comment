@@ -1,5 +1,6 @@
 import { TvQrcodeLogin } from "@renmu/bili-api";
-import { saveBiliAuthBundle, resolveBiliAuthFile, resolveBiliCookieFile } from "../lib/bili/auth";
+import qrcodeTerminal from "qrcode-terminal";
+import { resolveBiliLoginOutputFiles, saveBiliAuthBundle } from "../lib/bili/auth";
 import { createCliCommand, runCli } from "../lib/cli/tools";
 
 const command = createCliCommand({
@@ -12,8 +13,12 @@ const command = createCliCommand({
 await runCli({
   command,
   async handler(args) {
-    const authFile = resolveBiliAuthFile(args["auth-file"]);
-    const cookieFile = resolveBiliCookieFile(args["cookie-file"]);
+    const outputFiles = resolveBiliLoginOutputFiles({
+      authFile: typeof args["auth-file"] === "string" ? args["auth-file"] : null,
+      cookieFile: typeof args["cookie-file"] === "string" ? args["cookie-file"] : null,
+    });
+    const authFile = outputFiles.authFile;
+    const cookieFile = outputFiles.cookieFile;
     const client = new TvQrcodeLogin();
 
     client.on("scan", () => {
@@ -26,7 +31,14 @@ await runCli({
     const completionPromise = waitForLoginCompletion(client);
     const url = await client.login();
 
-    process.stderr.write("[bili-login] Open the URL below as a QR code and scan it with the Bilibili app:\n");
+    process.stderr.write(`[bili-login] Will save auth to: ${authFile}\n`);
+    if (cookieFile) {
+      process.stderr.write(`[bili-login] Will save cookie to: ${cookieFile}\n`);
+    }
+    process.stderr.write("[bili-login] Scan the QR code below with the Bilibili app:\n\n");
+    renderTerminalQr(url);
+    process.stderr.write("\n");
+    process.stderr.write("[bili-login] If the QR code does not render clearly, open the URL below as a fallback:\n");
     process.stderr.write(`${url}\n`);
 
     const rawData = await completionPromise;
@@ -57,4 +69,15 @@ function waitForLoginCompletion(client) {
       reject(new Error(response?.message ?? "Bilibili TV login failed"));
     });
   });
+}
+
+function renderTerminalQr(content: string) {
+  try {
+    qrcodeTerminal.generate(content, {
+      small: true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? "unknown error");
+    process.stderr.write(`[bili-login] Failed to render terminal QR code: ${message}\n`);
+  }
 }
