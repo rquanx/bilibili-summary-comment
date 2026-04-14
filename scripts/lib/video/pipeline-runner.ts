@@ -8,7 +8,7 @@ import { attachVideoContextToError } from "../bili/video-url";
 import { attachErrorDetails, errorToJson, extractErrorDetails } from "../cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
-import { createProgressReporter, formatBlockingErrorDetail, trimCommandOutput } from "../pipeline/progress";
+import { createProgressReporter, formatBlockingErrorDetail, trimCommandOutput, writeTerminalMessage } from "../pipeline/progress";
 import { runPublishStage } from "../pipeline/publish-stage";
 import { resolveSummaryConfig } from "../summary/index";
 import { openDatabase } from "../db/index";
@@ -80,7 +80,7 @@ export async function runVideoPipeline(
     forceSummary,
     publishRequested: Boolean(args.publish),
   });
-  progress.log(`Detailed log: ${logger.filePath}`);
+  progress.info(`Detailed log: ${logger.filePath}`);
 
   eventLogger.log({
     scope: "pipeline",
@@ -97,7 +97,7 @@ export async function runVideoPipeline(
     },
   });
 
-  progress.log(`Video synced: (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
+  progress.info(`Video synced: (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
   if (needsRebuildPublish) {
     eventLogger.log({
       scope: "publish",
@@ -108,7 +108,7 @@ export async function runVideoPipeline(
         reason: state.video.publish_rebuild_reason || "structural-part-change",
       },
     });
-    progress.log(`Publish thread marked for rebuild: ${state.video.publish_rebuild_reason || "structural-part-change"}`);
+    progress.warn(`Publish thread marked for rebuild: ${state.video.publish_rebuild_reason || "structural-part-change"}`);
   }
 
   try {
@@ -157,7 +157,7 @@ export async function runVideoPipeline(
           progress,
         });
       } catch (error) {
-        progress.log(`Publish blocked: ${formatBlockingErrorDetail(error)}`);
+        progress.error(`Publish blocked: ${formatBlockingErrorDetail(error)}`);
         attachVideoContextToError(error, {
           bvid: state.video.bvid,
           aid: state.video.aid,
@@ -198,12 +198,12 @@ export async function runVideoPipeline(
         }
       : null;
     if (reusedSummaryFrom) {
-      progress.log(
+      progress.success(
         `Same-session reuse source: ${reusedSummaryFrom.bvid} (${reusedSummaryFrom.title}), pages=${reusedSummaryFrom.reusedPages.join(",")}`,
       );
     }
 
-    progress.log(`Pipeline complete, generated ${generation.summaryResults.length} summaries`);
+    progress.success(`Pipeline complete, generated ${generation.summaryResults.length} summaries`);
     const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
     eventLogger.log({
       scope: "pipeline",
@@ -247,7 +247,7 @@ export async function runVideoPipeline(
     attachErrorDetails(error, {
       logPath: logger.filePath,
     });
-    progress.log(`Pipeline failed: ${formatBlockingErrorDetail(error)}`);
+    progress.error(`Pipeline failed: ${formatBlockingErrorDetail(error)}`);
     logger.error("Pipeline failed", {
       error,
       stderr: trimCommandOutput((error as CommandError | undefined)?.stderr, 20_000),
@@ -275,7 +275,7 @@ export function printPipelineFailure(error: CommandError | Error | unknown, acti
       });
     } catch (logError) {
       const logMessage = logError instanceof Error ? logError.message : String(logError ?? "Unknown logging error");
-      console.warn(`Failed to write pipeline failure event: ${logMessage}`);
+      writeTerminalMessage(process.stderr, "warn", `Failed to write pipeline failure event: ${logMessage}`);
     }
   }
   printJson({

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { insertPipelineEvent } from "../db/index";
 import { formatBiliVideoUrlSuffix } from "../bili/video-url";
+import { writeTerminalMessage } from "./progress";
 import type { Db, PipelineEventInput, PipelineEventLogger, VideoRecord } from "../db/index";
 import type { FileLogger } from "../shared/logger";
 
@@ -42,7 +43,11 @@ export function createPipelineEventLogger({
           actionLabel: action,
           error,
         });
-        process.stderr.write(`Skipping pipeline event log because the database is locked (${action}${suffix})${videoSuffix}\n`);
+        writeTerminalMessage(
+          process.stderr,
+          "warn",
+          `Skipping pipeline event log because the database is locked (${action}${suffix})${videoSuffix}`,
+        );
         return null;
       }
 

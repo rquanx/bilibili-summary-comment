@@ -74,7 +74,7 @@ export async function runGenerationStage({
         reusedPages: reusedSummarySource.reusedPages,
       },
     });
-    progress?.log(
+    progress?.success(
       `Reused ${reusedSummarySource.reusedPages.length} summaries from ${reusedSummarySource.video.bvid} (${reusedSummarySource.video.title})`,
     );
   } else if (reuseLookupAttempted) {
@@ -103,7 +103,7 @@ export async function runGenerationStage({
       status: "skipped",
       message: "All parts already have summaries",
     });
-    progress?.log("All parts already have summaries, skipping subtitle and summary generation");
+    progress?.warn("All parts already have summaries, skipping subtitle and summary generation");
   }
 
   const subtitleResults = [];
@@ -211,12 +211,12 @@ export async function runGenerationStage({
     });
   }
 
-  progress?.log("Writing summary artifacts");
+  progress?.info("Writing summary artifacts");
   let artifacts;
   try {
     artifacts = writeSummaryArtifacts(db, video, workRoot);
   } catch (error) {
-    progress?.log(`Artifact write blocked: ${formatBlockingErrorDetail(error)}`);
+    progress?.error(`Artifact write blocked: ${formatBlockingErrorDetail(error)}`);
     attachErrorDetails(error, {
       bvid: video.bvid,
       failedStep: "artifacts",
