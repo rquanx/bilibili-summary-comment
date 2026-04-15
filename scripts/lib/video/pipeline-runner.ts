@@ -203,7 +203,17 @@ export async function runVideoPipeline(
       );
     }
 
-    progress.success(`Pipeline complete, generated ${generation.summaryResults.length} summaries`);
+    if (generation.skippedSummaryResults.length > 0) {
+      progress.warn(
+        `Skipped summary pages: ${generation.skippedSummaryResults.map((item) => `P${item.pageNo}`).join(", ")}`,
+      );
+    }
+    progress.success(
+      `Pipeline complete, generated ${generation.summaryResults.length} summaries`
+      + (generation.skippedSummaryResults.length > 0
+        ? `, skipped ${generation.skippedSummaryResults.length} content-filtered part${generation.skippedSummaryResults.length > 1 ? "s" : ""}`
+        : ""),
+    );
     const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
     eventLogger.log({
       scope: "pipeline",
@@ -212,6 +222,7 @@ export async function runVideoPipeline(
       message: `Pipeline completed for ${state.video.bvid}`,
       details: {
         generatedPages: generation.summaryResults.map((item) => item.pageNo),
+        skippedSummaryPages: generation.skippedSummaryResults.map((item) => item.pageNo),
         reusedSummaryFrom,
         publishRequested: Boolean(args.publish),
         publishNeedsRebuild: finalPublishNeedsRebuild,
@@ -230,6 +241,8 @@ export async function runVideoPipeline(
         pageCount: state.video.page_count,
       },
       generatedPages: generation.summaryResults.map((item) => item.pageNo),
+      skippedSummaryPages: generation.skippedSummaryResults.map((item) => item.pageNo),
+      skippedSummaryResults: generation.skippedSummaryResults,
       changeSet: state.changeSet,
       publishNeedsRebuild: finalPublishNeedsRebuild,
       publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,

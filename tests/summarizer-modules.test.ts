@@ -17,6 +17,7 @@ import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
 import {
   requestSummaryWithFallback,
+  shouldSkipSummaryPart,
   shouldRetrySummaryWithGlm5,
   summarizePartFromSubtitle,
 } from "../scripts/lib/summary/service";
@@ -92,6 +93,29 @@ test("shouldRetrySummaryWithGlm5 only matches kimi prompt_tokens compatibility e
     shouldRetrySummaryWithGlm5({
       model: "kimi-k2.5",
       error: new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"different error\"}"),
+    }),
+    false,
+  );
+});
+
+test("shouldSkipSummaryPart only matches provider high-risk content filter errors", () => {
+  assert.equal(
+    shouldSkipSummaryPart({
+      error: new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldSkipSummaryPart({
+      error: new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"message\":\"content filter triggered for another reason\"}}"),
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldSkipSummaryPart({
+      error: new Error("Summary request failed: 429 Too Many Requests"),
     }),
     false,
   );

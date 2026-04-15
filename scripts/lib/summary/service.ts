@@ -10,11 +10,18 @@ import { resolveSummaryPromptProfile } from "./prompt-config";
 const KIMI_PRIMARY_MODEL = "kimi-k2.5";
 const GLM_FALLBACK_MODEL = "glm-5";
 const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
+const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
+const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
   const message = error instanceof Error ? error.message : String(error ?? "");
   return normalizedModel === KIMI_PRIMARY_MODEL && KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message);
+}
+
+export function shouldSkipSummaryPart({ error }) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return SUMMARY_CONTENT_FILTER_PATTERN.test(message) && SUMMARY_HIGH_RISK_PATTERN.test(message);
 }
 
 export async function requestSummaryWithFallback({

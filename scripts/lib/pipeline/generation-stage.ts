@@ -2,6 +2,7 @@ import { findReusableSummarySource, reusePartSummaries } from "../summary/live-s
 import { writePartSummaryArtifact, writeSummaryArtifacts } from "../summary/files";
 import { ensureSubtitleForPart } from "../subtitle/pipeline";
 import { summarizePartFromSubtitle } from "../summary/index";
+import { shouldSkipSummaryPart } from "../summary/service";
 import { attachErrorDetails } from "../cli/errors";
 import { listVideoParts } from "../db/index";
 import { formatBlockingErrorDetail } from "./progress";
@@ -21,6 +22,9 @@ export async function runGenerationStage({
   forceSummary = false,
   eventLogger = null,
   progress,
+  ensureSubtitleForPartImpl = ensureSubtitleForPart,
+  summarizePartFromSubtitleImpl = summarizePartFromSubtitle,
+  writeSummaryArtifactsImpl = writeSummaryArtifacts,
 }) {
   let currentParts = listVideoParts(db, video.id);
   let reusedSummarySource = null;
@@ -108,6 +112,7 @@ export async function runGenerationStage({
 
   const subtitleResults = [];
   const summaryResults = [];
+  const skippedSummaryResults = [];
 
   for (const [index, part] of targetParts.entries()) {
     const currentIndex = index + 1;
@@ -128,7 +133,7 @@ export async function runGenerationStage({
 
     let subtitleResult;
     try {
-      subtitleResult = await ensureSubtitleForPart({
+      subtitleResult = await ensureSubtitleForPartImpl({
         client,
         db,
         videoId: video.id,
@@ -171,7 +176,7 @@ export async function runGenerationStage({
     progress?.logPart(currentIndex, part, "Generating summary", `model ${summaryConfig.model}`);
     let summaryResult;
     try {
-      summaryResult = await summarizePartFromSubtitle({
+      summaryResult = await summarizePartFromSubtitleImpl({
         db,
         videoId: video.id,
         bvid: video.bvid,
@@ -191,6 +196,33 @@ export async function runGenerationStage({
         eventLogger,
       });
     } catch (error) {
+      if (shouldSkipSummaryPart({ error })) {
+        const skippedDetail = formatBlockingErrorDetail(error);
+        progress?.logPart(currentIndex, part, "Summary skipped", skippedDetail);
+        eventLogger?.log({
+          scope: "summary",
+          action: "skip",
+          status: "skipped",
+          pageNo: part.page_no,
+          cid: part.cid,
+          partTitle: part.part_title,
+          message: `Skipped summary for P${part.page_no} due to provider content filter`,
+          details: {
+            reason: "content-filter-high-risk",
+            model: summaryConfig.model,
+            error: skippedDetail,
+          },
+        });
+        skippedSummaryResults.push({
+          pageNo: part.page_no,
+          cid: part.cid,
+          partTitle: part.part_title,
+          reason: "content-filter-high-risk",
+          message: skippedDetail,
+        });
+        continue;
+      }
+
       progress?.logPart(currentIndex, part, "Failed", `Summary step blocked: ${formatBlockingErrorDetail(error)}`);
       attachErrorDetails(error, {
         bvid: video.bvid,
@@ -214,7 +246,7 @@ export async function runGenerationStage({
   progress?.info("Writing summary artifacts");
   let artifacts;
   try {
-    artifacts = writeSummaryArtifacts(db, video, workRoot);
+    artifacts = writeSummaryArtifactsImpl(db, video, workRoot);
   } catch (error) {
     progress?.error(`Artifact write blocked: ${formatBlockingErrorDetail(error)}`);
     attachErrorDetails(error, {
@@ -235,13 +267,19 @@ export async function runGenerationStage({
       pendingSummaryPath: artifacts.pendingSummaryPath,
     },
   });
+  if (skippedSummaryResults.length > 0) {
+    progress?.warn(
+      `Skipped ${skippedSummaryResults.length} summary part${skippedSummaryResults.length > 1 ? "s" : ""} due to provider content filter`,
+    );
+  }
 
   return {
-    currentParts,
+    currentParts: listVideoParts(db, video.id),
     targetParts,
     reusedSummarySource,
     subtitleResults,
     summaryResults,
+    skippedSummaryResults,
     artifacts,
   };
 }
