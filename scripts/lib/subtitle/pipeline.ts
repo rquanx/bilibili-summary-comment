@@ -6,6 +6,7 @@ import type { Db } from "../db/index";
 import { findReusableSubtitleSource } from "../summary/live-session-reuse";
 import { tryDownloadBiliSubtitle } from "./bili";
 import { ensureYtDlpCookieFile } from "./cookie-file";
+import { inspectSubtitleQuality } from "./quality";
 import { transcribeWithRetries } from "./transcriber";
 import { formatErrorMessage } from "./utils";
 
@@ -41,6 +42,8 @@ export async function ensureSubtitleForPart({
   asr = "faster-whisper",
   progress = null,
   eventLogger = null,
+  tryDownloadBiliSubtitleImpl = tryDownloadBiliSubtitle,
+  transcribeWithRetriesImpl = transcribeWithRetries,
 }) {
   const workDir = path.join(getRepoRoot(), workRoot, bvid);
   fs.mkdirSync(workDir, { recursive: true });
@@ -51,33 +54,61 @@ export async function ensureSubtitleForPart({
   const audioPath = path.join(workDir, `${stableBaseName}.m4a`);
 
   if (existingSubtitlePath && fs.existsSync(existingSubtitlePath)) {
-    return finalizeSubtitle({
-      db,
-      videoId,
+    if (path.resolve(existingSubtitlePath) !== path.resolve(subtitlePath)) {
+      fs.copyFileSync(existingSubtitlePath, subtitlePath);
+    }
+
+    if (acceptSubtitleCandidate({
+      subtitlePath,
+      subtitleSource: "local",
       pageNo,
       cid,
       partTitle,
       eventLogger,
-      subtitlePath: existingSubtitlePath,
-      subtitleSource: "local",
-      subtitleLang: null,
-      reused: true,
-    });
+      progress,
+    })) {
+      return finalizeSubtitle({
+        db,
+        videoId,
+        pageNo,
+        cid,
+        partTitle,
+        eventLogger,
+        subtitlePath,
+        subtitleSource: "local",
+        subtitleLang: null,
+        reused: true,
+      });
+    }
+
+    fs.rmSync(subtitlePath, { force: true });
   }
 
   if (fs.existsSync(subtitlePath)) {
-    return finalizeSubtitle({
-      db,
-      videoId,
+    if (acceptSubtitleCandidate({
+      subtitlePath,
+      subtitleSource: "local",
       pageNo,
       cid,
       partTitle,
       eventLogger,
-      subtitlePath,
-      subtitleSource: "local",
-      subtitleLang: null,
-      reused: true,
-    });
+      progress,
+    })) {
+      return finalizeSubtitle({
+        db,
+        videoId,
+        pageNo,
+        cid,
+        partTitle,
+        eventLogger,
+        subtitlePath,
+        subtitleSource: "local",
+        subtitleLang: null,
+        reused: true,
+      });
+    }
+
+    fs.rmSync(subtitlePath, { force: true });
   }
 
   const reusableSubtitle = findReusableSubtitleSource(
@@ -104,24 +135,37 @@ export async function ensureSubtitleForPart({
       fs.copyFileSync(reusableSubtitlePath, subtitlePath);
     }
 
-    return finalizeSubtitle({
-      db,
-      videoId,
+    const subtitleSource = String(reusableSubtitle.part?.subtitle_source ?? "").trim() || "local";
+    if (acceptSubtitleCandidate({
+      subtitlePath,
+      subtitleSource,
       pageNo,
       cid,
       partTitle,
       eventLogger,
-      subtitlePath,
-      subtitleSource: String(reusableSubtitle.part?.subtitle_source ?? "").trim() || "local",
-      subtitleLang: reusableSubtitle.part?.subtitle_lang ?? null,
-      reused: true,
-    });
+      progress,
+    })) {
+      return finalizeSubtitle({
+        db,
+        videoId,
+        pageNo,
+        cid,
+        partTitle,
+        eventLogger,
+        subtitlePath,
+        subtitleSource,
+        subtitleLang: reusableSubtitle.part?.subtitle_lang ?? null,
+        reused: true,
+      });
+    }
+
+    fs.rmSync(subtitlePath, { force: true });
   }
 
   progress?.logPartStage?.(pageNo, "Subtitle", "Trying Bilibili subtitle");
   let biliSubtitle = null;
   try {
-    biliSubtitle = await tryDownloadBiliSubtitle({
+    biliSubtitle = await tryDownloadBiliSubtitleImpl({
       client,
       bvid,
       cid,
@@ -137,18 +181,35 @@ export async function ensureSubtitleForPart({
   }
 
   if (biliSubtitle) {
-    return finalizeSubtitle({
-      db,
-      videoId,
+    if (acceptSubtitleCandidate({
+      subtitlePath,
+      subtitleSource: biliSubtitle.source,
       pageNo,
       cid,
       partTitle,
       eventLogger,
-      subtitlePath,
-      subtitleSource: biliSubtitle.source,
-      subtitleLang: biliSubtitle.lang,
-      reused: false,
-    });
+      progress,
+    })) {
+      return finalizeSubtitle({
+        db,
+        videoId,
+        pageNo,
+        cid,
+        partTitle,
+        eventLogger,
+        subtitlePath,
+        subtitleSource: biliSubtitle.source,
+        subtitleLang: biliSubtitle.lang,
+        reused: false,
+      });
+    }
+
+    fs.rmSync(subtitlePath, { force: true });
+    progress?.logPartStage?.(
+      pageNo,
+      "Subtitle",
+      "Downloaded subtitle failed quality check, falling back to ASR",
+    );
   }
 
   if (!fs.existsSync(audioPath)) {
@@ -191,7 +252,7 @@ export async function ensureSubtitleForPart({
     });
   }
 
-  await transcribeWithRetries({
+  await transcribeWithRetriesImpl({
     audioPath,
     subtitlePath,
     asr,
@@ -219,6 +280,84 @@ export async function ensureSubtitleForPart({
     reused: false,
     durationSec,
   });
+}
+
+function acceptSubtitleCandidate({
+  subtitlePath,
+  subtitleSource,
+  pageNo,
+  cid,
+  partTitle,
+  eventLogger,
+  progress,
+}: {
+  subtitlePath: string;
+  subtitleSource: string;
+  pageNo: number;
+  cid: number;
+  partTitle: string;
+  eventLogger: { log?: (event: Record<string, unknown>) => void } | null;
+  progress: { logPartStage?: (pageNo: number, stage: string, message: string) => void } | null;
+}) {
+  const subtitleText = fs.readFileSync(subtitlePath, "utf8");
+  const qualityCheck = inspectSubtitleQuality(subtitleText);
+
+  if (qualityCheck.removedCueCount > 0 && qualityCheck.sanitizedSrt) {
+    fs.writeFileSync(subtitlePath, qualityCheck.sanitizedSrt, "utf8");
+    eventLogger?.log?.({
+      scope: "subtitle",
+      action: "sanitize",
+      status: "succeeded",
+      pageNo,
+      cid,
+      partTitle,
+      message: `Removed ${qualityCheck.removedCueCount} likely volunteer-credit cue(s) from ${subtitleSource} subtitle`,
+      details: {
+        source: subtitleSource,
+        removedCueCount: qualityCheck.removedCueCount,
+        remainingCueCount: qualityCheck.remainingCueCount,
+        volunteerCreditCueCount: qualityCheck.volunteerCreditCueCount,
+        longestVolunteerCreditRun: qualityCheck.longestVolunteerCreditRun,
+      },
+    });
+    progress?.logPartStage?.(
+      pageNo,
+      "Subtitle",
+      `Removed ${qualityCheck.removedCueCount} likely volunteer-credit subtitle cue(s) from ${subtitleSource}`,
+    );
+  }
+
+  if (!qualityCheck.severeVolunteerCreditIssue) {
+    return true;
+  }
+
+  const message = [
+    "Detected repeated volunteer-credit placeholder subtitles",
+    `(${qualityCheck.volunteerCreditCueCount}/${qualityCheck.totalCueCount}`,
+    `cues, longest run ${qualityCheck.longestVolunteerCreditRun})`,
+  ].join(" ");
+  eventLogger?.log?.({
+    scope: "subtitle",
+    action: "quality-check",
+    status: "failed",
+    pageNo,
+    cid,
+    partTitle,
+    message,
+    details: {
+      source: subtitleSource,
+      volunteerCreditCueCount: qualityCheck.volunteerCreditCueCount,
+      totalCueCount: qualityCheck.totalCueCount,
+      remainingCueCount: qualityCheck.remainingCueCount,
+      longestVolunteerCreditRun: qualityCheck.longestVolunteerCreditRun,
+    },
+  });
+  progress?.logPartStage?.(
+    pageNo,
+    "Subtitle",
+    `${message}, discarding ${subtitleSource} subtitle`,
+  );
+  return false;
 }
 
 function finalizeSubtitle({

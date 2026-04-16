@@ -166,3 +166,88 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
     fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
+
+test("ensureSubtitleForPart discards unusable local placeholder subtitles before falling back to ASR", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-subtitle-quality-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const relativeWorkRoot = path.join(".tmp-tests", path.basename(tempRoot));
+  const repoWorkRoot = path.join(process.cwd(), relativeWorkRoot);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVLOCALBAD1",
+      aid: 510,
+      title: "Bad Local Subtitle Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 5100,
+      partTitle: "P1",
+      durationSec: 60,
+      isDeleted: false,
+    });
+
+    const workDir = path.join(repoWorkRoot, video.bvid);
+    fs.mkdirSync(workDir, { recursive: true });
+    const subtitlePath = path.join(workDir, "cid-5100.srt");
+    const audioPath = path.join(workDir, "cid-5100.m4a");
+    fs.writeFileSync(subtitlePath, [
+      "1",
+      "00:00:00,000 --> 00:00:01,000",
+      "字幕志愿者 李宗盛",
+      "",
+      "2",
+      "00:00:02,000 --> 00:00:03,000",
+      "字幕志愿者",
+      "",
+      "3",
+      "00:00:04,000 --> 00:00:05,000",
+      "李宗盛",
+      "",
+    ].join("\n"), "utf8");
+    fs.writeFileSync(audioPath, "", "utf8");
+
+    let transcribeCalls = 0;
+    const result = await ensureSubtitleForPart({
+      client: null,
+      db,
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      pageNo: 1,
+      cid: 5100,
+      partTitle: "P1",
+      existingSubtitlePath: subtitlePath,
+      cookie: "",
+      workRoot: relativeWorkRoot,
+      progress: null,
+      eventLogger: null,
+      tryDownloadBiliSubtitleImpl: async () => null,
+      transcribeWithRetriesImpl: async ({ subtitlePath: nextSubtitlePath }) => {
+        transcribeCalls += 1;
+        fs.writeFileSync(nextSubtitlePath, [
+          "1",
+          "00:00:00,000 --> 00:00:02,000",
+          "重新识别成功",
+          "",
+        ].join("\n"), "utf8");
+      },
+    });
+
+    assert.equal(transcribeCalls, 1);
+    assert.equal(result.subtitleSource, "asr");
+    assert.equal(result.reused, false);
+    assert.match(fs.readFileSync(subtitlePath, "utf8"), /重新识别成功/u);
+
+    const part = listVideoParts(db, video.id).find((item) => item.page_no === 1);
+    assert.equal(part?.subtitle_source, "asr");
+    assert.equal(part?.subtitle_path, subtitlePath);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});

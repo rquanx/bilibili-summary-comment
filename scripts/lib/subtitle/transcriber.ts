@@ -6,10 +6,13 @@ import {
   resolveLocalFasterWhisperExecutableConfig,
 } from "./faster-whisper-config";
 import { notifyTranscriptionFailure } from "./notifier";
+import { inspectSubtitleQuality } from "./quality";
 import { withTranscriptionQueueLock } from "./queue";
 import { delay, formatErrorMessage, formatTranscriptionTarget } from "./utils";
+
 const TRANSCRIPTION_RETRY_LIMIT = 3;
 const TRANSCRIPTION_RETRY_DELAY_MS = 10_000;
+const EXPECTED_TRANSCRIPTION_LANGUAGE = "zh";
 
 interface LocalFasterWhisperConfig {
   exists: boolean;
@@ -31,10 +34,14 @@ export async function transcribeWithRetries({
   venvPath,
   progress,
   eventLogger,
+  runTranscribeCommandImpl = runVenvModule,
+  withTranscriptionQueueLockImpl = withTranscriptionQueueLock,
+  notifyTranscriptionFailureImpl = notifyTranscriptionFailure,
+  resolveLocalFasterWhisperConfigImpl = resolveLocalFasterWhisperConfig,
 }) {
   const engines = buildAsrFallbackPlan(asr);
   const failures = [];
-  const localFasterWhisper = resolveLocalFasterWhisperConfig();
+  const localFasterWhisper = resolveLocalFasterWhisperConfigImpl();
 
   for (const [engineIndex, engine] of engines.entries()) {
     if (engineIndex > 0) {
@@ -56,7 +63,7 @@ export async function transcribeWithRetries({
     for (let attempt = 1; attempt <= TRANSCRIPTION_RETRY_LIMIT; attempt += 1) {
       try {
         fs.rmSync(subtitlePath, { force: true });
-        await withTranscriptionQueueLock({
+        await withTranscriptionQueueLockImpl({
           workRoot,
           progress,
           bvid,
@@ -106,7 +113,7 @@ export async function transcribeWithRetries({
             "Subtitle",
             `Running transcription with ASR ${engine} (${attempt}/${TRANSCRIPTION_RETRY_LIMIT}): ${transcriptionLabel}`,
           );
-          await runVenvModule("videocaptioner", transcribeArgs, {
+          await runTranscribeCommandImpl("videocaptioner", transcribeArgs, {
             venvPath,
             env: transcribeEnv,
             streamOutput: true,
@@ -124,6 +131,72 @@ export async function transcribeWithRetries({
             },
           });
         });
+        const subtitleText = fs.readFileSync(subtitlePath, "utf8");
+        const qualityCheck = inspectSubtitleQuality(subtitleText);
+        const severeVolunteerCreditIssue = qualityCheck.severeVolunteerCreditIssue;
+
+        if (qualityCheck.removedCueCount > 0 && qualityCheck.sanitizedSrt) {
+          fs.writeFileSync(subtitlePath, qualityCheck.sanitizedSrt, "utf8");
+          eventLogger?.log({
+            scope: "subtitle",
+            action: "sanitize",
+            status: "succeeded",
+            pageNo,
+            cid,
+            partTitle,
+            message: `Removed ${qualityCheck.removedCueCount} likely volunteer-credit cue(s) from ASR subtitle`,
+            details: {
+              engine,
+              removedCueCount: qualityCheck.removedCueCount,
+              remainingCueCount: qualityCheck.remainingCueCount,
+              volunteerCreditCueCount: qualityCheck.volunteerCreditCueCount,
+              longestVolunteerCreditRun: qualityCheck.longestVolunteerCreditRun,
+            },
+          });
+          progress?.logPartStage?.(
+            pageNo,
+            "Subtitle",
+            `Removed ${qualityCheck.removedCueCount} likely volunteer-credit subtitle cue(s)`,
+          );
+        }
+
+        if (severeVolunteerCreditIssue) {
+          fs.rmSync(subtitlePath, { force: true });
+          const message = [
+            `Detected repeated volunteer-credit placeholder subtitles`,
+            `(${qualityCheck.volunteerCreditCueCount}/${qualityCheck.totalCueCount}`,
+            `cues, longest run ${qualityCheck.longestVolunteerCreditRun})`,
+          ].join(" ");
+          failures.push(`${engine} quality check: ${message}`);
+          eventLogger?.log({
+            scope: "subtitle",
+            action: "quality-check",
+            status: "failed",
+            pageNo,
+            cid,
+            partTitle,
+            message,
+            details: {
+              engine,
+              volunteerCreditCueCount: qualityCheck.volunteerCreditCueCount,
+              totalCueCount: qualityCheck.totalCueCount,
+              remainingCueCount: qualityCheck.remainingCueCount,
+              longestVolunteerCreditRun: qualityCheck.longestVolunteerCreditRun,
+            },
+          });
+          progress?.logPartStage?.(
+            pageNo,
+            "Subtitle",
+            `${message}, switching ASR engine`,
+          );
+
+          if (engineIndex < engines.length - 1) {
+            break;
+          }
+
+          continue;
+        }
+
         eventLogger?.log({
           scope: "subtitle",
           action: "asr",
@@ -196,7 +269,7 @@ export async function transcribeWithRetries({
     }
   }
 
-  await notifyTranscriptionFailure({
+  await notifyTranscriptionFailureImpl({
     progress,
     pageNo,
     bvid,
@@ -233,7 +306,7 @@ function buildAsrFallbackPlan(asr: unknown): string[] {
   return [preferred];
 }
 
-function buildTranscribeArgs({
+export function buildTranscribeArgs({
   audioPath,
   subtitlePath,
   engine,
@@ -250,7 +323,7 @@ function buildTranscribeArgs({
     "--asr",
     engine,
     "--language",
-    "auto",
+    EXPECTED_TRANSCRIPTION_LANGUAGE,
     "--format",
     "srt",
     "-o",

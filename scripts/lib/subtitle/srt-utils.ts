@@ -1,11 +1,17 @@
-export function parseSrt(text) {
+export interface SrtCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+}
+
+export function parseSrt(text): SrtCue[] {
   const normalized = String(text ?? "").replace(/\r\n/g, "\n").trim();
   if (!normalized) {
     return [];
   }
 
   const blocks = normalized.split(/\n{2,}/);
-  const cues = [];
+  const cues: SrtCue[] = [];
 
   for (const block of blocks) {
     const lines = block.split("\n").map((line) => line.trimEnd());
@@ -41,6 +47,29 @@ export function parseSrt(text) {
   }
 
   return cues;
+}
+
+export function formatSrt(cues: SrtCue[]) {
+  return cues
+    .map((cue, index) => {
+      const textLines = String(cue.text ?? "")
+        .replace(/\r\n/g, "\n")
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim() !== "");
+
+      if (textLines.length === 0) {
+        return "";
+      }
+
+      return [
+        String(index + 1),
+        `${formatSrtTimestamp(cue.startSec)} --> ${formatSrtTimestamp(cue.endSec)}`,
+        ...textLines,
+      ].join("\n");
+    })
+    .filter((block) => block.trim() !== "")
+    .join("\n\n");
 }
 
 export function buildSummarySegmentsFromSrt(srtText, durationSec = null) {
@@ -145,4 +174,19 @@ function finalizeSegment(segment) {
     endSec: segment.endSec,
     text: segment.texts.join("\n").trim(),
   };
+}
+
+function formatSrtTimestamp(seconds) {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const totalMilliseconds = Math.round(safeSeconds * 1000);
+  const hours = Math.floor(totalMilliseconds / 3_600_000);
+  const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMilliseconds % 60_000) / 1000);
+  const milliseconds = totalMilliseconds % 1000;
+
+  return [
+    String(hours).padStart(2, "0"),
+    String(minutes).padStart(2, "0"),
+    String(secs).padStart(2, "0"),
+  ].join(":") + `,${String(milliseconds).padStart(3, "0")}`;
 }
