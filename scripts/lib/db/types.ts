@@ -12,6 +12,10 @@ export interface VideoRecord {
   bvid: string;
   aid: number;
   title: string;
+  owner_mid: number | null;
+  owner_name: string | null;
+  owner_dir_name: string | null;
+  work_dir_name: string | null;
   page_count: number;
   root_comment_rpid: number | null;
   top_comment_rpid: number | null;
@@ -26,6 +30,10 @@ export interface VideoInsert {
   bvid: string;
   aid: number;
   title: string;
+  ownerMid?: number | null;
+  ownerName?: string | null;
+  ownerDirName?: string | null;
+  workDirName?: string | null;
   pageCount: number;
   rootCommentRpid?: number | null;
   topCommentRpid?: number | null;

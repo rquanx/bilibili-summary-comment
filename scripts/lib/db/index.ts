@@ -26,6 +26,7 @@ export {
 export {
   clearVideoPublishRebuildNeeded,
   getActiveVideoPartByPageNo,
+  getVideoById,
   getVideoByIdentity,
   getVideoPartByCid,
   listAllVideoParts,
@@ -36,6 +37,7 @@ export {
   listVideosOlderThan,
   markPartsPublished,
   markVideoPublishRebuildNeeded,
+  replaceVideoSubtitlePathPrefix,
   resetPublishedStateForVideo,
   savePartSubtitle,
   savePartSummary,

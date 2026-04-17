@@ -4,9 +4,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../db/database";
 import { listVideosOlderThan } from "../db/video-storage";
 import { getRepoRoot } from "../shared/runtime-tools";
+import { listVideoWorkDirCandidates } from "../shared/work-paths";
 import type { VideoRecord } from "../db/types";
 
-type CleanupCandidate = Pick<VideoRecord, "bvid" | "title" | "last_scan_at" | "updated_at">;
+type CleanupCandidate = Pick<VideoRecord, "bvid" | "title" | "last_scan_at" | "updated_at">
+  & Partial<Pick<VideoRecord, "owner_mid" | "owner_name" | "owner_dir_name" | "work_dir_name">>;
 
 interface CleanupOldWorkDirectoriesOptions {
   dbPath?: string;
@@ -40,19 +42,29 @@ export async function cleanupOldWorkDirectories({
     const missingDirectories: string[] = [];
 
     for (const video of candidates) {
-      const targetDir = path.resolve(workRootPath, video.bvid);
-      if (!isSafeWorkSubpath(workRootPath, targetDir)) {
-        continue;
+      const candidateDirs = listVideoWorkDirCandidates(video, workRoot, repoRoot)
+        .map((targetDir) => path.resolve(targetDir))
+        .filter((targetDir, index, list) => list.indexOf(targetDir) === index);
+      let removedAny = false;
+
+      for (const targetDir of candidateDirs) {
+        if (!isSafeWorkSubpath(workRootPath, targetDir)) {
+          continue;
+        }
+
+        if (!existsSync(targetDir)) {
+          continue;
+        }
+
+        onLog(`Removing old work directory ${targetDir}`);
+        rmSync(targetDir, { recursive: true, force: true });
+        removedDirectories.push(targetDir);
+        removedAny = true;
       }
 
-      if (!existsSync(targetDir)) {
-        missingDirectories.push(targetDir);
-        continue;
+      if (!removedAny && candidateDirs.length > 0) {
+        missingDirectories.push(candidateDirs[0]);
       }
-
-      onLog(`Removing old work directory ${targetDir}`);
-      rmSync(targetDir, { recursive: true, force: true });
-      removedDirectories.push(targetDir);
     }
 
     return {

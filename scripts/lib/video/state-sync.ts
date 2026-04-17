@@ -5,12 +5,14 @@ import {
   listPendingPublishParts,
   listPendingSummaryParts,
   listVideoParts,
+  listVideos,
   markVideoPublishRebuildNeeded,
   runInTransaction,
   upsertVideo,
   upsertVideoPart,
 } from "../db/index";
 import type { Db, VideoIdentity, VideoPartRecord, VideoSnapshot, VideoState } from "../db/index";
+import { buildOwnerDirName, buildVideoWorkDirName } from "../shared/work-paths";
 import { createSummaryHash, detectSnapshotChanges, reindexSummaryText } from "./change-detection";
 
 export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoState {
@@ -22,6 +24,20 @@ export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoSta
   const previousPartsByCid = new Map<number, VideoPartRecord>(previousParts.map((part) => [part.cid, part]));
   const nextPages = [...snapshot.pages].sort((left, right) => left.pageNo - right.pageNo);
   const nextCidSet = new Set(nextPages.map((page) => page.cid));
+  const knownVideos = listVideos(db);
+  const ownerDirName = buildOwnerDirName({
+    ownerName: snapshot.ownerName ?? existingVideo?.owner_name ?? null,
+    ownerMid: snapshot.ownerMid ?? existingVideo?.owner_mid ?? null,
+    existingOwnerDirName: existingVideo?.owner_dir_name ?? null,
+    existingVideos: knownVideos,
+    currentVideoId: existingVideo?.id ?? null,
+  });
+  const workDirName = buildVideoWorkDirName({
+    title: snapshot.title,
+    bvid: snapshot.bvid,
+    ownerName: snapshot.ownerName ?? existingVideo?.owner_name ?? null,
+    existingWorkDirName: existingVideo?.work_dir_name ?? null,
+  });
 
   const changeSet = detectSnapshotChanges(previousActiveParts, nextPages);
   const hadPublishedThread =
@@ -30,7 +46,11 @@ export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoSta
   let videoId = existingVideo?.id ?? null;
 
   runInTransaction(db, () => {
-    const video = upsertVideo(db, snapshot);
+    const video = upsertVideo(db, {
+      ...snapshot,
+      ownerDirName,
+      workDirName,
+    });
     videoId = video.id;
 
     for (const page of nextPages) {

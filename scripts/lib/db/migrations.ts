@@ -5,6 +5,10 @@ export function migrateDatabase(db) {
       bvid TEXT NOT NULL UNIQUE,
       aid INTEGER NOT NULL UNIQUE,
       title TEXT NOT NULL,
+      owner_mid INTEGER,
+      owner_name TEXT,
+      owner_dir_name TEXT,
+      work_dir_name TEXT,
       page_count INTEGER NOT NULL DEFAULT 0,
       root_comment_rpid INTEGER,
       top_comment_rpid INTEGER,
@@ -16,6 +20,10 @@ export function migrateDatabase(db) {
     );
   `);
 
+  ensureVideoColumn(db, "owner_mid", "INTEGER");
+  ensureVideoColumn(db, "owner_name", "TEXT");
+  ensureVideoColumn(db, "owner_dir_name", "TEXT");
+  ensureVideoColumn(db, "work_dir_name", "TEXT");
   ensureVideoColumn(db, "publish_needs_rebuild", "INTEGER NOT NULL DEFAULT 0");
   ensureVideoColumn(db, "publish_rebuild_reason", "TEXT");
 

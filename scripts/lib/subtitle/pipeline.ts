@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot, runVenvModule } from "../shared/runtime-tools";
-import { savePartSubtitle } from "../db/index";
+import { ensureVideoWorkDir } from "../shared/work-paths";
+import { runVenvModule } from "../shared/runtime-tools";
+import { getVideoById, getVideoPartByCid, savePartSubtitle } from "../db/index";
 import type { Db } from "../db/index";
 import { findReusableSubtitleSource } from "../summary/live-session-reuse";
 import { tryDownloadBiliSubtitle } from "./bili";
@@ -27,6 +28,7 @@ interface SubtitleFinalizeInput {
 export async function ensureSubtitleForPart({
   client,
   db,
+  video = null,
   videoId,
   bvid,
   videoTitle = "",
@@ -45,8 +47,20 @@ export async function ensureSubtitleForPart({
   tryDownloadBiliSubtitleImpl = tryDownloadBiliSubtitle,
   transcribeWithRetriesImpl = transcribeWithRetries,
 }) {
-  const workDir = path.join(getRepoRoot(), workRoot, bvid);
-  fs.mkdirSync(workDir, { recursive: true });
+  const currentVideo = video ?? getVideoById(db, videoId) ?? {
+    id: videoId,
+    bvid,
+    title: videoTitle,
+    owner_mid: null,
+    owner_name: null,
+    owner_dir_name: null,
+    work_dir_name: null,
+  };
+  const workDir = ensureVideoWorkDir({
+    db,
+    video: currentVideo,
+    workRoot,
+  });
 
   const stableBaseName = `cid-${String(cid)}`;
   const subtitlePath = path.join(workDir, `${stableBaseName}.srt`);
@@ -123,7 +137,17 @@ export async function ensureSubtitleForPart({
       partTitle,
     },
   );
-  const reusableSubtitlePath = String(reusableSubtitle?.part?.subtitle_path ?? "").trim();
+  if (reusableSubtitle?.video) {
+    ensureVideoWorkDir({
+      db,
+      video: reusableSubtitle.video,
+      workRoot,
+    });
+  }
+  const reusableSubtitlePart = reusableSubtitle?.part && reusableSubtitle?.video
+    ? getVideoPartByCid(db, reusableSubtitle.video.id, reusableSubtitle.part.cid) ?? reusableSubtitle.part
+    : reusableSubtitle?.part ?? null;
+  const reusableSubtitlePath = String(reusableSubtitlePart?.subtitle_path ?? "").trim();
   if (reusableSubtitlePath && fs.existsSync(reusableSubtitlePath)) {
     progress?.logPartStage?.(
       pageNo,
@@ -135,7 +159,7 @@ export async function ensureSubtitleForPart({
       fs.copyFileSync(reusableSubtitlePath, subtitlePath);
     }
 
-    const subtitleSource = String(reusableSubtitle.part?.subtitle_source ?? "").trim() || "local";
+    const subtitleSource = String(reusableSubtitlePart?.subtitle_source ?? "").trim() || "local";
     if (acceptSubtitleCandidate({
       subtitlePath,
       subtitleSource,
@@ -154,7 +178,7 @@ export async function ensureSubtitleForPart({
         eventLogger,
         subtitlePath,
         subtitleSource,
-        subtitleLang: reusableSubtitle.part?.subtitle_lang ?? null,
+        subtitleLang: reusableSubtitlePart?.subtitle_lang ?? null,
         reused: true,
       });
     }

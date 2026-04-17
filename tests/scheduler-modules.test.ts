@@ -764,7 +764,7 @@ test("cleanupOldWorkDirectories removes only safe candidate directories", async 
       { bvid: "..\\escape", title: "Unsafe", last_scan_at: "2026-01-01", updated_at: "2026-01-01" },
     ],
     existsSync(targetPath) {
-      return targetPath.endsWith("BVsafe");
+      return targetPath === "D:\\repo\\work\\BVsafe";
     },
     rmSync(targetPath) {
       removed.push(targetPath);

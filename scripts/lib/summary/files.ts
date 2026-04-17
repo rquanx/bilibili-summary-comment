@@ -1,22 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot } from "../shared/runtime-tools";
+import { ensureVideoWorkDir } from "../shared/work-paths";
 import { listPendingPublishParts, listVideoParts } from "../db/index";
 import type { Db, SummaryArtifacts, VideoPartRecord, VideoRecord } from "../db/index";
 
 export function writePartSummaryArtifact({
-  bvid,
+  db = null,
+  video,
   pageNo,
   summaryText,
   workRoot = "work",
 }: {
-  bvid: string;
+  db?: Db | null;
+  video: Pick<VideoRecord, "id" | "bvid" | "title"> & Partial<Pick<VideoRecord, "owner_mid" | "owner_name" | "owner_dir_name" | "work_dir_name">>;
   pageNo: number;
   summaryText: string | null | undefined;
   workRoot?: string;
 }): string {
-  const workDir = path.join(getRepoRoot(), workRoot, bvid);
-  fs.mkdirSync(workDir, { recursive: true });
+  const workDir = ensureVideoWorkDir({
+    db,
+    video,
+    workRoot,
+  });
 
   const partSummaryPath = path.join(workDir, `summary-p${String(pageNo).padStart(2, "0")}.md`);
   const normalizedSummary = String(summaryText ?? "").trim();
@@ -25,8 +30,11 @@ export function writePartSummaryArtifact({
 }
 
 export function writeSummaryArtifacts(db: Db, video: VideoRecord, workRoot = "work"): SummaryArtifacts {
-  const workDir = path.join(getRepoRoot(), workRoot, video.bvid);
-  fs.mkdirSync(workDir, { recursive: true });
+  const workDir = ensureVideoWorkDir({
+    db,
+    video,
+    workRoot,
+  });
   const activeParts = listVideoParts(db, video.id);
 
   const allSummaryText = activeParts

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
 import { listVideoParts, savePartSubtitle, upsertVideo, upsertVideoPart } from "../scripts/lib/db/index";
+import { resolveVideoWorkDir } from "../scripts/lib/shared/work-paths";
 import { findReusableSummarySource, reusePartSummaries } from "../scripts/lib/summary/live-session-reuse";
 import { ensureSubtitleForPart } from "../scripts/lib/subtitle/pipeline";
 
@@ -17,20 +18,20 @@ test("same-session summary reuse works across variants even when page counts dif
     const sourceVideo = upsertVideo(db, {
       bvid: "BVSOURCE16",
       aid: 116,
-      title: "开心元元2026.04.11 20.29.51 纯净版",
+      title: "Anchor Session 2026.04.11 20.29.51",
       pageCount: 16,
     });
     const targetVideo = upsertVideo(db, {
       bvid: "BVTARGET09",
       aid: 209,
-      title: "开心元元2026.04.11 20.29.51 弹幕版",
+      title: "Anchor Session 2026.04.11 20.29.51",
       pageCount: 9,
     });
 
     const sharedParts = [
-      "开心元元2026.04.11 20.29.51",
-      "开心元元2026.04.11 21.29.50",
-      "开心元元2026.04.11 21.52.15",
+      "Anchor Session 2026.04.11 20.29.51",
+      "Anchor Session 2026.04.11 21.29.50",
+      "Anchor Session 2026.04.11 21.52.15",
     ];
 
     for (const [index, partTitle] of sharedParts.entries()) {
@@ -58,7 +59,7 @@ test("same-session summary reuse works across variants even when page counts dif
       videoId: sourceVideo.id,
       pageNo: 4,
       cid: 1004,
-      partTitle: "开心元元2026.04.11 22.01.31",
+      partTitle: "Anchor Session 2026.04.11 22.01.31",
       durationSec: 60,
       summaryText: "summary-4",
       summaryHash: "hash-4",
@@ -95,13 +96,21 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
     const sourceVideo = upsertVideo(db, {
       bvid: "BVSUBSRC16",
       aid: 316,
-      title: "开心元元2026.04.11 20.29.51 纯净版",
+      title: "Anchor Session 2026.04.11 20.29.51",
+      ownerName: "Anchor Reuse",
+      ownerMid: 101,
+      ownerDirName: "Anchor Reuse",
+      workDirName: "2026.04.11-20.29.51-clean__BVSUBSRC16",
       pageCount: 16,
     });
     const targetVideo = upsertVideo(db, {
       bvid: "BVSUBDST09",
       aid: 409,
-      title: "开心元元2026.04.11 20.29.51 弹幕版",
+      title: "Anchor Session 2026.04.11 20.29.51",
+      ownerName: "Anchor Reuse",
+      ownerMid: 101,
+      ownerDirName: "Anchor Reuse",
+      workDirName: "2026.04.11-20.29.51-danmu__BVSUBDST09",
       pageCount: 9,
     });
 
@@ -109,7 +118,7 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
       videoId: sourceVideo.id,
       pageNo: 4,
       cid: 4100,
-      partTitle: "开心元元2026.04.11 22.01.31",
+      partTitle: "Anchor Session 2026.04.11 22.01.31",
       durationSec: 60,
       isDeleted: false,
     });
@@ -117,15 +126,15 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
       videoId: targetVideo.id,
       pageNo: 4,
       cid: 4200,
-      partTitle: "开心元元2026.04.11 22.01.31",
+      partTitle: "Anchor Session 2026.04.11 22.01.31",
       durationSec: 60,
       isDeleted: false,
     });
 
-    const sourceWorkDir = path.join(repoWorkRoot, sourceVideo.bvid);
+    const sourceWorkDir = resolveVideoWorkDir(sourceVideo, relativeWorkRoot, process.cwd());
     fs.mkdirSync(sourceWorkDir, { recursive: true });
     const sourceSubtitlePath = path.join(sourceWorkDir, "cid-4100.srt");
-    fs.writeFileSync(sourceSubtitlePath, "1\n00:00:00,000 --> 00:00:01,000\n同场字幕\n", "utf8");
+    fs.writeFileSync(sourceSubtitlePath, "1\n00:00:00,000 --> 00:00:01,000\nsame subtitle\n", "utf8");
     savePartSubtitle(db, sourceVideo.id, 4, {
       subtitlePath: sourceSubtitlePath,
       subtitleSource: "asr",
@@ -135,12 +144,13 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
     const result = await ensureSubtitleForPart({
       client: null,
       db,
+      video: targetVideo,
       videoId: targetVideo.id,
       bvid: targetVideo.bvid,
       videoTitle: targetVideo.title,
       pageNo: 4,
       cid: 4200,
-      partTitle: "开心元元2026.04.11 22.01.31",
+      partTitle: "Anchor Session 2026.04.11 22.01.31",
       existingSubtitlePath: null,
       cookie: "",
       workRoot: relativeWorkRoot,
@@ -148,7 +158,7 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
       eventLogger: null,
     });
 
-    const expectedSubtitlePath = path.join(repoWorkRoot, targetVideo.bvid, "cid-4200.srt");
+    const expectedSubtitlePath = path.join(resolveVideoWorkDir(targetVideo, relativeWorkRoot, process.cwd()), "cid-4200.srt");
     assert.equal(result.reused, true);
     assert.equal(result.subtitlePath, expectedSubtitlePath);
     assert.equal(result.subtitleSource, "asr");
@@ -179,6 +189,10 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
       bvid: "BVLOCALBAD1",
       aid: 510,
       title: "Bad Local Subtitle Test",
+      ownerName: "Quality Check",
+      ownerMid: 510,
+      ownerDirName: "Quality Check",
+      workDirName: "bad-local-subtitle-test__BVLOCALBAD1",
       pageCount: 1,
     });
     upsertVideoPart(db, {
@@ -190,14 +204,14 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
       isDeleted: false,
     });
 
-    const workDir = path.join(repoWorkRoot, video.bvid);
+    const workDir = resolveVideoWorkDir(video, relativeWorkRoot, process.cwd());
     fs.mkdirSync(workDir, { recursive: true });
     const subtitlePath = path.join(workDir, "cid-5100.srt");
     const audioPath = path.join(workDir, "cid-5100.m4a");
     fs.writeFileSync(subtitlePath, [
       "1",
       "00:00:00,000 --> 00:00:01,000",
-      "字幕志愿者 李宗盛",
+      "字幕志愿者李宗盛",
       "",
       "2",
       "00:00:02,000 --> 00:00:03,000",
@@ -214,6 +228,7 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
     const result = await ensureSubtitleForPart({
       client: null,
       db,
+      video,
       videoId: video.id,
       bvid: video.bvid,
       videoTitle: video.title,
@@ -231,7 +246,7 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
         fs.writeFileSync(nextSubtitlePath, [
           "1",
           "00:00:00,000 --> 00:00:02,000",
-          "重新识别成功",
+          "retry transcription succeeded",
           "",
         ].join("\n"), "utf8");
       },
@@ -240,7 +255,7 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
     assert.equal(transcribeCalls, 1);
     assert.equal(result.subtitleSource, "asr");
     assert.equal(result.reused, false);
-    assert.match(fs.readFileSync(subtitlePath, "utf8"), /重新识别成功/u);
+    assert.match(fs.readFileSync(subtitlePath, "utf8"), /retry transcription succeeded/u);
 
     const part = listVideoParts(db, video.id).find((item) => item.page_no === 1);
     assert.equal(part?.subtitle_source, "asr");

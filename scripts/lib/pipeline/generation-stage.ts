@@ -53,7 +53,8 @@ export async function runGenerationStage({
           }
 
           writePartSummaryArtifact({
-            bvid: video.bvid,
+            db,
+            video,
             pageNo: part.page_no,
             summaryText: part.summary_text,
             workRoot,
@@ -136,6 +137,7 @@ export async function runGenerationStage({
       subtitleResult = await ensureSubtitleForPartImpl({
         client,
         db,
+        video,
         videoId: video.id,
         bvid: video.bvid,
         videoTitle: video.title,

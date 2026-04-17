@@ -94,7 +94,8 @@ test("runGenerationStage skips content-filtered summary pages and continues late
           summaryHash,
         });
         const summaryPath = writePartSummaryArtifact({
-          bvid,
+          db,
+          video,
           pageNo,
           summaryText,
           workRoot,

@@ -1,3 +1,4 @@
+import path from "node:path";
 import type {
   Db,
   VideoIdentity,
@@ -22,6 +23,10 @@ export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIde
   return null;
 }
 
+export function getVideoById(db: Db, videoId: number): VideoRecord | null {
+  return (db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) as unknown as VideoRecord | undefined) ?? null;
+}
+
 export function listVideos(db: Db): VideoRecord[] {
   return db.prepare("SELECT * FROM videos ORDER BY updated_at DESC, id DESC").all() as unknown as VideoRecord[];
 }
@@ -42,6 +47,10 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
       bvid,
       aid,
       title,
+      owner_mid,
+      owner_name,
+      owner_dir_name,
+      work_dir_name,
       page_count,
       root_comment_rpid,
       top_comment_rpid,
@@ -49,10 +58,14 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(bvid) DO UPDATE SET
       aid = excluded.aid,
       title = excluded.title,
+      owner_mid = COALESCE(excluded.owner_mid, owner_mid),
+      owner_name = COALESCE(excluded.owner_name, owner_name),
+      owner_dir_name = COALESCE(owner_dir_name, excluded.owner_dir_name),
+      work_dir_name = COALESCE(work_dir_name, excluded.work_dir_name),
       page_count = excluded.page_count,
       updated_at = excluded.updated_at,
       last_scan_at = excluded.last_scan_at
@@ -60,6 +73,10 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
     video.bvid,
     video.aid,
     video.title,
+    video.ownerMid ?? null,
+    video.ownerName ?? null,
+    video.ownerDirName ?? null,
+    video.workDirName ?? null,
     video.pageCount,
     video.rootCommentRpid ?? null,
     video.topCommentRpid ?? null,
@@ -69,6 +86,45 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
   );
 
   return getVideoByIdentity(db, { bvid: video.bvid, aid: video.aid });
+}
+
+export function replaceVideoSubtitlePathPrefix(db: Db, videoId: number, fromPrefix: string, toPrefix: string) {
+  const resolvedFromPrefix = path.resolve(fromPrefix);
+  const resolvedToPrefix = path.resolve(toPrefix);
+  const rows = listAllVideoParts(db, videoId);
+  const now = new Date().toISOString();
+  const update = db.prepare(`
+    UPDATE video_parts
+    SET subtitle_path = ?,
+        updated_at = ?
+    WHERE id = ?
+  `);
+
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      const currentSubtitlePath = String(row.subtitle_path ?? "").trim();
+      if (!currentSubtitlePath) {
+        continue;
+      }
+
+      const resolvedSubtitlePath = path.resolve(currentSubtitlePath);
+      if (
+        resolvedSubtitlePath !== resolvedFromPrefix
+        && !resolvedSubtitlePath.startsWith(`${resolvedFromPrefix}${path.sep}`)
+      ) {
+        continue;
+      }
+
+      const relativeSubtitlePath = path.relative(resolvedFromPrefix, resolvedSubtitlePath);
+      const nextSubtitlePath = path.resolve(resolvedToPrefix, relativeSubtitlePath);
+      update.run(nextSubtitlePath, now, row.id);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function updateVideoCommentThread(

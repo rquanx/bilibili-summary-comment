@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { buildSummarySegmentsFromSrt } from "../subtitle/srt-utils";
-import { savePartSummary } from "../db/index";
+import { getVideoById, savePartSummary } from "../db/index";
 import { writePartSummaryArtifact } from "./files";
 import { requestSummary } from "./client";
 import { normalizeSummaryOutput } from "./output";
@@ -155,9 +155,19 @@ export async function summarizePartFromSubtitle({
       summaryText: normalized.trim(),
       summaryHash,
     });
+    const video = getVideoById(db, videoId) ?? {
+      id: videoId,
+      bvid,
+      title: partTitle,
+      owner_mid: ownerMid,
+      owner_name: ownerName,
+      owner_dir_name: null,
+      work_dir_name: null,
+    };
 
     const partSummaryPath = writePartSummaryArtifact({
-      bvid,
+      db,
+      video,
       pageNo,
       summaryText: normalized.trim(),
       workRoot,
