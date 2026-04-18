@@ -13,6 +13,7 @@ import {
   resolveSummaryApiTarget,
 } from "../scripts/lib/summary/client";
 import { splitSummaryForComments } from "../scripts/lib/summary/format";
+import { writeSummaryArtifacts } from "../scripts/lib/summary/files";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
 import {
@@ -21,6 +22,7 @@ import {
   shouldRetrySummaryWithGlm5,
   summarizePartFromSubtitle,
 } from "../scripts/lib/summary/service";
+import { resolveVideoWorkDir } from "../scripts/lib/shared/work-paths";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
   const config = resolveSummaryConfig(
@@ -456,6 +458,10 @@ test("summarizePartFromSubtitle records fallback success metadata when glm-5 ret
     assert.deepEqual(requestModels, ["kimi-k2.5", "glm-5"]);
     assert.equal(result.modelUsed, "glm-5");
     assert.equal(result.fallbackUsed, true);
+    assert.ok(result.promptPath);
+    assert.equal(fs.existsSync(result.promptPath), true);
+    assert.match(fs.readFileSync(result.promptPath, "utf8"), /## System Prompt/u);
+    assert.match(fs.readFileSync(result.promptPath, "utf8"), /## User Prompt/u);
 
     const fallbackStarted = events.find((event) => event.action === "llm-fallback" && event.status === "started");
     assert.ok(fallbackStarted);
@@ -470,6 +476,150 @@ test("summarizePartFromSubtitle records fallback success metadata when glm-5 ret
 
     const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 2);
     assert.equal(savedPart.summary_text, "<2P> 2#00:00 fallback summary");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("summarizePartFromSubtitle writes prompt artifact before a summary request failure", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-failure-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const subtitlePath = path.join(tempRoot, "p1.srt");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  fs.writeFileSync(subtitlePath, [
+    "1",
+    "00:00:00,000 --> 00:00:02,000",
+    "prompt file should still exist",
+    "",
+  ].join("\n"), "utf8");
+
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVpromptfail1",
+      aid: 654321,
+      title: "Prompt Failure Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 45,
+      subtitlePath,
+      isDeleted: false,
+    });
+
+    await assert.rejects(
+      summarizePartFromSubtitle({
+        db,
+        videoId: video.id,
+        bvid: video.bvid,
+        pageNo: 1,
+        cid: 101,
+        partTitle: "P1",
+        durationSec: 45,
+        subtitlePath,
+        model: "gpt-test",
+        apiKey: "key-123",
+        apiBaseUrl: "https://example.com/v1",
+        apiFormat: "openai-chat",
+        workRoot,
+        requestSummaryImpl: async () => {
+          throw new Error("Summary request failed: 429 Too Many Requests");
+        },
+      }),
+      /429 Too Many Requests/u,
+    );
+
+    const workDir = resolveVideoWorkDir(video, workRoot, repoRoot);
+    const promptPath = path.join(workDir, "prompt-p01.md");
+    assert.equal(fs.existsSync(promptPath), true);
+    assert.match(fs.readFileSync(promptPath, "utf8"), /Prompt P01/u);
+    assert.match(fs.readFileSync(promptPath, "utf8"), /## System Prompt/u);
+    assert.match(fs.readFileSync(promptPath, "utf8"), /## User Prompt/u);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("writeSummaryArtifacts refreshes per-page prompt files and removes stale prompt files", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-prompts-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVpromptart1",
+      aid: 789012,
+      title: "Prompt Artifact Refresh Test",
+      pageCount: 2,
+    });
+
+    const subtitlePath1 = path.join(tempRoot, "p1.srt");
+    const subtitlePath2 = path.join(tempRoot, "p2.srt");
+    fs.writeFileSync(subtitlePath1, [
+      "1",
+      "00:00:00,000 --> 00:00:02,000",
+      "subtitle one",
+      "",
+    ].join("\n"), "utf8");
+    fs.writeFileSync(subtitlePath2, [
+      "1",
+      "00:00:00,000 --> 00:00:03,000",
+      "subtitle two",
+      "",
+    ].join("\n"), "utf8");
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 201,
+      partTitle: "P1",
+      durationSec: 30,
+      subtitlePath: subtitlePath1,
+      summaryText: "<1P> 1#00:00 summary one",
+      summaryHash: "hash-one",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 40,
+      subtitlePath: subtitlePath2,
+      summaryText: "<2P> 2#00:00 summary two",
+      summaryHash: "hash-two",
+      isDeleted: false,
+    });
+
+    const workDir = resolveVideoWorkDir(video, workRoot, repoRoot);
+    fs.mkdirSync(workDir, { recursive: true });
+    fs.writeFileSync(path.join(workDir, "prompt-p03.md"), "stale", "utf8");
+
+    writeSummaryArtifacts(db, video, workRoot, {
+      promptConfigPath: null,
+    });
+
+    const promptPath1 = path.join(workDir, "prompt-p01.md");
+    const promptPath2 = path.join(workDir, "prompt-p02.md");
+    assert.equal(fs.existsSync(promptPath1), true);
+    assert.equal(fs.existsSync(promptPath2), true);
+    assert.equal(fs.existsSync(path.join(workDir, "prompt-p03.md")), false);
+    assert.match(fs.readFileSync(promptPath1, "utf8"), /## System Prompt/u);
+    assert.match(fs.readFileSync(promptPath2, "utf8"), /## User Prompt/u);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

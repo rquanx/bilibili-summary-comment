@@ -1,5 +1,5 @@
 import { findReusableSummarySource, reusePartSummaries } from "../summary/live-session-reuse";
-import { writePartSummaryArtifact, writeSummaryArtifacts } from "../summary/files";
+import { writePartPromptArtifact, writePartSummaryArtifact, writeSummaryArtifacts } from "../summary/files";
 import { ensureSubtitleForPart } from "../subtitle/pipeline";
 import { summarizePartFromSubtitle } from "../summary/index";
 import { shouldSkipSummaryPart } from "../summary/service";
@@ -57,6 +57,17 @@ export async function runGenerationStage({
             video,
             pageNo: part.page_no,
             summaryText: part.summary_text,
+            workRoot,
+          });
+          writePartPromptArtifact({
+            db,
+            video,
+            pageNo: part.page_no,
+            partTitle: part.part_title,
+            durationSec: part.duration_sec,
+            subtitlePath: part.subtitle_path,
+            promptConfigPath: summaryConfig.promptConfigPath,
+            ownerMid: summaryOwnerMid,
             workRoot,
           });
         }
@@ -248,7 +259,9 @@ export async function runGenerationStage({
   progress?.info("Writing summary artifacts");
   let artifacts;
   try {
-    artifacts = writeSummaryArtifactsImpl(db, video, workRoot);
+    artifacts = writeSummaryArtifactsImpl(db, video, workRoot, {
+      promptConfigPath: summaryConfig.promptConfigPath,
+    });
   } catch (error) {
     progress?.error(`Artifact write blocked: ${formatBlockingErrorDetail(error)}`);
     attachErrorDetails(error, {

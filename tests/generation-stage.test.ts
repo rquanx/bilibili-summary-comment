@@ -105,6 +105,7 @@ test("runGenerationStage skips content-filtered summary pages and continues late
           pageNo,
           summaryText,
           summaryHash,
+          promptPath: null,
           summaryPath,
           dbRow,
           modelUsed: "gpt-test",

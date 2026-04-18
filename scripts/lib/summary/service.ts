@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { buildSummarySegmentsFromSrt } from "../subtitle/srt-utils";
 import { getVideoById, savePartSummary } from "../db/index";
-import { writePartSummaryArtifact } from "./files";
+import { writePartPromptArtifact, writePartSummaryArtifact } from "./files";
 import { requestSummary } from "./client";
 import { normalizeSummaryOutput } from "./output";
 import { resolveSummaryPromptProfile } from "./prompt-config";
@@ -103,12 +103,35 @@ export async function summarizePartFromSubtitle({
     },
   });
 
+  let promptPath = null;
   try {
     const subtitleText = fs.readFileSync(subtitlePath, "utf8");
     const segments = buildSummarySegmentsFromSrt(subtitleText, durationSec);
     const promptProfile = resolveSummaryPromptProfile({
       ownerMid,
       promptConfigPath,
+    });
+    const video = getVideoById(db, videoId) ?? {
+      id: videoId,
+      bvid,
+      title: partTitle,
+      owner_mid: ownerMid,
+      owner_name: ownerName,
+      owner_dir_name: null,
+      work_dir_name: null,
+    };
+    promptPath = writePartPromptArtifact({
+      db,
+      video,
+      pageNo,
+      partTitle,
+      durationSec,
+      subtitleText,
+      subtitlePath,
+      promptProfile,
+      promptConfigPath,
+      ownerMid,
+      workRoot,
     });
     const summaryRequest = {
       pageNo,
@@ -155,15 +178,6 @@ export async function summarizePartFromSubtitle({
       summaryText: normalized.trim(),
       summaryHash,
     });
-    const video = getVideoById(db, videoId) ?? {
-      id: videoId,
-      bvid,
-      title: partTitle,
-      owner_mid: ownerMid,
-      owner_name: ownerName,
-      owner_dir_name: null,
-      work_dir_name: null,
-    };
 
     const partSummaryPath = writePartSummaryArtifact({
       db,
@@ -188,6 +202,7 @@ export async function summarizePartFromSubtitle({
         fallbackReason: summaryAttempt.fallbackReason,
         segmentCount: segments.length,
         summaryHash,
+        promptPath,
         summaryPath: partSummaryPath,
         summaryPromptOwnerMid: promptProfile.ownerMid,
         summaryPromptOwnerName: ownerName,
@@ -218,6 +233,7 @@ export async function summarizePartFromSubtitle({
       pageNo,
       summaryText: normalized.trim(),
       summaryHash,
+      promptPath,
       summaryPath: partSummaryPath,
       dbRow: saved,
       modelUsed: summaryAttempt.modelUsed,
@@ -235,6 +251,7 @@ export async function summarizePartFromSubtitle({
       details: {
         model,
         subtitlePath,
+        promptPath,
         fallbackEligible: shouldRetrySummaryWithGlm5({ model, error }),
       },
     });
