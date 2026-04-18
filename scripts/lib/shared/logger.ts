@@ -166,15 +166,21 @@ function createFileLogger({
 }
 
 function sanitizeFilenamePart(value: unknown): string {
-  const normalized = String(value ?? "").trim();
+  const normalized = String(value ?? "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/[. ]+$/gu, "")
+    .trim();
   if (!normalized) {
     return "";
   }
 
   return normalized
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
+    .replace(/\s+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^[-.]+|[-.]+$/gu, "")
     .slice(0, 80);
 }
 

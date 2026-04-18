@@ -75,6 +75,28 @@ test("createWorkFileLogger writes grouped logs under the requested day directory
   }
 });
 
+test("createWorkFileLogger keeps readable unicode labels in filenames", async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-logger-unicode-"));
+
+  try {
+    const logger = createWorkFileLogger({
+      repoRoot,
+      workRoot: "work",
+      name: "pipeline",
+      label: "小泽又沐风2026.04.13 19.27.43 纯净版__BV1TEST",
+    });
+
+    logger.info("unicode");
+    await waitForLogContent(logger.filePath);
+
+    const basename = path.basename(logger.filePath);
+    assert.match(basename, /小泽又沐风2026\.04\.13-19\.27\.43-纯净版__BV1TEST/u);
+    assert.match(basename, /\.jsonl$/u);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("createCompositeWriteStream forwards writes to every target", () => {
   const writesA: string[] = [];
   const writesB: string[] = [];

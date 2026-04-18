@@ -48,7 +48,7 @@ export async function runVideoPipeline(
   const logger = createWorkFileLogger({
     workRoot,
     name: "pipeline",
-    label: state.video.bvid,
+    label: buildPipelineLogLabel(state.video),
     day: typeof logDay === "string" ? logDay : null,
     group: typeof logGroup === "string" ? logGroup : null,
     context: {
@@ -296,4 +296,19 @@ export function printPipelineFailure(error: CommandError | Error | unknown, acti
     stderr: trimCommandOutput(commandError.stderr),
     stdout: trimCommandOutput(commandError.stdout),
   });
+}
+
+function buildPipelineLogLabel(video: { work_dir_name?: string | null; title?: string | null; bvid?: string | null }): string {
+  const workDirName = String(video.work_dir_name ?? "").trim();
+  if (workDirName) {
+    return workDirName;
+  }
+
+  const title = String(video.title ?? "").trim();
+  const bvid = String(video.bvid ?? "").trim();
+  if (title && bvid) {
+    return `${title}__${bvid}`;
+  }
+
+  return title || bvid || "pipeline";
 }
