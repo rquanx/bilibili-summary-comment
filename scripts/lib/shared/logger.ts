@@ -50,7 +50,7 @@ export function createWorkFileLogger({
   fs.mkdirSync(logDir, { recursive: true });
 
   const timestamp = formatLogTimestamp();
-  const filenameParts = [timestamp, sanitizeFilenamePart(name), sanitizeFilenamePart(label)].filter(Boolean);
+  const filenameParts = [timestamp, sanitizeFilenamePart(name), sanitizeFilenamePart(label)].filter(Boolean).reverse();
   const filePath = path.join(logDir, `${filenameParts.join("-")}.jsonl`);
   const stream = fs.createWriteStream(filePath, {
     flags: "a",
