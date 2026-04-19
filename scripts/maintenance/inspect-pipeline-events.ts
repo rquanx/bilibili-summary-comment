@@ -5,7 +5,7 @@ import {
   runCli,
 } from "../lib/cli/tools";
 import { listPipelineEvents, openDatabase } from "../lib/db/index";
-import { formatEast8Timestamp } from "../lib/shared/time";
+import { formatEast8DateTime } from "../lib/shared/time";
 
 const command = addDatabaseOption(
   createCliCommand({
@@ -46,7 +46,8 @@ await runCli({
         filter: {
           bvid,
           sinceHours,
-          sinceIso: formatEast8Timestamp(sinceDate),
+          sinceDisplay: formatEast8DateTime(sinceDate),
+          sinceIso,
           limit,
         },
         nextPendingPart: pendingParts[0] ?? null,
@@ -183,7 +184,7 @@ function printTextReport(report) {
   const maxPrintedPendingParts = 20;
   const lines = [
     `DB: ${report.dbPath}`,
-    `Filter: bvid=${report.filter.bvid ?? "all"}, since=${report.filter.sinceIso}, limit=${report.filter.limit}`,
+    `Filter: bvid=${report.filter.bvid ?? "all"}, since=${report.filter.sinceDisplay}, limit=${report.filter.limit}`,
     "",
     `Next pending part: ${
       report.nextPendingPart
@@ -269,5 +270,5 @@ function formatTimestampForDisplay(value) {
     return String(value ?? "");
   }
 
-  return formatEast8Timestamp(date);
+  return formatEast8DateTime(date);
 }

@@ -26,6 +26,10 @@ export function formatEast8Time(date = new Date()): string {
   return `${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
+export function formatEast8DateTime(date = new Date()): string {
+  return `${formatEast8Date(date)} ${formatEast8Time(date)}`;
+}
+
 export function formatEast8FilenameTimestamp(date = new Date()): string {
   const parts = getTimeZoneParts(date, EAST_8_TIMEZONE);
   const milliseconds = String(date.getMilliseconds()).padStart(3, "0");
@@ -41,6 +45,18 @@ export function parseTimestamp(value: unknown): number {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
     return Number.NaN;
+  }
+
+  const east8Match = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2}) (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.(?<milliseconds>\d{1,3}))?$/u.exec(normalized);
+  if (east8Match?.groups) {
+    const year = Number(east8Match.groups.year);
+    const month = Number(east8Match.groups.month);
+    const day = Number(east8Match.groups.day);
+    const hour = Number(east8Match.groups.hour);
+    const minute = Number(east8Match.groups.minute);
+    const second = Number(east8Match.groups.second);
+    const milliseconds = Number(String(east8Match.groups.milliseconds ?? "").padEnd(3, "0") || "0");
+    return Date.UTC(year, month - 1, day, hour - 8, minute, second, milliseconds);
   }
 
   return Date.parse(normalized);
@@ -60,7 +76,7 @@ function compareTimestamp(left: unknown, right: unknown): number {
   const leftValid = Number.isFinite(leftMs);
   const rightValid = Number.isFinite(rightMs);
 
-  if (leftValid && rightValid && leftMs !== rightMs) {
+  if (leftValid && rightValid) {
     return leftMs - rightMs;
   }
 

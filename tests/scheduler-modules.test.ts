@@ -19,7 +19,7 @@ import {
 } from "../scripts/lib/scheduler/gap-check";
 import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner";
 import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads";
-import { formatEast8Timestamp } from "../scripts/lib/shared/time";
+import { compareTimestampDesc, formatEast8DateTime } from "../scripts/lib/shared/time";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");
@@ -502,6 +502,12 @@ test("upsertGapCheckDailySnapshot keeps only the latest record per bvid for the 
   }
 });
 
+test("compareTimestampDesc supports East-8 human-readable timestamps", () => {
+  assert.equal(compareTimestampDesc("2026-04-12 12:00:00", "2026-04-12 11:59:59") < 0, true);
+  assert.equal(compareTimestampDesc("2026-04-12 11:59:59", "2026-04-12 12:00:00") > 0, true);
+  assert.equal(compareTimestampDesc("2026-04-12 12:00:00", "2026-04-12T04:00:00.000Z"), 0);
+});
+
 test("runRecentVideoGapCheck sends notifications only for previously unseen gaps", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-run-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -579,7 +585,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
     const snapshotPath = path.join(tempRoot, "work", "logs", "gap-check", "2026-04-12.json");
     const dailySnapshot = readGapCheckDailySnapshot(snapshotPath, "2026-04-12");
     assert.equal(dailySnapshot.videos.length, 1);
-    assert.equal(dailySnapshot.videos[0].checkedAt, formatEast8Timestamp(new Date("2026-04-12T04:00:00.000Z")));
+    assert.equal(dailySnapshot.videos[0].checkedAt, formatEast8DateTime(new Date("2026-04-12T04:00:00.000Z")));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

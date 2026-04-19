@@ -7,7 +7,7 @@ import { getRepoRoot } from "../shared/runtime-tools";
 import { formatErrorMessage } from "../subtitle/utils";
 import { sendServerChanNotification } from "../subtitle/notifier";
 import { fetchVideoSnapshot } from "../video/index";
-import { EAST_8_TIMEZONE, compareTimestampDesc, formatDateInTimeZone, formatEast8Timestamp } from "../shared/time";
+import { EAST_8_TIMEZONE, compareTimestampDesc, formatDateInTimeZone, formatEast8DateTime } from "../shared/time";
 import { collectRecentUploadsFromUsers } from "./uploads";
 
 const PART_TIMESTAMP_RE = /^(?<title>.*?)(?<date>\d{4}\.\d{2}\.\d{2})\s+(?<time>\d{2}\.\d{2}\.\d{2})\s*$/u;
@@ -197,7 +197,7 @@ export async function runRecentVideoGapCheck({
         videoRecord = {
           bvid: snapshot.bvid,
           title: String(snapshot.title ?? "").trim() || upload.title || upload.bvid,
-          checkedAt: formatEast8Timestamp(now),
+          checkedAt: formatEast8DateTime(now),
           gapCount: gaps.length,
           gaps,
         };
@@ -212,7 +212,7 @@ export async function runRecentVideoGapCheck({
         videoRecord = {
           bvid: upload.bvid,
           title: String(upload.title ?? "").trim() || upload.bvid,
-          checkedAt: formatEast8Timestamp(now),
+          checkedAt: formatEast8DateTime(now),
           gapCount: 0,
           gaps: [],
           error: message,
@@ -473,7 +473,7 @@ export function upsertGapCheckDailySnapshot({
 
   const nextSnapshot: GapCheckDailySnapshot = {
     date,
-    updatedAt: formatEast8Timestamp(now),
+    updatedAt: formatEast8DateTime(now),
     videos: Array.from(videos.values()).sort((left, right) => {
       const checkedAtDiff = compareTimestampDesc(left.checkedAt, right.checkedAt);
       if (checkedAtDiff !== 0) {
