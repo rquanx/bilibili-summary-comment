@@ -19,6 +19,7 @@ import {
 } from "../scripts/lib/scheduler/gap-check";
 import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner";
 import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads";
+import { formatEast8Timestamp } from "../scripts/lib/shared/time";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");
@@ -578,7 +579,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
     const snapshotPath = path.join(tempRoot, "work", "logs", "gap-check", "2026-04-12.json");
     const dailySnapshot = readGapCheckDailySnapshot(snapshotPath, "2026-04-12");
     assert.equal(dailySnapshot.videos.length, 1);
-    assert.equal(dailySnapshot.videos[0].checkedAt, "2026-04-12T04:00:00.000Z");
+    assert.equal(dailySnapshot.videos[0].checkedAt, formatEast8Timestamp(new Date("2026-04-12T04:00:00.000Z")));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

@@ -5,6 +5,7 @@ import {
   runCli,
 } from "../lib/cli/tools";
 import { listPipelineEvents, openDatabase } from "../lib/db/index";
+import { formatEast8Timestamp } from "../lib/shared/time";
 
 const command = addDatabaseOption(
   createCliCommand({
@@ -27,7 +28,8 @@ await runCli({
     try {
       const bvid = normalizeNullableText(args.bvid);
       const sinceHours = Math.max(1, Number(args["since-hours"] ?? 72) || 72);
-      const sinceIso = new Date(Date.now() - sinceHours * 3600 * 1000).toISOString();
+      const sinceDate = new Date(Date.now() - sinceHours * 3600 * 1000);
+      const sinceIso = sinceDate.toISOString();
       const limit = Math.max(1, Number(args.limit) || 200);
       const events = listPipelineEvents(db, {
         bvid,
@@ -44,7 +46,7 @@ await runCli({
         filter: {
           bvid,
           sinceHours,
-          sinceIso,
+          sinceIso: formatEast8Timestamp(sinceDate),
           limit,
         },
         nextPendingPart: pendingParts[0] ?? null,
@@ -82,12 +84,16 @@ function listPendingParts(db, bvid) {
       AND (p.summary_text IS NULL OR TRIM(p.summary_text) = '')
       AND (? IS NULL OR v.bvid = ?)
     ORDER BY v.updated_at DESC, v.id DESC, p.page_no ASC
-  `).all(bvid, bvid);
+  `).all(bvid, bvid).map((row) => ({
+    ...row,
+    updated_at: formatTimestampForDisplay(row.updated_at),
+  }));
 }
 
 function parseEventRow(row) {
   return {
     ...row,
+    created_at: formatTimestampForDisplay(row.created_at),
     details: parseEventDetails(row.details_json),
   };
 }
@@ -255,4 +261,13 @@ function normalizeNullableText(value) {
 
 function hasPageNo(value) {
   return value !== null && value !== undefined && Number.isInteger(Number(value));
+}
+
+function formatTimestampForDisplay(value) {
+  const date = new Date(String(value ?? "").trim());
+  if (Number.isNaN(date.getTime())) {
+    return String(value ?? "");
+  }
+
+  return formatEast8Timestamp(date);
 }

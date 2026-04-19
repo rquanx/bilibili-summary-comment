@@ -69,7 +69,7 @@ test("createWorkFileLogger writes grouped logs under the requested day directory
     await waitForLogContent(logger.filePath);
 
     const relativePath = path.relative(repoRoot, logger.filePath).split(path.sep).join("/");
-    assert.match(relativePath, new RegExp(`^work/logs/${logDay}/${logGroup}/.+-summary\\.jsonl$`, "u"));
+    assert.match(relativePath, new RegExp(`^work/logs/${logDay}/${logGroup}/summary-.+\\.jsonl$`, "u"));
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }

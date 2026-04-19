@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getRepoRoot } from "./runtime-tools";
+import { formatEast8Date, formatEast8FilenameTimestamp, formatEast8Timestamp } from "./time";
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "progress";
 export type LogContext = Record<string, unknown>;
@@ -79,7 +80,7 @@ export function createCompositeWriteStream(
 }
 
 export function formatLogDay(date = new Date()): string {
-  return date.toISOString().slice(0, 10);
+  return formatEast8Date(date);
 }
 
 export function createLogGroupName(name: string, label: string | null = null, date = new Date()): string {
@@ -100,7 +101,7 @@ function createFileLogger({
 
   function writeEntry(level: LogLevel, message: string, details?: LogContext) {
     const entry: LoggerEntry = {
-      timestamp: new Date().toISOString(),
+      timestamp: formatEast8Timestamp(),
       level,
       message,
     };
@@ -185,7 +186,7 @@ function sanitizeFilenamePart(value: unknown): string {
 }
 
 function formatLogTimestamp(date = new Date()): string {
-  return date.toISOString().replace(/[:.]/g, "-");
+  return formatEast8FilenameTimestamp(date);
 }
 
 function normalizeLogDay(value: unknown): string | null {

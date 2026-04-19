@@ -22,6 +22,7 @@ import {
 } from "../lib/scheduler/index";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { LogLevel } from "../lib/shared/logger";
+import { formatEast8Timestamp } from "../lib/shared/time";
 
 const command = addWorkRootOption(
   addDatabaseOption(
@@ -80,7 +81,7 @@ await runCli({
     }
 
     function writeConsole(message: string) {
-      process.stderr.write(`[scheduler ${new Date().toISOString()}] ${message}\n`);
+      process.stderr.write(`[scheduler ${formatEast8Timestamp()}] ${message}\n`);
     }
 
     log(`Detailed log: ${schedulerLogger.filePath}`);

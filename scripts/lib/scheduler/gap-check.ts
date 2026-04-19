@@ -7,6 +7,7 @@ import { getRepoRoot } from "../shared/runtime-tools";
 import { formatErrorMessage } from "../subtitle/utils";
 import { sendServerChanNotification } from "../subtitle/notifier";
 import { fetchVideoSnapshot } from "../video/index";
+import { EAST_8_TIMEZONE, compareTimestampDesc, formatDateInTimeZone, formatEast8Timestamp } from "../shared/time";
 import { collectRecentUploadsFromUsers } from "./uploads";
 
 const PART_TIMESTAMP_RE = /^(?<title>.*?)(?<date>\d{4}\.\d{2}\.\d{2})\s+(?<time>\d{2}\.\d{2}\.\d{2})\s*$/u;
@@ -196,7 +197,7 @@ export async function runRecentVideoGapCheck({
         videoRecord = {
           bvid: snapshot.bvid,
           title: String(snapshot.title ?? "").trim() || upload.title || upload.bvid,
-          checkedAt: now.toISOString(),
+          checkedAt: formatEast8Timestamp(now),
           gapCount: gaps.length,
           gaps,
         };
@@ -211,7 +212,7 @@ export async function runRecentVideoGapCheck({
         videoRecord = {
           bvid: upload.bvid,
           title: String(upload.title ?? "").trim() || upload.bvid,
-          checkedAt: now.toISOString(),
+          checkedAt: formatEast8Timestamp(now),
           gapCount: 0,
           gaps: [],
           error: message,
@@ -472,9 +473,9 @@ export function upsertGapCheckDailySnapshot({
 
   const nextSnapshot: GapCheckDailySnapshot = {
     date,
-    updatedAt: now.toISOString(),
+    updatedAt: formatEast8Timestamp(now),
     videos: Array.from(videos.values()).sort((left, right) => {
-      const checkedAtDiff = Date.parse(right.checkedAt) - Date.parse(left.checkedAt);
+      const checkedAtDiff = compareTimestampDesc(left.checkedAt, right.checkedAt);
       if (checkedAtDiff !== 0) {
         return checkedAtDiff;
       }
@@ -592,20 +593,7 @@ function formatTimestampMs(timestampMs: number) {
 }
 
 function formatDateKey(date: Date, timezone: string | null | undefined) {
-  if (timezone) {
-    const parts = new Intl.DateTimeFormat("en", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(date);
-    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    if (values.year && values.month && values.day) {
-      return `${values.year}-${values.month}-${values.day}`;
-    }
-  }
-
-  return date.toISOString().slice(0, 10);
+  return formatDateInTimeZone(date, timezone || EAST_8_TIMEZONE);
 }
 
 function formatDurationSeconds(totalSeconds: number) {

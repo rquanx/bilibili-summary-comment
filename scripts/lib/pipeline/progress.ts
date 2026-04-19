@@ -1,4 +1,5 @@
 import { formatBiliVideoUrlSuffix } from "../bili/video-url";
+import { formatEast8Time } from "../shared/time";
 
 type ProgressOutputStream = Pick<NodeJS.WritableStream, "write"> & {
   isTTY?: boolean;
@@ -133,7 +134,7 @@ export function writeTerminalMessage(
 }
 
 function formatProgressTime(date = new Date()) {
-  return date.toTimeString().slice(0, 8);
+  return formatEast8Time(date);
 }
 
 function formatTerminalMessage({
