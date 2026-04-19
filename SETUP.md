@@ -114,7 +114,7 @@ SUMMARY_MODEL=glm-5
 
 默认路径与默认值：
 
-- `BILI_AUTH_FILE` 默认 `bili-auth.json`
+- `BILI_AUTH_FILE` 默认 `.auth/bili-auth.json`
 - `BILI_COOKIE_FILE` 为可选项；仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用
 - `PIPELINE_DB_PATH` 默认 `work/pipeline.sqlite3`
 - `WORK_ROOT` 默认 `work`
@@ -133,9 +133,9 @@ npm run login:bili
 
 命令会在 terminal 中直接输出可扫码二维码，并同时打印登录 URL。扫码成功后，默认会写入：
 
-- `bili-auth.json`
+- `.auth/bili-auth.json`
 
-如果 `bili-auth.json` 已存在，会自动递增为 `bili-auth_2.json`、`bili-auth_3.json`……
+如果 `.auth/bili-auth.json` 已存在，会自动递增为 `.auth/bili-auth_2.json`、`.auth/bili-auth_3.json`……
 
 如果你想把授权文件放到别处，或同时额外产出 cookie 文件，也可以显式传：
 
@@ -148,12 +148,12 @@ tsx scripts/commands/login-bili-tv.ts --auth-file ./secrets/bili-auth.json --coo
 ### 1. 同步一条视频
 
 ```bash
-npm run sync:video -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
+npm run sync:video -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 这一步只验证：
 
-- `bili-auth.json` 是否有效
+- `.auth/bili-auth.json` 是否有效
 - 视频详情和分 P 是否能拉到
 - SQLite 是否能正常写入
 
@@ -162,21 +162,21 @@ npm run sync:video -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
 只生成字幕和总结：
 
 ```bash
-npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx
+npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 生成后直接发布：
 
 ```bash
-npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --publish
+npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --publish
 ```
 
 常见附加参数：
 
 ```bash
-npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --force-summary
-npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --asr bijian
-npm run pipeline -- --auth-file ./bili-auth.json --bvid BVxxxxxxxxxx --venv-path .3.11
+npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --force-summary
+npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --asr bijian
+npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --venv-path .3.11
 ```
 
 ### 3. 检查输出目录
@@ -205,6 +205,14 @@ npm run inspect:events -- --since-hours 24 --limit 100
 ```
 
 这条命令会从 `pipeline_events` 表里汇总最近的流水线事件、待处理分 P 和发布模式统计。
+
+如果你要确认调度器新增的缺段巡检也能工作，可以再跑一次：
+
+```bash
+tsx scripts/commands/run-scheduler.ts --once gap-check
+```
+
+默认会把当天快照写到 `work/logs/gap-check/YYYY-MM-DD.json`；如果设置了 `SERVER_CHAN_SEND_KEY`，发现新的缺段时还会发通知。
 
 ## 批量扫描与定时调度
 
@@ -235,6 +243,7 @@ npm run start
 
 ```bash
 tsx scripts/commands/run-scheduler.ts --once summary
+tsx scripts/commands/run-scheduler.ts --once gap-check
 tsx scripts/commands/run-scheduler.ts --once refresh
 tsx scripts/commands/run-scheduler.ts --once cleanup
 tsx scripts/commands/run-scheduler.ts --once all
@@ -253,7 +262,7 @@ npm run build
 说明：
 
 - 构建时会编译 TypeScript 到 `dist/`
-- 如果仓库根目录存在 `.env`、`bili-auth.json`、`bili-auth_*.json`、`cookie.txt`、`cookie_*.txt`、`work/pipeline.sqlite3`、`sql/`，构建脚本会一并复制到 `dist/`
+- 构建脚本会一并复制 `.env`、`config/`、`.auth/bili-auth*.json`、按环境变量指定的 auth / cookie 文件、`work/pipeline.sqlite3` 与 `sql/`
 - 调度器在 `dist` 环境下会优先直接执行编译后的 `scripts/commands/run-video-pipeline.js`
 
 运行测试与类型检查：
@@ -288,12 +297,12 @@ npm run typecheck
 
 - `SUMMARY_USERS` 是否配置
 - `SUMMARY_SINCE_HOURS` 是否过小
-- `bili-auth.json` 是否有效
+- `.auth/bili-auth.json` 是否有效
 
 ### 4. 刷新授权失败
 
 确认以下文件是否存在且内容完整：
 
-- `bili-auth.json`
+- `.auth/bili-auth.json`
 
-如果 `bili-auth.json` 不存在，可以重新执行一次 `npm run login:bili`。
+如果 `.auth/bili-auth.json` 不存在，可以重新执行一次 `npm run login:bili`。

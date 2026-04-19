@@ -12,7 +12,7 @@
 
 ## 1. 先准备可刷新的 B 站授权
 
-如果你希望“自动刷新授权”，关键文件是可刷新的 `bili-auth.json`，而不是单独一份 `cookie.txt`。
+如果你希望“自动刷新授权”，关键文件是可刷新的 `.auth/bili-auth.json`，而不是单独一份 `cookie.txt`。
 
 自动刷新依赖 `@renmu/bili-api` 的 TV 登录返回内容，也就是：
 
@@ -20,10 +20,10 @@
 - `refresh_token`
 - 当前可用的 cookie 信息
 
-默认情况下，项目会把这些状态保存在仓库根目录：
+默认情况下，项目会把这些状态保存在：
 
 ```text
-bili-auth.json
+.auth/bili-auth.json
 ```
 
 最简单的初始化方式：
@@ -34,11 +34,11 @@ npm run login:bili
 
 运行后脚本会在 terminal 中输出可扫码二维码，并同时打印登录 URL。扫码登录成功后默认会自动写入：
 
-- `bili-auth.json`
+- `.auth/bili-auth.json`
 
-如果 `bili-auth.json` 已存在，会自动递增为 `bili-auth_2.json`、`bili-auth_3.json`……
+如果 `.auth/bili-auth.json` 已存在，会自动递增为 `.auth/bili-auth_2.json`、`.auth/bili-auth_3.json`……
 
-后续定时刷新和总结流水线默认都会继续复用这些 `bili-auth*.json` 文件。
+后续定时刷新和总结流水线默认都会继续复用这些 `.auth/bili-auth*.json` 文件。
 
 ## 2. 调度相关环境变量
 
@@ -58,7 +58,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `SUMMARY_PIPELINE_CONCURRENCY`
   同时最多跑多少条视频流水线，默认 `3`。
 - `BILI_AUTH_FILE`
-  TV 登录授权文件路径，默认 `bili-auth.json`。
+  TV 登录授权文件路径，默认 `.auth/bili-auth.json`。
 - `BILI_COOKIE_FILE`
   可选。cookie 文件路径；默认调度不会回退到 cookie 文件，仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用。
 - `BILI_REFRESH_DAYS`
@@ -72,7 +72,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `CRON_TIMEZONE`
   cron 时区，例如 `Asia/Shanghai`。
 - `SERVER_CHAN_SEND_KEY`
-  可选。转写连续失败后，用于发送 ServerChan 通知。
+  可选。转写连续失败后，或缺段巡检发现新的缺段时，用于发送 ServerChan 通知。
 
 命令行参数也可以覆盖这些环境变量，例如：
 
@@ -82,12 +82,14 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 
 ## 3. 调度行为
 
-`npm run schedule` 启动后，会注册这 3 个定时任务：
+`npm run schedule` 启动后，会注册这 4 个定时任务：
 
 - 每小时整点：
   扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，默认自动发布。
+- 每小时 `10` 分：
+  对最近投稿执行缺段巡检；如果分 P 标题中的时间戳之间存在超过 `5` 秒的缺口，会把结果写入当天快照，并在配置了 `SERVER_CHAN_SEND_KEY` 时只通知“新发现”的缺口。
 - 每天 `03:15`：
-  检查 `bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新授权信息。
+  检查 `.auth/bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新授权信息。
 - 每天 `03:45`：
   清理数据库里最后扫描时间早于 `WORK_CLEANUP_DAYS` 天之前的 `work/<BV号>` 目录。
 
@@ -97,6 +99,7 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 - 扫描用户最近投稿时，命中的视频会复用现有 `run-video-pipeline` 流程，所以已经做过总结的分 P 会自动跳过。
 - 扫描用户最近投稿时，默认会自动发布待发布总结。
 - 同一 UP、同一场录播的不同标题变体会串行排队，并优先处理更早上传的版本，便于后续版本复用总结和评论线程。
+- 缺段巡检的每日快照默认写到 `work/logs/gap-check/YYYY-MM-DD.json`。
 - 清理任务不会删除数据库记录，只会删除 `work` 目录里的过期文件。
 - 如果清理任务触发时总结任务还在运行，当前这轮清理会主动跳过。
 
@@ -132,10 +135,17 @@ npm run cleanup:work
 npm run inspect:events -- --since-hours 24 --limit 100
 ```
 
+手动跑一轮缺段巡检：
+
+```bash
+tsx scripts/commands/run-scheduler.ts --once gap-check
+```
+
 只执行一次调度任务，不常驻：
 
 ```bash
 tsx scripts/commands/run-scheduler.ts --once summary
+tsx scripts/commands/run-scheduler.ts --once gap-check
 tsx scripts/commands/run-scheduler.ts --once refresh
 tsx scripts/commands/run-scheduler.ts --once cleanup
 tsx scripts/commands/run-scheduler.ts --once all
@@ -173,7 +183,7 @@ npm run start
 
 如果常驻调度没有按预期工作，建议按这个顺序排查：
 
-1. `npm run login:bili` 是否已经成功生成 `bili-auth.json` 或对应的 `bili-auth_*.json`
+1. `npm run login:bili` 是否已经成功生成 `.auth/bili-auth.json` 或对应的 `.auth/bili-auth_*.json`
 2. `.env` 里的 `SUMMARY_USERS`、`CRON_TIMEZONE` 是否配置正确
 3. `npm run sync:users` 能否手工跑通
 4. `npm run inspect:events -- --since-hours 24 --limit 100` 是否能看到最近事件
