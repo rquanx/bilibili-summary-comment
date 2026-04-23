@@ -12,11 +12,12 @@ const GLM_FALLBACK_MODEL = "glm-5";
 const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
 const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
 const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
+const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return normalizedModel === KIMI_PRIMARY_MODEL && KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message);
+  return normalizedModel === KIMI_PRIMARY_MODEL && (KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message) || SUMMARY_TOO_MANY_REQUEST.test(message));
 }
 
 export function shouldSkipSummaryPart({ error }) {
