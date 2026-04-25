@@ -16,6 +16,7 @@ import { inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/l
 import { writeSummaryArtifacts } from "../scripts/lib/summary/files";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
+import { reindexSummaryTextToPage } from "../scripts/lib/db/summary-text";
 import {
   requestSummaryWithFallback,
   shouldSkipSummaryPart,
@@ -685,6 +686,109 @@ test("writeSummaryArtifacts prefers processed summary text when present", () => 
     assert.equal(
       fs.readFileSync(path.join(resolveVideoWorkDir(video, workRoot), "summary-p01.md"), "utf8").trim(),
       "<1P>\n1#00:00 https://paste.rs/example",
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("reindexSummaryTextToPage aligns markers and page-prefixed timestamps to the actual page number", () => {
+  const reindexed = reindexSummaryTextToPage(
+    "<15P>\n15#00:00 开场\n00:30 继续\n15#01:00 收尾",
+    16,
+  );
+
+  assert.equal(reindexed, "<16P>\n16#00:00 开场\n00:30 继续\n16#01:00 收尾");
+});
+
+test("writeSummaryArtifacts reindexes stored page markers across summary, pending, and per-page views", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-reindex-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVreindexart1",
+      aid: 789014,
+      title: "Summary Reindex Artifact Test",
+      pageCount: 3,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 401,
+      partTitle: "P1",
+      durationSec: 30,
+      summaryText: "<1P>\n1#00:00 第一页",
+      summaryHash: "hash-one",
+      published: true,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 402,
+      partTitle: "P2",
+      durationSec: 40,
+      summaryText: "<1P>\n1#00:00 第二页页标错位",
+      summaryHash: "hash-two",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 3,
+      cid: 403,
+      partTitle: "P3",
+      durationSec: 50,
+      summaryText: "<2P>\n2#00:00 原始第三页",
+      processedSummaryText: "<2P>\n2#00:00 处理后第三页",
+      summaryHash: "hash-three",
+      published: false,
+      isDeleted: false,
+    });
+
+    const artifacts = writeSummaryArtifacts(db, video, workRoot, {
+      promptConfigPath: null,
+    });
+    const workDir = resolveVideoWorkDir(video, workRoot, repoRoot);
+
+    assert.equal(
+      fs.readFileSync(artifacts.summaryPath, "utf8").trim(),
+      [
+        "<1P>",
+        "1#00:00 第一页",
+        "",
+        "<2P>",
+        "2#00:00 第二页页标错位",
+        "",
+        "<3P>",
+        "3#00:00 处理后第三页",
+      ].join("\n"),
+    );
+    assert.equal(
+      fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim(),
+      [
+        "<2P>",
+        "2#00:00 第二页页标错位",
+        "",
+        "<3P>",
+        "3#00:00 处理后第三页",
+      ].join("\n"),
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p02.md"), "utf8").trim(),
+      "<2P>\n2#00:00 第二页页标错位",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p03.md"), "utf8").trim(),
+      "<3P>\n3#00:00 处理后第三页",
     );
   } finally {
     db.close?.();

@@ -22,3 +22,20 @@ export function hasPreferredSummaryText(part: {
 export function hasRawSummaryText(part: { summary_text?: string | null } | null | undefined): boolean {
   return Boolean(normalizeStoredSummaryText(part?.summary_text));
 }
+
+export function reindexSummaryTextToPage(
+  summaryText: string | null | undefined,
+  pageNo: number,
+): string {
+  const normalized = String(summaryText ?? "").trim();
+  if (!normalized) {
+    return normalized;
+  }
+
+  return normalized
+    .replace(/<\d+P>/gu, `<${pageNo}P>`)
+    .replace(
+      /(?<=^<\d+P>\s)\d+#(?=\d{2}:\d{2}(?::\d{2})?\s)|^\d+#(?=\d{2}:\d{2}(?::\d{2})?\s)/gmu,
+      `${pageNo}#`,
+    );
+}

@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildSummarySegmentsFromSrt, formatSummaryTime } from "../subtitle/srt-utils";
 import { ensureVideoWorkDir } from "../shared/work-paths";
-import { getPreferredSummaryText, listPendingPublishParts, listVideoParts } from "../db/index";
+import {
+  getPreferredSummaryText,
+  listPendingPublishParts,
+  listVideoParts,
+  reindexSummaryTextToPage,
+} from "../db/index";
 import { buildSummaryPromptInput } from "./client";
 import { resolveSummaryPromptProfile } from "./prompt-config";
 import type { Db, SummaryArtifacts, VideoPartRecord, VideoRecord } from "../db/index";
@@ -178,17 +183,17 @@ export function writeSummaryArtifacts(
   const activeParts = listVideoParts(db, video.id);
 
   const allSummaryText = activeParts
-    .map((part) => getPreferredSummaryText(part))
+    .map((part) => getAlignedSummaryText(part))
     .filter(Boolean)
     .join("\n\n")
     .trim();
 
   const pendingSourceParts = Number(video.publish_needs_rebuild)
-    ? activeParts.filter((part) => getPreferredSummaryText(part))
+    ? activeParts.filter((part) => getAlignedSummaryText(part))
     : listPendingPublishParts(db, video.id);
 
   const pendingSummaryText = pendingSourceParts
-    .map((part) => getPreferredSummaryText(part))
+    .map((part) => getAlignedSummaryText(part))
     .filter(Boolean)
     .join("\n\n")
     .trim();
@@ -222,7 +227,7 @@ function rewritePerPageSummaryViews(workDir: string, parts: VideoPartRecord[]) {
   for (const part of parts) {
     const fileName = `summary-p${String(part.page_no).padStart(2, "0")}.md`;
     const filePath = path.join(workDir, fileName);
-    const normalizedSummary = getPreferredSummaryText(part);
+    const normalizedSummary = getAlignedSummaryText(part);
     fs.writeFileSync(filePath, normalizedSummary ? `${normalizedSummary}\n` : "", "utf8");
   }
 
@@ -293,4 +298,8 @@ function readPromptSubtitleText(subtitlePath: string | null | undefined) {
   }
 
   return fs.readFileSync(normalizedSubtitlePath, "utf8");
+}
+
+function getAlignedSummaryText(part: VideoPartRecord): string {
+  return reindexSummaryTextToPage(getPreferredSummaryText(part), part.page_no);
 }

@@ -28,6 +28,7 @@ export {
   hasPreferredSummaryText,
   hasRawSummaryText,
   normalizeStoredSummaryText,
+  reindexSummaryTextToPage,
 } from "./summary-text";
 export {
   clearVideoPublishRebuildNeeded,
