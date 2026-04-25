@@ -400,6 +400,88 @@ test("collectRecentUploadsFromUsers skips only-self-visible videos", async () =>
   ]);
 });
 
+test("collectRecentUploadsFromUsers skips users blocked by Bilibili risk control", async () => {
+  const logMessages: string[] = [];
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  const result = await collectRecentUploadsFromUsers({
+    summaryUsers: "123,456",
+    findAuthFileForUserImpl(_authFile, userIndex) {
+      return path.resolve(".auth", `bili-auth_${userIndex}.json`);
+    },
+    readCookieStringFromAuthFileImpl: () => "SESSDATA=fake",
+    createClientImpl: (() => ({
+      user: {
+        async getVideos({ mid }) {
+          if (Number(mid) === 123) {
+            const error = new Error("风控校验失败") as Error & {
+              code?: number;
+              rawResponse?: {
+                data?: {
+                  code?: number;
+                  message?: string;
+                };
+              };
+            };
+            error.code = -352;
+            error.rawResponse = {
+              data: {
+                code: -352,
+                message: "风控校验失败",
+              },
+            };
+            throw error;
+          }
+
+          return {
+            list: {
+              vlist: [
+                {
+                  aid: Number(mid),
+                  bvid: `BV${mid}`,
+                  title: `Video ${mid}`,
+                  created: nowUnix,
+                },
+              ],
+            },
+          };
+        },
+      },
+    })) as any,
+    onLog(message) {
+      logMessages.push(message);
+    },
+  });
+
+  assert.deepEqual(result.uploads.map((item) => item.bvid), ["BV456"]);
+  assert.deepEqual(logMessages, [
+    "Fetching recent uploads for uid 123",
+    "Skip uid 123: recent upload fetch blocked by Bilibili risk control (风控校验失败)",
+    "Fetching recent uploads for uid 456",
+  ]);
+});
+
+test("collectRecentUploadsFromUsers still throws non-risk-control fetch failures", async () => {
+  await assert.rejects(
+    () =>
+      collectRecentUploadsFromUsers({
+        summaryUsers: "123",
+        findAuthFileForUserImpl() {
+          return path.resolve(".auth", "bili-auth.json");
+        },
+        readCookieStringFromAuthFileImpl: () => "SESSDATA=fake",
+        createClientImpl: (() => ({
+          user: {
+            async getVideos() {
+              throw new Error("network timeout");
+            },
+          },
+        })) as any,
+      }),
+    /Failed to fetch recent uploads for uid 123: network timeout/u,
+  );
+});
+
 test("collectRecentUploadsFromUsers uses per-user indexed auth files", async () => {
   const authReads: string[] = [];
   const nowUnix = Math.floor(Date.now() / 1000);

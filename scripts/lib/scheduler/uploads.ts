@@ -3,6 +3,7 @@ import { runPipelinesWithConcurrency, SUMMARY_PIPELINE_MAX_CONCURRENCY } from ".
 import { DEFAULT_AUTH_FILE, readCookieStringFromAuthFile } from "../bili/auth";
 import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
 import { runPipelineForBvid } from "./pipeline-runner";
+import { formatErrorMessage } from "../subtitle/utils";
 import { parseSummaryUsers } from "./user-targets";
 import type { PipelineUpload } from "./concurrency";
 import type { PipelineRunResult, PipelineFailureResult } from "./concurrency";
@@ -27,6 +28,8 @@ export interface CollectedUploadsResult {
 }
 
 type UploadTitleVariant = "clean" | "plain" | "danmu";
+const BILI_RISK_CONTROL_MESSAGE_PATTERN = /风控校验失败/u;
+const BILI_RISK_CONTROL_CODE = -352;
 
 interface CollectRecentUploadsOptions {
   summaryUsers?: unknown;
@@ -94,12 +97,25 @@ export async function collectRecentUploadsFromUsers({
     }
 
     onLog(`Fetching recent uploads for uid ${target.mid}`);
-    const response = await client.user.getVideos({
-      mid: target.mid,
-      pn: 1,
-      ps: 30,
-      order: "pubdate",
-    });
+    let response;
+    try {
+      response = await client.user.getVideos({
+        mid: target.mid,
+        pn: 1,
+        ps: 30,
+        order: "pubdate",
+      });
+    } catch (error) {
+      const message = formatErrorMessage(error);
+      if (isBiliRiskControlError(error)) {
+        onLog(`Skip uid ${target.mid}: recent upload fetch blocked by Bilibili risk control (${message})`);
+        continue;
+      }
+
+      throw new Error(`Failed to fetch recent uploads for uid ${target.mid}: ${message}`, {
+        cause: error,
+      });
+    }
 
     const videos = Array.isArray(response?.list?.vlist) ? response.list.vlist : [];
     for (const video of videos) {
@@ -334,6 +350,33 @@ function isOnlySelfVisibleVideo(video: unknown): boolean {
 
   const candidate = video as Record<string, unknown>;
   return candidate.is_self_view === true || Number(candidate.is_only_self ?? 0) === 1;
+}
+
+function isBiliRiskControlError(error: unknown): boolean {
+  const message = formatErrorMessage(error);
+  if (BILI_RISK_CONTROL_MESSAGE_PATTERN.test(message)) {
+    return true;
+  }
+
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const errorLike = error as {
+    code?: unknown;
+    rawResponse?: {
+      data?: {
+        code?: unknown;
+        message?: unknown;
+      };
+    };
+  };
+  const responseMessage = String(errorLike.rawResponse?.data?.message ?? "").trim();
+  if (BILI_RISK_CONTROL_MESSAGE_PATTERN.test(responseMessage)) {
+    return true;
+  }
+
+  return Number(errorLike.code ?? errorLike.rawResponse?.data?.code) === BILI_RISK_CONTROL_CODE;
 }
 
 const TITLE_VARIANT_SUFFIX_PATTERN =
