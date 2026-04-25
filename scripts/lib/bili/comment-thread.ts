@@ -1,3 +1,4 @@
+import { utils } from "@renmu/bili-api";
 import { createCliError, extractErrorDetails } from "../cli/errors";
 import {
   getActiveVideoPartByPageNo,
@@ -24,8 +25,11 @@ const ROOT_TOP_RETRY_DELAY_MS = 5000;
 const REPLY_POST_DELAY_MS = 5000;
 const GUEST_VISIBILITY_DELAY_MS = 20000;
 const GUEST_COMMENT_SCAN_PAGE_LIMIT = 5;
+const GUEST_REPLY_PAGE_SIZE = 20;
 const BILIBILI_COMMENT_MAX_LENGTH = 700;
 const TIMESTAMP_UNIT_PATTERN = /^(?<label>\d+#\d{1,2}:\d{2}(?::\d{2})?)\s+(?<rest>.+)$/u;
+const GUEST_COMMENT_WEB_LOCATION = 1315875;
+const GUEST_COMMENT_MODE = 3;
 
 interface CommentUnit {
   id: string;
@@ -41,6 +45,84 @@ interface CommentPageBlock {
   units: CommentUnit[];
 }
 
+interface GuestReplyListParams {
+  oid: number;
+  type: number;
+  sort?: 0 | 1 | 2;
+  nohot?: 0 | 1;
+  pn?: number;
+  ps?: number;
+  fetchImpl?: typeof fetch;
+}
+
+interface GuestReplyPagination {
+  next_offset?: string;
+  [key: string]: unknown;
+}
+
+interface GuestReplyCursor {
+  is_begin?: boolean;
+  prev?: number;
+  next?: number;
+  is_end?: boolean;
+  pagination_reply?: GuestReplyPagination | null;
+  session_id?: string;
+  mode?: number;
+  mode_text?: string;
+  all_count?: number;
+  support_mode?: number[];
+  name?: string;
+  [key: string]: unknown;
+}
+
+interface GuestReplyContent {
+  message?: string;
+  members?: unknown[];
+  emote?: Record<string, unknown>;
+  jump_url?: Record<string, unknown>;
+  max_line?: number;
+  [key: string]: unknown;
+}
+
+interface GuestReplyNode {
+  rpid?: number | string;
+  rpid_str?: string;
+  root?: number | string;
+  parent?: number | string;
+  count?: number;
+  rcount?: number;
+  invisible?: boolean;
+  content?: GuestReplyContent | null;
+  replies?: GuestReplyNode[] | null;
+  [key: string]: unknown;
+}
+
+interface GuestReplyPage {
+  count?: number;
+  acount?: number;
+  num?: number;
+  size?: number;
+  [key: string]: unknown;
+}
+
+interface GuestReplyUpper {
+  top?: GuestReplyNode | null;
+  [key: string]: unknown;
+}
+
+interface GuestReplyListResponse {
+  cursor?: GuestReplyCursor | null;
+  upper?: GuestReplyUpper | null;
+  top?: GuestReplyNode | null;
+  root?: GuestReplyNode | null;
+  replies?: GuestReplyNode[] | null;
+  top_replies?: GuestReplyNode[] | null;
+  page?: GuestReplyPage | null;
+  [key: string]: unknown;
+}
+
+type GuestReplyListImpl = (params: GuestReplyListParams) => Promise<GuestReplyListResponse | null | undefined>;
+
 const DELETED_COMMENT_PATTERNS = [
   "已经被删除",
   "已被删除",
@@ -51,6 +133,33 @@ const DELETED_COMMENT_PATTERNS = [
 ];
 
 const DUPLICATE_COMMENT_PATTERNS = ["重复评论"];
+const defaultGuestReplyListImpl: GuestReplyListImpl = async (params) => {
+  const targetPageNo = Math.max(1, Number(params.pn ?? 1) || 1);
+  let offset = "";
+  let response: GuestReplyListResponse | null = null;
+
+  for (let pageNo = 1; pageNo <= targetPageNo; pageNo += 1) {
+    response = await fetchGuestTopLevelRepliesByWbi({
+      oid: params.oid,
+      type: params.type,
+      offset,
+      fetchImpl: params.fetchImpl,
+    });
+
+    if (pageNo >= targetPageNo) {
+      break;
+    }
+
+    const nextOffset = getGuestTopLevelNextOffset(response);
+    if (!nextOffset) {
+      break;
+    }
+
+    offset = nextOffset;
+  }
+
+  return response;
+};
 
 function getCommentErrorMessages(error) {
   const values = [
@@ -128,7 +237,7 @@ function collectReplyCandidates(response) {
     return [];
   }
 
-  const safeResponse = response;
+  const safeResponse = response as GuestReplyListResponse;
   const upper = safeResponse.upper && typeof safeResponse.upper === "object" ? safeResponse.upper : null;
   const root = safeResponse.root && typeof safeResponse.root === "object" ? safeResponse.root : null;
 
@@ -136,6 +245,7 @@ function collectReplyCandidates(response) {
     upper?.top ?? null,
     safeResponse.top ?? null,
     root ?? null,
+    ...(Array.isArray(safeResponse.top_replies) ? safeResponse.top_replies : []),
     ...(Array.isArray(root?.replies) ? root.replies : []),
     ...(Array.isArray(safeResponse.replies) ? safeResponse.replies : []),
   ].filter(Boolean);
@@ -184,6 +294,61 @@ function unwrapBilibiliPayload(payload) {
   return payload;
 }
 
+function normalizeGuestReplyListResponse(payload: unknown): GuestReplyListResponse {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+
+  return payload as GuestReplyListResponse;
+}
+
+function getGuestTopLevelNextOffset(response: GuestReplyListResponse | null | undefined) {
+  return String(response?.cursor?.pagination_reply?.next_offset ?? "").trim();
+}
+
+function hasMoreGuestTopLevelReplyPages(
+  response: GuestReplyListResponse | null | undefined,
+  pageNo: number,
+  pageSize = GUEST_REPLY_PAGE_SIZE,
+) {
+  if (!response) {
+    return false;
+  }
+
+  if (response.cursor?.is_end === true) {
+    return false;
+  }
+
+  if (getGuestTopLevelNextOffset(response)) {
+    return true;
+  }
+
+  const totalCount = normalizeCommentCount(response.cursor?.all_count ?? response.page?.count);
+  if (totalCount > 0) {
+    return pageNo * pageSize < totalCount;
+  }
+
+  return false;
+}
+
+function hasMoreGuestChildReplyPages(
+  response: GuestReplyListResponse | null | undefined,
+  pageNo: number,
+  pageSize = GUEST_REPLY_PAGE_SIZE,
+) {
+  if (!response) {
+    return false;
+  }
+
+  const totalCount = normalizeCommentCount(response.page?.count ?? response.page?.acount);
+  if (totalCount > 0) {
+    return pageNo * pageSize < totalCount;
+  }
+
+  const currentPageReplies = Array.isArray(response.replies) ? response.replies.length : 0;
+  return currentPageReplies >= pageSize;
+}
+
 async function fetchBilibiliGuestJson(url, fetchImpl = fetch) {
   const response = await fetchImpl(url, {
     method: "GET",
@@ -215,25 +380,60 @@ function buildGuestApiUrl(pathname, params) {
   return url.toString();
 }
 
-async function fetchGuestTopLevelReplies({ oid, type, pn, ps = 20, fetchImpl = fetch }) {
-  return fetchBilibiliGuestJson(buildGuestApiUrl("/x/v2/reply", {
+async function fetchGuestTopLevelRepliesByWbi({
+  oid,
+  type,
+  offset = "",
+  fetchImpl = fetch,
+}: {
+  oid: number;
+  type: number;
+  offset?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GuestReplyListResponse> {
+  const signedQuery = await utils.WbiSign({
+    oid,
+    type,
+    mode: GUEST_COMMENT_MODE,
+    pagination_str: JSON.stringify({ offset }),
+    plat: 1,
+    seek_rpid: "",
+    web_location: GUEST_COMMENT_WEB_LOCATION,
+  });
+
+  return normalizeGuestReplyListResponse(await fetchBilibiliGuestJson(
+    `https://api.bilibili.com/x/v2/reply/wbi/main?${signedQuery}`,
+    fetchImpl,
+  ));
+}
+
+export async function listGuestTopLevelReplies({
+  oid,
+  type,
+  pn,
+  ps = GUEST_REPLY_PAGE_SIZE,
+  guestReplyListImpl = defaultGuestReplyListImpl,
+  fetchImpl = fetch,
+}): Promise<GuestReplyListResponse> {
+  return normalizeGuestReplyListResponse(unwrapBilibiliPayload(await guestReplyListImpl({
     oid,
     type,
     sort: 0,
     nohot: 0,
     pn,
     ps,
-  }), fetchImpl);
+    fetchImpl,
+  })));
 }
 
-async function fetchGuestChildReplies({ oid, type, rootRpid, pn, ps = 20, fetchImpl = fetch }) {
-  return fetchBilibiliGuestJson(buildGuestApiUrl("/x/v2/reply/reply", {
+async function fetchGuestChildReplies({ oid, type, rootRpid, pn, ps = GUEST_REPLY_PAGE_SIZE, fetchImpl = fetch }) {
+  return normalizeGuestReplyListResponse(await fetchBilibiliGuestJson(buildGuestApiUrl("/x/v2/reply/reply", {
     oid,
     type,
     root: rootRpid,
     pn,
     ps,
-  }), fetchImpl);
+  }), fetchImpl));
 }
 
 async function findVisibleCommentAsGuest({
@@ -243,14 +443,17 @@ async function findVisibleCommentAsGuest({
   targetRpid,
   expectedMessage,
   isRoot,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
 }) {
   if (isRoot) {
     for (let pageNo = 1; pageNo <= GUEST_COMMENT_SCAN_PAGE_LIMIT; pageNo += 1) {
-      const response = await fetchGuestTopLevelReplies({
+      const response = await listGuestTopLevelReplies({
         oid,
         type,
         pn: pageNo,
+        ps: GUEST_REPLY_PAGE_SIZE,
+        guestReplyListImpl,
         fetchImpl,
       });
       const match = findReplyNode(response, {
@@ -261,8 +464,7 @@ async function findVisibleCommentAsGuest({
         return match;
       }
 
-      const totalCount = normalizeCommentCount(response?.page?.count);
-      if (totalCount === 0 || pageNo * 20 >= totalCount) {
+      if (!hasMoreGuestTopLevelReplyPages(response, pageNo, GUEST_REPLY_PAGE_SIZE)) {
         break;
       }
     }
@@ -281,6 +483,7 @@ async function findVisibleCommentAsGuest({
       type,
       rootRpid: normalizedRootRpid,
       pn: pageNo,
+      ps: GUEST_REPLY_PAGE_SIZE,
       fetchImpl,
     });
     const match = findReplyNode(response, {
@@ -291,8 +494,7 @@ async function findVisibleCommentAsGuest({
       return match;
     }
 
-    const totalCount = normalizeCommentCount(response?.page?.count ?? response?.page?.acount);
-    if (totalCount === 0 || pageNo * 20 >= totalCount) {
+    if (!hasMoreGuestChildReplyPages(response, pageNo, GUEST_REPLY_PAGE_SIZE)) {
       break;
     }
   }
@@ -308,6 +510,7 @@ async function assertCommentVisibleAsGuest({
   isRoot,
   rootRpid = null,
   sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
 }) {
   await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
@@ -318,6 +521,7 @@ async function assertCommentVisibleAsGuest({
     targetRpid,
     expectedMessage,
     isRoot,
+    guestReplyListImpl,
     fetchImpl,
   });
 
@@ -469,6 +673,7 @@ async function probeCommentVisibility({
   message,
   isRoot,
   sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
 }) {
   let postedRpid = null;
@@ -476,19 +681,19 @@ async function probeCommentVisibility({
   try {
     const replyRes = isRoot
       ? await client.reply.add({
-          oid,
-          type,
-          message,
-          plat: 1,
-        })
+        oid,
+        type,
+        message,
+        plat: 1,
+      })
       : await client.reply.add({
-          oid,
-          type,
-          root: rootRpid,
-          parent: rootRpid,
-          message,
-          plat: 1,
-        });
+        oid,
+        type,
+        root: rootRpid,
+        parent: rootRpid,
+        message,
+        plat: 1,
+      });
     postedRpid = normalizeCommentRpid(replyRes?.rpid);
 
     if (!postedRpid) {
@@ -503,6 +708,7 @@ async function probeCommentVisibility({
       targetRpid: postedRpid,
       expectedMessage: message,
       isRoot,
+      guestReplyListImpl,
       fetchImpl,
     });
     if (visibleComment) {
@@ -515,6 +721,7 @@ async function probeCommentVisibility({
       targetRpid: postedRpid,
       expectedMessage: message,
       isRoot,
+      guestReplyListImpl,
       fetchImpl,
     }));
   } finally {
@@ -536,6 +743,7 @@ async function collectProblematicUnitIds({
   rootRpid = null,
   isRoot,
   sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
 }) {
   const allUnits = pageBlocks.flatMap((block) => block.units);
@@ -559,6 +767,7 @@ async function collectProblematicUnitIds({
       message: testMessage,
       isRoot,
       sleepImpl,
+      guestReplyListImpl,
       fetchImpl,
     });
     cache.set(testMessage, visible);
@@ -714,6 +923,7 @@ async function diagnoseInvisibleComment({
   message,
   isRoot,
   sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
   uploadToPasteImpl = uploadTextToPasteRs,
 }) {
@@ -734,6 +944,7 @@ async function diagnoseInvisibleComment({
     rootRpid,
     isRoot,
     sleepImpl,
+    guestReplyListImpl,
     fetchImpl,
   });
 
@@ -799,12 +1010,12 @@ async function createRootComment({ client, oid, type, message, sleepImpl = sleep
     replyRes: rootRes,
     warnings: topError
       ? [
-          buildCommentWarning({
-            step: "top-root-comment",
-            rpid: rootRes.rpid,
-            error: topError,
-          }),
-        ]
+        buildCommentWarning({
+          step: "top-root-comment",
+          rpid: rootRes.rpid,
+          error: topError,
+        }),
+      ]
       : [],
   };
 }
@@ -846,24 +1057,25 @@ async function publishCommentChunk({
   isRoot,
   rootRpid = null,
   sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
   uploadToPasteImpl = uploadTextToPasteRs,
 }) {
   const createComment = isRoot
     ? async (message) => createRootComment({
-        client,
-        oid,
-        type,
-        message,
-        sleepImpl,
-      })
+      client,
+      oid,
+      type,
+      message,
+      sleepImpl,
+    })
     : async (message) => createReplyComment({
-        client,
-        oid,
-        type,
-        rootRpid,
-        message,
-      });
+      client,
+      oid,
+      type,
+      rootRpid,
+      message,
+    });
 
   const initialPublish = await createComment(chunk.message);
   const initialRpid = normalizeCommentRpid(initialPublish.replyRes?.rpid);
@@ -878,6 +1090,7 @@ async function publishCommentChunk({
       isRoot,
       rootRpid: visibilityRootRpid,
       sleepImpl,
+      guestReplyListImpl,
       fetchImpl,
     });
 
@@ -900,6 +1113,7 @@ async function publishCommentChunk({
         message: chunk.message,
         isRoot,
         sleepImpl,
+        guestReplyListImpl,
         fetchImpl,
         uploadToPasteImpl,
       });
@@ -961,6 +1175,7 @@ async function publishCommentChunk({
       isRoot,
       rootRpid: retryVisibilityRootRpid,
       sleepImpl,
+      guestReplyListImpl,
       fetchImpl,
     });
 
@@ -1009,6 +1224,7 @@ export async function postSummaryThread({
   existingRootRpid = null,
   forcedRootRpid = null,
   sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
   uploadToPasteImpl = uploadTextToPasteRs,
 }) {
@@ -1069,6 +1285,7 @@ export async function postSummaryThread({
         isRoot: shouldCreateRoot,
         rootRpid,
         sleepImpl,
+        guestReplyListImpl,
         fetchImpl,
         uploadToPasteImpl,
       });
@@ -1103,6 +1320,7 @@ export async function postSummaryThread({
           isRoot: true,
           rootRpid: null,
           sleepImpl,
+          guestReplyListImpl,
           fetchImpl,
           uploadToPasteImpl,
         });

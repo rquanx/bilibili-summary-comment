@@ -88,6 +88,30 @@ function createGuestFetchHarness(startRpid) {
 
   const fetchImpl = async (url) => {
     const normalizedUrl = new URL(String(url));
+    if (normalizedUrl.pathname === "/x/v2/reply/wbi/main") {
+      const visibleRoots = [...comments.values()]
+        .filter((comment) => comment.root === comment.rpid)
+        .sort((left, right) => left.rpid - right.rpid);
+      const topReplies = pinnedRootRpid ? [buildRootNode(comments.get(pinnedRootRpid))] : [];
+      return createJsonFetchResponse({
+        cursor: {
+          is_begin: true,
+          prev: 0,
+          next: 1,
+          is_end: true,
+          pagination_reply: {
+            next_offset: "",
+          },
+          all_count: visibleRoots.filter((comment) => comment.rpid !== pinnedRootRpid).length,
+        },
+        upper: {
+          top: pinnedRootRpid ? buildRootNode(comments.get(pinnedRootRpid)) : null,
+        },
+        top_replies: topReplies,
+        replies: visibleRoots.filter((comment) => comment.rpid !== pinnedRootRpid).map(buildRootNode),
+      });
+    }
+
     if (normalizedUrl.pathname === "/x/v2/reply") {
       const visibleRoots = [...comments.values()]
         .filter((comment) => comment.root === comment.rpid)

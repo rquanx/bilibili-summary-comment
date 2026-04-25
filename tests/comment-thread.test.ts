@@ -23,6 +23,8 @@ function createJsonFetchResponse(data) {
 function createGuestCommentHarness({
   startRpid,
   visibilityRule = (_message) => true,
+  guestPageSize = 20,
+  omitGuestPageCount = false,
 }) {
   const comments = new Map();
   let nextRpid = startRpid;
@@ -121,6 +123,45 @@ function createGuestCommentHarness({
     throw new Error(`Unexpected fetch url: ${normalizedUrl.toString()}`);
   }
 
+  async function guestReplyListImpl(params: any = {}) {
+    const visibleRoots = [...comments.values()]
+      .filter((comment) => comment.visible && comment.root === comment.rpid)
+      .sort((left, right) => left.rpid - right.rpid);
+    const pinned = pinnedRootRpid ? visibleRoots.find((comment) => comment.rpid === pinnedRootRpid) ?? null : null;
+    const topReplies = pinned ? [createCommentNode(pinned)] : [];
+    const replies = visibleRoots
+      .filter((comment) => comment.rpid !== pinnedRootRpid)
+      .map(createCommentNode);
+    const pageNo = Number(params.pn ?? 1);
+    const pageSize = guestPageSize;
+    const startIndex = Math.max(0, (pageNo - 1) * pageSize);
+    const pagedReplies = replies.slice(startIndex, startIndex + pageSize);
+    const hasMore = startIndex + pageSize < replies.length;
+
+    return {
+      page: omitGuestPageCount
+        ? {}
+        : {
+          count: visibleRoots.length,
+        },
+      cursor: {
+        is_begin: pageNo === 1,
+        prev: Math.max(0, pageNo - 1),
+        next: pageNo + 1,
+        is_end: !hasMore,
+        pagination_reply: {
+          next_offset: hasMore ? `offset-${pageNo + 1}` : "",
+        },
+        all_count: replies.length,
+      },
+      upper: {
+        top: pinned ? createCommentNode(pinned) : null,
+      },
+      top_replies: topReplies,
+      replies: pagedReplies,
+    };
+  }
+
   const client = {
     reply: {
       async add(payload) {
@@ -158,6 +199,7 @@ function createGuestCommentHarness({
   return {
     client,
     fetchImpl,
+    guestReplyListImpl,
     comments,
     setCommentVisible,
   };
@@ -234,6 +276,7 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
         topComment: null,
       },
       sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
@@ -251,6 +294,91 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [800001, 800001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread keeps scanning guest pages when top-level count is omitted", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const summaryMessage = "<1P>\n1#00:00 cursor pagination summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentCursorPaging",
+      aid: 123456791,
+      title: "Comment Cursor Pagination Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: summaryMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 900001,
+      guestPageSize: 1,
+      omitGuestPageCount: true,
+    });
+    await harness.client.reply.add({
+      oid: video.aid,
+      type: 1,
+      message: "existing root 1",
+      plat: 1,
+    });
+    await harness.client.reply.add({
+      oid: video.aid,
+      type: 1,
+      message: "existing root 2",
+      plat: 1,
+    });
+
+    const topError = Object.assign(new Error("鍟ラ兘鏈ㄦ湁"), {
+      rawResponse: {
+        data: {
+          message: "鍟ラ兘鏈ㄦ湁",
+        },
+      },
+    });
+    harness.client.reply.top = async () => {
+      throw topError;
+    };
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: summaryMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 900003);
+    assert.equal(result.createdComments.length, 1);
+    assert.equal(result.createdComments[0].rpid, 900003);
+    assert.equal(result.warnings[0]?.step, "top-root-comment");
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [900003]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -317,6 +445,7 @@ test("postSummaryThread splits comments so each payload stays within 700 charact
         topComment: null,
       },
       sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
@@ -382,6 +511,7 @@ test("postSummaryThread replaces invisible timepoint lines with paste links and 
         topComment: null,
       },
       sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
@@ -469,6 +599,7 @@ test("postSummaryThread keeps the initial comment when duplicate-probe diagnosti
         topComment: null,
       },
       sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
