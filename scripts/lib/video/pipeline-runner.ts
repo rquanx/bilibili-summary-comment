@@ -1,5 +1,6 @@
 import {
   createClient,
+  getTopComment,
   getType,
   printJson,
   readCookie,
@@ -8,10 +9,11 @@ import { attachVideoContextToError } from "../bili/video-url";
 import { attachErrorDetails, errorToJson, extractErrorDetails } from "../cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
+import { shouldRebuildMissingStoredRootCommentThread } from "../pipeline/publish-stage";
 import { createProgressReporter, formatBlockingErrorDetail, trimCommandOutput, writeTerminalMessage } from "../pipeline/progress";
 import { runPublishStage } from "../pipeline/publish-stage";
 import { resolveSummaryConfig } from "../summary/index";
-import { openDatabase } from "../db/index";
+import { markVideoPublishRebuildNeeded, openDatabase } from "../db/index";
 import { createWorkFileLogger } from "../shared/logger";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index";
 import type { PipelineEventLogger } from "../db/index";
@@ -35,6 +37,7 @@ export async function runVideoPipeline(
 ) {
   const cookie = readCookie(args);
   const client = createClient(cookie);
+  const commentType = getType(args);
   const dbPath = args.db ?? "work/pipeline.sqlite3";
   const workRoot = args["work-root"] ?? "work";
   const logDay = args["log-day"] ?? process.env.PIPELINE_LOG_DAY ?? null;
@@ -66,7 +69,6 @@ export async function runVideoPipeline(
   onEventLogger?.(eventLogger);
   const summaryConfig = resolveSummaryConfig(args);
   const forceSummary = Boolean(args["force-summary"]);
-  const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
   const totalParts = state.video.page_count ?? snapshot?.pages?.length ?? 0;
   const pendingPartCount = forceSummary ? state.parts.length : state.pendingSummaryParts.length;
   const progress = createProgressReporter(state.video, pendingPartCount, {
@@ -98,6 +100,18 @@ export async function runVideoPipeline(
   });
 
   progress.info(`Video synced: (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
+  if (!args.publish) {
+    await probePublishedCommentThreadHealth({
+      client,
+      db,
+      video: state.video,
+      oid: state.video.aid,
+      type: commentType,
+      eventLogger,
+      progress,
+    });
+  }
+  const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
   if (needsRebuildPublish) {
     eventLogger.log({
       scope: "publish",
@@ -150,7 +164,7 @@ export async function runVideoPipeline(
           video: state.video,
           artifacts: generation.artifacts,
           oid: state.video.aid,
-          type: getType(args),
+          type: commentType,
           workRoot,
           forcedRootRpid: null,
           eventLogger,
@@ -268,6 +282,76 @@ export async function runVideoPipeline(
     });
     throw error;
   }
+}
+
+export async function probePublishedCommentThreadHealth({
+  client,
+  db,
+  video,
+  oid,
+  type,
+  eventLogger = null,
+  progress = null,
+  getTopCommentImpl = getTopComment,
+}: {
+  client: Parameters<typeof getTopComment>[0];
+  db: ReturnType<typeof openDatabase>;
+  video: {
+    id: number;
+    bvid: string;
+    aid: number;
+    title: string | null;
+    root_comment_rpid: number | null;
+    publish_needs_rebuild: number;
+    publish_rebuild_reason: string | null;
+  };
+  oid: number;
+  type: number;
+  eventLogger?: PipelineEventLogger | null;
+  progress?: { warn?: (message: string) => void } | null;
+  getTopCommentImpl?: typeof getTopComment;
+}) {
+  if (Number(video.root_comment_rpid ?? 0) <= 0 || Number(video.publish_needs_rebuild) === 1) {
+    return {
+      checked: false,
+      needsRebuild: Boolean(video.publish_needs_rebuild),
+      topCommentState: null,
+    };
+  }
+
+  const topCommentState = await getTopCommentImpl(client, { oid, type });
+  const needsRebuild = shouldRebuildMissingStoredRootCommentThread(video, topCommentState);
+  if (!needsRebuild) {
+    return {
+      checked: true,
+      needsRebuild: false,
+      topCommentState,
+    };
+  }
+
+  const rebuildReason = "missing-root-comment-thread";
+  markVideoPublishRebuildNeeded(db, video.id, rebuildReason);
+  video.publish_needs_rebuild = 1;
+  video.publish_rebuild_reason = rebuildReason;
+  eventLogger?.log({
+    scope: "publish",
+    action: "comment-thread-healthcheck",
+    status: "failed",
+    message: "Stored root comment thread is missing or no longer pinned",
+    details: {
+      storedRootCommentRpid: video.root_comment_rpid ?? null,
+      liveTopCommentRpid: topCommentState.topComment?.rpid ?? null,
+      hasTopComment: topCommentState.hasTopComment,
+      markedForRebuild: true,
+    },
+  });
+  progress?.warn?.("Stored root comment thread is missing, marked for rebuild on the next publish run");
+
+  return {
+    checked: true,
+    needsRebuild: true,
+    topCommentState,
+  };
 }
 
 export function printPipelineFailure(error: CommandError | Error | unknown, activeEventLogger: PipelineEventLogger | null = null) {

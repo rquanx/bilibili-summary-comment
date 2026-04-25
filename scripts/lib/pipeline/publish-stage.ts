@@ -24,7 +24,7 @@ export interface PublishStageResult {
   deletedThreads?: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }>;
 }
 
-function shouldRebuildMissingStoredRootCommentThread(
+export function shouldRebuildMissingStoredRootCommentThread(
   video: Pick<VideoRecord, "root_comment_rpid">,
   topCommentState: { hasTopComment?: boolean; topComment?: { rpid?: number | null } | null } | null,
 ): boolean {
