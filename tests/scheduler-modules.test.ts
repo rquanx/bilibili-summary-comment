@@ -1013,6 +1013,10 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
       authFile: ".auth/bili-auth.json",
       dbPath,
       workRoot: "work",
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
       findAuthFileForUserImpl(_authFile, userIndex) {
         return path.join(tempRoot, `.auth-${userIndex}.json`);
       },
@@ -1045,6 +1049,77 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
         publishMode: "rebuild",
       },
     ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep healthchecks recently uploaded published videos even without pending parts", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-healthcheck-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const publishedBvids: string[] = [];
+
+  try {
+    const publishedVideo = upsertVideo(db, {
+      bvid: "BVHEALTHCHECK",
+      aid: 1,
+      title: "Healthcheck",
+      ownerMid: 123,
+      pageCount: 1,
+      rootCommentRpid: 300001,
+      topCommentRpid: 300001,
+    });
+    upsertVideoPart(db, {
+      videoId: publishedVideo.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\npublished",
+      published: true,
+      publishedCommentRpid: 300001,
+      isDeleted: false,
+    });
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [{ mid: 123, source: "123" }],
+        uploads: [
+          {
+            mid: 123,
+            bvid: "BVHEALTHCHECK",
+            aid: 1,
+            title: "Healthcheck",
+            authFile: path.join(tempRoot, ".auth-1.json"),
+            createdAtUnix: 100,
+            createdAt: new Date(100 * 1000).toISOString(),
+            source: "123",
+          },
+        ],
+      }),
+      findAuthFileForUserImpl(_authFile, userIndex) {
+        return path.join(tempRoot, `.auth-${userIndex}.json`);
+      },
+      runPipelineForBvidImpl: async (options) => {
+        publishedBvids.push(String(options.bvid));
+        return { ok: true };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(result.tasks.map((item) => `${item.video.bvid}:${item.publishMode}`), [
+      "BVHEALTHCHECK:append",
+    ]);
+    assert.deepEqual(publishedBvids, ["BVHEALTHCHECK"]);
+    assert.equal(result.aborted, false);
+    assert.deepEqual(result.failures, []);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

@@ -1,9 +1,10 @@
 import { DEFAULT_AUTH_FILE } from "../bili/auth";
-import { listVideosPendingPublish, openDatabase } from "../db/index";
+import { getVideoByIdentity, listVideosPendingPublish, openDatabase } from "../db/index";
 import { findAuthFileForUser } from "./auth-files";
 import { runPipelineForBvid } from "./pipeline-runner";
 import { withCommentPublishQueueLock } from "./publish-queue";
 import { parseSummaryUsers } from "./user-targets";
+import { collectRecentUploadsFromUsers } from "./uploads";
 import type { FileLogger } from "../shared/logger";
 import type { VideoRecord } from "../db/index";
 
@@ -11,6 +12,7 @@ const PUBLISH_APPEND_COOLDOWN_MIN_MS = 60_000;
 const PUBLISH_APPEND_COOLDOWN_MAX_MS = 180_000;
 const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 180_000;
 const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 600_000;
+const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
 
 export interface PendingPublishTask {
   video: VideoRecord;
@@ -38,6 +40,8 @@ export async function runPendingVideoPublishSweep({
   findAuthFileForUserImpl = findAuthFileForUser,
   parseSummaryUsersImpl = parseSummaryUsers,
   runPipelineForBvidImpl = runPipelineForBvid,
+  collectRecentUploadsImpl = collectRecentUploadsFromUsers,
+  getVideoByIdentityImpl = getVideoByIdentity,
   computePublishCooldownMsImpl = computePublishCooldownMs,
   sleepImpl = delay,
 }: {
@@ -53,6 +57,8 @@ export async function runPendingVideoPublishSweep({
   findAuthFileForUserImpl?: typeof findAuthFileForUser;
   parseSummaryUsersImpl?: typeof parseSummaryUsers;
   runPipelineForBvidImpl?: typeof runPipelineForBvid;
+  collectRecentUploadsImpl?: typeof collectRecentUploadsFromUsers;
+  getVideoByIdentityImpl?: typeof getVideoByIdentity;
   computePublishCooldownMsImpl?: (publishMode: "append" | "rebuild") => number;
   sleepImpl?: (timeoutMs: number) => Promise<void>;
 } = {}) {
@@ -80,6 +86,39 @@ export async function runPendingVideoPublishSweep({
         publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
       }];
     });
+
+    const queuedBvids = new Set(tasks.map((task) => task.video.bvid));
+    const recentUploads = await collectRecentUploadsImpl({
+      summaryUsers,
+      authFile,
+      sinceHours: DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS,
+    });
+
+    for (const upload of recentUploads.uploads) {
+      if (!upload?.bvid || queuedBvids.has(upload.bvid)) {
+        continue;
+      }
+
+      const video = getVideoByIdentityImpl(db, { bvid: upload.bvid, aid: upload.aid ?? null });
+      if (!video || Number(video.root_comment_rpid ?? 0) <= 0 || Number(video.publish_needs_rebuild) === 1) {
+        continue;
+      }
+
+      const resolvedAuthFile = String(upload.authFile ?? "").trim() || resolveAuthFileForVideo(video, authFileByMid, fallbackAuthFile);
+      if (!resolvedAuthFile) {
+        onLog(
+          `Skip publish healthcheck for ${video.bvid} (${video.title || "untitled"}): no auth file mapped for owner ${String(video.owner_mid ?? "unknown")}`,
+        );
+        continue;
+      }
+
+      tasks.push({
+        video,
+        authFile: resolvedAuthFile,
+        publishMode: "append",
+      });
+      queuedBvids.add(video.bvid);
+    }
   } finally {
     db.close?.();
   }
