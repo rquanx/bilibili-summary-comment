@@ -46,7 +46,12 @@ export function reindexSummaryText(summaryText: string | null | undefined, nextP
     return normalized;
   }
 
-  return normalized.replace(/<\d+P>/gu, `<${nextPageNo}P>`);
+  return normalized
+    .replace(/<\d+P>/gu, `<${nextPageNo}P>`)
+    .replace(
+      /(?<=^<\d+P>\s)\d+#(?=\d{2}:\d{2}(?::\d{2})?\s)|^\d+#(?=\d{2}:\d{2}(?::\d{2})?\s)/gmu,
+      `${nextPageNo}#`,
+    );
 }
 
 export function createSummaryHash(summaryText: string | null | undefined): string {

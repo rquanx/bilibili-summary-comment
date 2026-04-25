@@ -409,3 +409,187 @@ test("postSummaryThread replaces invisible timepoint lines with paste links and 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("postSummaryThread keeps the initial comment when duplicate-probe diagnostics hit rate limits", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = "<1P>\n1#20:36 single chunk summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentDuplicateProbe",
+      aid: 123450005,
+      title: "Duplicate Probe Recovery Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: fullMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 970001,
+      visibilityRule() {
+        return false;
+      },
+    });
+    const originalAdd = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => {
+      const rootMessageExists = [...harness.comments.values()].some((comment) => comment.root === comment.rpid && comment.message === payload.message);
+      if (rootMessageExists) {
+        throw Object.assign(new Error("重复评论，请勿刷屏"), {
+          rawResponse: {
+            data: {
+              message: "重复评论，请勿刷屏",
+            },
+          },
+        });
+      }
+      return originalAdd(payload as never);
+    };
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 970001);
+    assert.equal(result.createdComments.length, 1);
+    assert.equal(result.createdComments[0].rpid, 970001);
+    assert.equal(
+      result.warnings.some((item) => item.step === "duplicate-probe-assumed-published-root-comment"),
+      true,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentDuplicateProbe" });
+    assert.equal(persistedVideo?.root_comment_rpid, 970001);
+    assert.equal(persistedVideo?.top_comment_rpid, 970001);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [970001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread adopts an existing matching top comment instead of posting a duplicate reply", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = [
+    "<1P>",
+    "1#20:36 first page summary",
+    "",
+    "<2P>",
+    "2#00:00 second page summary",
+  ].join("\n");
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentAdoptTopRoot",
+      aid: 123450004,
+      title: "Existing Top Comment Adoption Test",
+      pageCount: 2,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\n1#20:36 first page summary",
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: "<2P>\n2#00:00 second page summary",
+      summaryHash: "hash-2",
+      published: false,
+      isDeleted: false,
+    });
+
+    let addCalls = 0;
+    let topCalls = 0;
+    const client = {
+      reply: {
+        async add() {
+          addCalls += 1;
+          throw new Error("reply.add should not be called when matching top comment is adopted");
+        },
+        async delete() {
+          throw new Error("reply.delete should not be called when matching top comment is adopted");
+        },
+        async top() {
+          topCalls += 1;
+          throw new Error("reply.top should not be called when matching top comment is already pinned");
+        },
+      },
+    };
+
+    const result = await postSummaryThread({
+      client: client as never,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: true,
+        topComment: {
+          rpid: 990001,
+          message: fullMessage,
+        },
+      },
+      sleepImpl: async () => {},
+      fetchImpl: async () => {
+        throw new Error("fetch should not be called when no comment is posted");
+      },
+    });
+
+    assert.equal(result.rootCommentRpid, 990001);
+    assert.equal(result.action, "adopt-existing-root-comment-thread");
+    assert.equal(result.reusedExistingRootComment, true);
+    assert.deepEqual(result.createdComments, []);
+    assert.equal(addCalls, 0);
+    assert.equal(topCalls, 0);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentAdoptTopRoot" });
+    assert.equal(persistedVideo?.root_comment_rpid, 990001);
+    assert.equal(persistedVideo?.top_comment_rpid, 990001);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1, 1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [990001, 990001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});

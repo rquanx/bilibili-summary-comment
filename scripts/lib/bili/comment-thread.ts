@@ -22,7 +22,7 @@ const sleep = (timeout) =>
 const ROOT_TOP_DELAY_MS = 5000;
 const ROOT_TOP_RETRY_DELAY_MS = 5000;
 const REPLY_POST_DELAY_MS = 5000;
-const GUEST_VISIBILITY_DELAY_MS = 10000;
+const GUEST_VISIBILITY_DELAY_MS = 20000;
 const GUEST_COMMENT_SCAN_PAGE_LIMIT = 5;
 const BILIBILI_COMMENT_MAX_LENGTH = 700;
 const TIMESTAMP_UNIT_PATTERN = /^(?<label>\d+#\d{1,2}:\d{2}(?::\d{2})?)\s+(?<rest>.+)$/u;
@@ -50,6 +50,8 @@ const DELETED_COMMENT_PATTERNS = [
   "楼层不存在",
 ];
 
+const DUPLICATE_COMMENT_PATTERNS = ["重复评论"];
+
 function getCommentErrorMessages(error) {
   const values = [
     error?.message,
@@ -63,6 +65,11 @@ function getCommentErrorMessages(error) {
 function isDeletedCommentThreadError(error) {
   const messages = getCommentErrorMessages(error);
   return messages.some((message) => DELETED_COMMENT_PATTERNS.some((pattern) => message.includes(pattern)));
+}
+
+function isDuplicateCommentError(error) {
+  const messages = getCommentErrorMessages(error);
+  return messages.some((message) => DUPLICATE_COMMENT_PATTERNS.some((pattern) => message.includes(pattern)));
 }
 
 function isRetryableRootTopError(error) {
@@ -92,6 +99,14 @@ function normalizeCommentRpid(value) {
 
 function normalizeMessageForMatch(value) {
   return String(value ?? "").replace(/\r\n/g, "\n").trim();
+}
+
+function normalizeCommentMessageForMatch(value) {
+  return normalizeMessageForMatch(normalizeSummaryMarkers(String(value ?? "")));
+}
+
+function commentMessageMatches(left, right) {
+  return normalizeCommentMessageForMatch(left) === normalizeCommentMessageForMatch(right);
 }
 
 function collectReplyNodes(reply, bucket = []) {
@@ -875,17 +890,45 @@ async function publishCommentChunk({
       replacedInvisibleRpid: null,
     };
   } catch (error) {
-    const diagnosis = await diagnoseInvisibleComment({
-      client,
-      oid,
-      type,
-      rootRpid,
-      message: chunk.message,
-      isRoot,
-      sleepImpl,
-      fetchImpl,
-      uploadToPasteImpl,
-    });
+    let diagnosis;
+    try {
+      diagnosis = await diagnoseInvisibleComment({
+        client,
+        oid,
+        type,
+        rootRpid,
+        message: chunk.message,
+        isRoot,
+        sleepImpl,
+        fetchImpl,
+        uploadToPasteImpl,
+      });
+    } catch (diagnosisError) {
+      if (initialRpid && isDuplicateCommentError(diagnosisError)) {
+        return {
+          replyRes: initialPublish.replyRes,
+          rootRpid: isRoot ? initialRpid : rootRpid,
+          finalMessage: chunk.message,
+          warnings: [
+            ...initialPublish.warnings,
+            buildCommentWarning({
+              step: isRoot
+                ? "duplicate-probe-assumed-published-root-comment"
+                : "duplicate-probe-assumed-published-reply-comment",
+              rpid: initialRpid,
+              error: diagnosisError,
+              details: {
+                assumedPublishedAfterDuplicateProbe: true,
+              },
+            }),
+          ],
+          recoveredByProcessing: false,
+          replacedInvisibleRpid: null,
+        };
+      }
+
+      throw diagnosisError;
+    }
 
     const processedMessage = normalizeSummaryMarkers(diagnosis.processedMessage);
     if (!processedMessage || processedMessage === normalizeSummaryMarkers(chunk.message)) {
@@ -983,8 +1026,10 @@ export async function postSummaryThread({
   const initialRootRpid = rootRpid;
   const createdComments = [];
   const warnings = [];
+  const adoptedPages = [];
   let recoveredFromDeletedRoot = false;
   let replacedRootCommentRpid = null;
+  let reusedExistingRootComment = false;
 
   if (rootRpid && (!topCommentState.hasTopComment || topCommentState.topComment?.rpid !== rootRpid)) {
     await client.reply.top({
@@ -995,7 +1040,22 @@ export async function postSummaryThread({
     }).catch(() => null);
   }
 
-  for (const [index, chunk] of chunks.entries()) {
+  const pendingChunks = [...chunks];
+  if (
+    !forcedRootRpid
+    && !existingRootRpid
+    && rootRpid
+    && topCommentState.topComment
+    && commentMessageMatches(topCommentState.topComment.message, pendingChunks[0]?.message ?? "")
+  ) {
+    const adoptedRootChunk = pendingChunks.shift();
+    if (adoptedRootChunk) {
+      adoptedPages.push(...adoptedRootChunk.pages);
+      reusedExistingRootComment = true;
+    }
+  }
+
+  for (const [index, chunk] of pendingChunks.entries()) {
     const shouldCreateRoot = !rootRpid;
 
     try {
@@ -1025,7 +1085,7 @@ export async function postSummaryThread({
         }),
       );
 
-      if (index < chunks.length - 1) {
+      if (index < pendingChunks.length - 1) {
         await sleepImpl(REPLY_POST_DELAY_MS);
       }
     } catch (error) {
@@ -1069,19 +1129,27 @@ export async function postSummaryThread({
     topCommentRpid: rootRpid,
   });
 
-  const coveredPages = [...new Set(createdComments.flatMap((item) => item.pages))].sort((a, b) => a - b);
+  const coveredPages = [...new Set([
+    ...adoptedPages,
+    ...createdComments.flatMap((item) => item.pages),
+  ])].sort((a, b) => a - b);
   if (coveredPages.length > 0) {
     markPartsPublished(db, videoId, coveredPages, rootRpid);
   }
 
   return {
-    action: createdComments.some((item) => item.isRoot) ? "comment-thread-created-or-extended" : "reply-to-comment-thread",
+    action: createdComments.some((item) => item.isRoot)
+      ? "comment-thread-created-or-extended"
+      : reusedExistingRootComment && createdComments.length === 0
+        ? "adopt-existing-root-comment-thread"
+        : "reply-to-comment-thread",
     normalizedMessage,
     coveredPagesFromMessage: extractCoveredPages(normalizedMessage),
     rootCommentRpid: rootRpid,
     recoveredFromDeletedRoot,
     replacedRootCommentRpid: replacedRootCommentRpid ?? (normalizeCommentRpid(initialRootRpid) !== normalizeCommentRpid(rootRpid) ? initialRootRpid : null),
     createdComments,
+    reusedExistingRootComment,
     warnings,
   };
 }
