@@ -1119,20 +1119,40 @@ async function publishCommentChunk({
       });
     } catch (diagnosisError) {
       if (initialRpid && isDuplicateCommentError(diagnosisError)) {
+        const visibleComment = await findVisibleCommentAsGuest({
+          oid,
+          type,
+          rootRpid: visibilityRootRpid,
+          targetRpid: initialRpid,
+          expectedMessage: chunk.message,
+          isRoot,
+          guestReplyListImpl,
+          fetchImpl,
+        });
+        if (!visibleComment) {
+          throw error;
+        }
+
         return {
-          replyRes: initialPublish.replyRes,
-          rootRpid: isRoot ? initialRpid : rootRpid,
+          replyRes: {
+            ...initialPublish.replyRes,
+            rpid: normalizeCommentRpid(visibleComment?.rpid ?? initialRpid) ?? initialRpid,
+          },
+          rootRpid: isRoot
+            ? normalizeCommentRpid(visibleComment?.rpid ?? initialRpid) ?? initialRpid
+            : rootRpid,
           finalMessage: chunk.message,
           warnings: [
             ...initialPublish.warnings,
             buildCommentWarning({
               step: isRoot
-                ? "duplicate-probe-assumed-published-root-comment"
-                : "duplicate-probe-assumed-published-reply-comment",
+                ? "duplicate-probe-confirmed-visible-root-comment"
+                : "duplicate-probe-confirmed-visible-reply-comment",
               rpid: initialRpid,
               error: diagnosisError,
               details: {
-                assumedPublishedAfterDuplicateProbe: true,
+                confirmedVisibleAfterDuplicateProbe: true,
+                visibleRpid: normalizeCommentRpid(visibleComment?.rpid ?? initialRpid) ?? initialRpid,
               },
             }),
           ],

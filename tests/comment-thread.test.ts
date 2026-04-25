@@ -540,7 +540,7 @@ test("postSummaryThread replaces invisible timepoint lines with paste links and 
   }
 });
 
-test("postSummaryThread keeps the initial comment when duplicate-probe diagnostics hit rate limits", async () => {
+test("postSummaryThread confirms the initial comment is guest-visible before accepting duplicate-probe recovery", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -574,8 +574,9 @@ test("postSummaryThread keeps the initial comment when duplicate-probe diagnosti
     });
     const originalAdd = harness.client.reply.add;
     harness.client.reply.add = async (payload) => {
-      const rootMessageExists = [...harness.comments.values()].some((comment) => comment.root === comment.rpid && comment.message === payload.message);
-      if (rootMessageExists) {
+      const existingRoot = [...harness.comments.values()].find((comment) => comment.root === comment.rpid && comment.message === payload.message);
+      if (existingRoot) {
+        harness.setCommentVisible(existingRoot.rpid, true);
         throw Object.assign(new Error("重复评论，请勿刷屏"), {
           rawResponse: {
             data: {
@@ -607,7 +608,7 @@ test("postSummaryThread keeps the initial comment when duplicate-probe diagnosti
     assert.equal(result.createdComments.length, 1);
     assert.equal(result.createdComments[0].rpid, 970001);
     assert.equal(
-      result.warnings.some((item) => item.step === "duplicate-probe-assumed-published-root-comment"),
+      result.warnings.some((item) => item.step === "duplicate-probe-confirmed-visible-root-comment"),
       true,
     );
 
@@ -618,6 +619,85 @@ test("postSummaryThread keeps the initial comment when duplicate-probe diagnosti
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [970001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread rejects duplicate-probe recovery when the initial comment is still not guest-visible", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = "<1P>\n1#20:36 single chunk summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentDuplicateProbeInvisible",
+      aid: 123450006,
+      title: "Duplicate Probe Invisible Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: fullMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 980001,
+      visibilityRule() {
+        return false;
+      },
+    });
+    const originalAdd = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => {
+      const rootMessageExists = [...harness.comments.values()].some((comment) => comment.root === comment.rpid && comment.message === payload.message);
+      if (rootMessageExists) {
+        throw Object.assign(new Error("duplicate comment"), {
+          rawResponse: {
+            data: {
+              message: "重复评论，请勿刷屏",
+            },
+          },
+        });
+      }
+      return originalAdd(payload as never);
+    };
+
+    await assert.rejects(
+      postSummaryThread({
+        client: harness.client,
+        oid: video.aid,
+        type: 1,
+        message: fullMessage,
+        db,
+        videoId: video.id,
+        topCommentState: {
+          hasTopComment: false,
+          topComment: null,
+        },
+        sleepImpl: async () => {},
+        guestReplyListImpl: harness.guestReplyListImpl as never,
+        fetchImpl: harness.fetchImpl as typeof fetch,
+      }),
+      /Published comment is not visible to guests/,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentDuplicateProbeInvisible" });
+    assert.equal(persistedVideo?.root_comment_rpid, null);
+    assert.equal(persistedVideo?.top_comment_rpid, null);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [0]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
