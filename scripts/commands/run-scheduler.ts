@@ -17,6 +17,7 @@ import {
 import { createCoalescedRunner } from "../lib/scheduler/coalesced-runner";
 import {
   cleanupOldWorkDirectories,
+  runPendingVideoPublishSweep,
   runRecentVideoGapCheck,
   syncSummaryUsersRecentVideos,
 } from "../lib/scheduler/index";
@@ -39,7 +40,7 @@ const command = addWorkRootOption(
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
       .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
-      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | gap-check | cleanup | all."),
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | publish | gap-check | cleanup | all."),
   ),
 );
 
@@ -148,6 +149,7 @@ await runCli({
         workRoot: config.workRoot,
         logDay,
         logGroup,
+        publish: false,
         logger: summaryLogger,
         onLog(message) {
           summaryLogger.progress(message);
@@ -183,12 +185,76 @@ await runCli({
       };
     }
 
+    async function runPublishTask() {
+      const startedAt = new Date();
+      const logDay = formatLogDay(startedAt);
+      const logGroup = createLogGroupName("publish", null, startedAt);
+      const publishLogger = createWorkFileLogger({
+        workRoot: config.workRoot,
+        name: "scheduler",
+        label: "publish",
+        day: logDay,
+        group: logGroup,
+        context: {
+          scope: "scheduler",
+          task: "publish",
+          schedulerLogPath: schedulerLogger.filePath,
+        },
+      });
+      log(`[publish] run log: ${publishLogger.filePath}`);
+      publishLogger.progress("Scanning queued video publish tasks");
+      writeConsole("Scanning queued video publish tasks");
+      const result = await runPendingVideoPublishSweep({
+        summaryUsers: config.summaryUsers,
+        authFile: config.authFile,
+        dbPath: config.dbPath,
+        workRoot: config.workRoot,
+        logDay,
+        logGroup,
+        logger: publishLogger,
+        onLog(message) {
+          publishLogger.progress(message);
+          writeConsole(`[publish] ${message}`);
+        },
+      });
+      publishLogger.info("Publish sweep finished", {
+        queued: result.tasks.length,
+        published: result.runs.length,
+        failures: result.failures.length,
+        aborted: result.aborted,
+      });
+      log(
+        `Publish sweep finished: queued=${result.tasks.length}, published=${result.runs.length}, failures=${result.failures.length}${result.aborted ? ", aborted=true" : ""}`,
+        {
+          details: {
+            task: "publish",
+            logPath: publishLogger.filePath,
+          },
+        },
+      );
+      if (result.failures.length > 0) {
+        for (const failure of result.failures) {
+          publishLogger.error("Publish failure", {
+            failure,
+          });
+          writeConsole(`[publish] failure: ${failure.bvid} (${failure.title || "untitled"}) [${failure.publishMode}] ${failure.message}`);
+        }
+      }
+      return {
+        action: "publish",
+        queued: result.tasks.length,
+        runs: result.runs.length,
+        failures: result.failures.length,
+        aborted: result.aborted,
+      };
+    }
+
     async function runCleanupTask() {
-      if (runningTasks.has("summary")) {
-        log("Skip work cleanup: summary task is still running");
+      if (runningTasks.has("summary") || runningTasks.has("publish")) {
+        log("Skip work cleanup: summary or publish task is still running");
         return {
           action: "skip-cleanup",
-          reason: "summary-running",
+          reason: "summary-or-publish-running",
         };
       }
 
@@ -293,6 +359,32 @@ await runCli({
         };
       },
     });
+    const publishRunner = createCoalescedRunner({
+      name: "publish",
+      runningTasks,
+      task: runPublishTask,
+      onLog(message) {
+        log(message);
+      },
+      onFailure(error) {
+        const message = getErrorMessage(error);
+        log(`publish failed: ${message}`, {
+          level: "error",
+          details: {
+            task: "publish",
+            error,
+          },
+        });
+        return {
+          action: "publish-failed",
+          queued: 0,
+          runs: 0,
+          failures: 1,
+          aborted: true,
+          message,
+        };
+      },
+    });
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
     const gapCheckRunner = runExclusive("gap-check", runGapCheckTask);
 
@@ -300,6 +392,7 @@ await runCli({
       const result = await runOnce(args.once, {
         refreshRunner,
         summaryRunner,
+        publishRunner,
         gapCheckRunner,
         cleanupRunner,
       });
@@ -314,19 +407,21 @@ await runCli({
     if (args["run-on-start"]) {
       await refreshRunner();
       await summaryRunner();
+      await publishRunner();
       await gapCheckRunner();
       await cleanupRunner();
     }
 
     const scheduledTasks = [
       cron.schedule("0 * * * *", summaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
       cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
       cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
     ];
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
+    log("Cron plan: summary=hourly@minute0, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
 
     attachSignalHandlers(scheduledTasks, log);
 
@@ -336,6 +431,7 @@ await runCli({
       timezone: config.timezone ?? "system",
       summaryUsers: config.summaryUsers,
       summaryConcurrency: config.summaryConcurrency,
+      publishTask: "serial",
       refreshDays: config.refreshDays,
       cleanupDays: config.cleanupDays,
     };
@@ -365,6 +461,8 @@ async function runOnce(target, runners) {
       return [await runners.refreshRunner()];
     case "summary":
       return [await runners.summaryRunner()];
+    case "publish":
+      return [await runners.publishRunner()];
     case "gap-check":
       return [await runners.gapCheckRunner()];
     case "cleanup":
@@ -373,6 +471,7 @@ async function runOnce(target, runners) {
       return [
         await runners.refreshRunner(),
         await runners.summaryRunner(),
+        await runners.publishRunner(),
         await runners.gapCheckRunner(),
         await runners.cleanupRunner(),
       ];

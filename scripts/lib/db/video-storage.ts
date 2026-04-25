@@ -32,6 +32,29 @@ export function listVideos(db: Db): VideoRecord[] {
   return db.prepare("SELECT * FROM videos ORDER BY updated_at DESC, id DESC").all() as unknown as VideoRecord[];
 }
 
+export function listVideosPendingPublish(db: Db): VideoRecord[] {
+  return db.prepare(`
+    SELECT v.*
+    FROM videos v
+    WHERE v.publish_needs_rebuild = 1
+      OR EXISTS (
+        SELECT 1
+        FROM video_parts p
+        WHERE p.video_id = v.id
+          AND p.is_deleted = 0
+          AND (
+            (p.summary_text_processed IS NOT NULL AND TRIM(p.summary_text_processed) <> '')
+            OR (p.summary_text IS NOT NULL AND TRIM(p.summary_text) <> '')
+          )
+          AND p.published = 0
+      )
+    ORDER BY
+      CASE WHEN v.publish_needs_rebuild = 1 THEN 1 ELSE 0 END ASC,
+      COALESCE(v.last_scan_at, v.updated_at, v.created_at) ASC,
+      v.id ASC
+  `).all() as unknown as VideoRecord[];
+}
+
 export function listVideosOlderThan(db: Db, cutoffIso: string): VideoRecord[] {
   return db.prepare(`
     SELECT *

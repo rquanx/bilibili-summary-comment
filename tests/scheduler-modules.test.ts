@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
+import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
 import { resolveAuthFileForUser } from "../scripts/lib/scheduler/auth-files";
 import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
 import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency";
@@ -18,6 +19,7 @@ import {
   upsertGapCheckDailySnapshot,
 } from "../scripts/lib/scheduler/gap-check";
 import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner";
+import { runPendingVideoPublishSweep } from "../scripts/lib/scheduler/publish";
 import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads";
 import { compareTimestampDesc, formatEast8DateTime } from "../scripts/lib/shared/time";
 
@@ -134,6 +136,48 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
     runs: [],
     failures: [],
   });
+});
+
+test("syncSummaryUsersRecentVideos forwards publish=false to pipeline runs", async () => {
+  const observedPublishFlags: boolean[] = [];
+
+  await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    publish: false,
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BVNOPUBLISH",
+          aid: 1,
+          title: "No Publish",
+          authFile: "D:\\repo\\.auth\\bili-auth_1.json",
+          createdAtUnix: 100,
+          createdAt: new Date(100 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    async runPipelinesWithConcurrencyImpl(options) {
+      for (const upload of options.uploads ?? []) {
+        await options.runUpload?.(upload);
+      }
+
+      return {
+        runs: [],
+        failures: [],
+      };
+    },
+    async runPipelineForBvidImpl(options) {
+      observedPublishFlags.push(Boolean(options.publish));
+      return {
+        ok: true,
+      };
+    },
+  });
+
+  assert.deepEqual(observedPublishFlags, [false]);
 });
 
 test("syncSummaryUsersRecentVideos keeps same-user title variants and queues earliest variants first for reuse", async () => {
@@ -890,9 +934,127 @@ test("runPipelineForBvid appends the video link to command failures", async () =
   );
 });
 
+test("listVideosPendingPublish returns append work before rebuild work", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-list-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const appendVideo = upsertVideo(db, {
+      bvid: "BVAPPEND",
+      aid: 1,
+      title: "Append",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: appendVideo.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nappend",
+      published: false,
+      isDeleted: false,
+    });
+
+    const rebuildVideo = upsertVideo(db, {
+      bvid: "BVREBUILD",
+      aid: 2,
+      title: "Rebuild",
+      ownerMid: 456,
+      pageCount: 1,
+    });
+    db.prepare("UPDATE videos SET publish_needs_rebuild = 1 WHERE id = ?").run(rebuildVideo.id);
+
+    assert.deepEqual(listVideosPendingPublish(db).map((item) => item.bvid), ["BVAPPEND", "BVREBUILD"]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep publishes queued videos serially and stops after the first failure", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-sweep-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const publishedBvids: string[] = [];
+
+  try {
+    const appendVideo = upsertVideo(db, {
+      bvid: "BVAPPENDSWEEP",
+      aid: 1,
+      title: "Append Sweep",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: appendVideo.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nappend",
+      published: false,
+      isDeleted: false,
+    });
+
+    const rebuildVideo = upsertVideo(db, {
+      bvid: "BVREBUILDSWEEP",
+      aid: 2,
+      title: "Rebuild Sweep",
+      ownerMid: 456,
+      pageCount: 1,
+    });
+    db.prepare("UPDATE videos SET publish_needs_rebuild = 1 WHERE id = ?").run(rebuildVideo.id);
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123,456",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      findAuthFileForUserImpl(_authFile, userIndex) {
+        return path.join(tempRoot, `.auth-${userIndex}.json`);
+      },
+      runPipelineForBvidImpl: async (options) => {
+        publishedBvids.push(String(options.bvid));
+        if (options.bvid === "BVREBUILDSWEEP") {
+          throw new Error("rate limited");
+        }
+
+        return {
+          ok: true,
+          pendingPublishPages: listPendingPublishParts(db, appendVideo.id).map((part) => part.page_no),
+        };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(result.tasks.map((item) => `${item.video.bvid}:${item.publishMode}`), [
+      "BVAPPENDSWEEP:append",
+      "BVREBUILDSWEEP:rebuild",
+    ]);
+    assert.deepEqual(publishedBvids, ["BVAPPENDSWEEP", "BVREBUILDSWEEP"]);
+    assert.equal(result.aborted, true);
+    assert.deepEqual(result.failures, [
+      {
+        bvid: "BVREBUILDSWEEP",
+        title: "Rebuild Sweep",
+        message: "rate limited",
+        publishMode: "rebuild",
+      },
+    ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("scheduler-tasks barrel re-exports split modules", () => {
   assert.equal(schedulerTasks.parseSummaryUsers, parseSummaryUsers);
   assert.equal(schedulerTasks.runPipelinesWithConcurrency, runPipelinesWithConcurrency);
   assert.equal(schedulerTasks.cleanupOldWorkDirectories, cleanupOldWorkDirectories);
   assert.equal(schedulerTasks.runRecentVideoGapCheck, runRecentVideoGapCheck);
+  assert.equal(schedulerTasks.runPendingVideoPublishSweep, runPendingVideoPublishSweep);
 });

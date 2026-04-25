@@ -41,6 +41,7 @@ export {
   listPendingSummaryParts,
   listVideoParts,
   listVideos,
+  listVideosPendingPublish,
   listVideosOlderThan,
   markPartsPublished,
   markVideoPublishRebuildNeeded,

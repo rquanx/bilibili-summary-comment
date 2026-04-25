@@ -16,4 +16,5 @@ export {
 } from "./gap-check";
 export { runPipelineForBvid, readCookieString } from "./pipeline-runner";
 export { parseSummaryUsers, extractBiliMid, normalizePipelineUserKey } from "./user-targets";
+export { runPendingVideoPublishSweep } from "./publish";
 export { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "./uploads";
