@@ -82,7 +82,7 @@ export async function runPublishStage({
   const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
   let rebuildTopCommentState: Awaited<ReturnType<typeof getTopComment>> | null = null;
 
-  if (!needsRebuildPublish && !pendingMessage && Number(video.root_comment_rpid ?? 0) > 0) {
+  if (!needsRebuildPublish && Number(video.root_comment_rpid ?? 0) > 0) {
     rebuildTopCommentState = await getTopComment(client, { oid, type });
     if (shouldRebuildMissingStoredRootCommentThread(video, rebuildTopCommentState)) {
       needsRebuildPublish = true;

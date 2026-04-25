@@ -83,6 +83,29 @@ export function groupSummaryBlocksByPage(text) {
   return [...groups.values()].sort((a, b) => a.page - b.page);
 }
 
+export function inspectSummaryPageMarkers(text, availablePages = null) {
+  const blocks = parseSummaryBlocks(text);
+  const pageCounts = new Map();
+
+  for (const block of blocks) {
+    pageCounts.set(block.page, (pageCounts.get(block.page) ?? 0) + 1);
+  }
+
+  const pages = [...pageCounts.keys()].sort((a, b) => a - b);
+  const duplicatePages = pages.filter((page) => (pageCounts.get(page) ?? 0) > 1);
+  const allowedPages = Array.isArray(availablePages) ? new Set(availablePages) : null;
+  const invalidPages = allowedPages
+    ? pages.filter((page) => !allowedPages.has(page))
+    : [];
+
+  return {
+    blocks,
+    pages,
+    duplicatePages,
+    invalidPages,
+  };
+}
+
 export function splitSummaryForComments(text, maxLength = 1000) {
   const blocks = parseSummaryBlocks(text).flatMap((block) => splitSummaryBlockForComments(block, maxLength));
   if (blocks.length === 0) {

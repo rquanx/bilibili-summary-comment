@@ -427,3 +427,117 @@ test("runPublishStage rebuilds when stored root comment is missing even without 
     fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
+
+test("runPublishStage rebuilds when stored root comment is missing even with pending summaries", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-missing-root-pending-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const summaryPath = path.join(tempRoot, "summary.md");
+  const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
+  const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const fullMessage = ["<1P>", "first page", "", "<2P>", "second page"].join("\n");
+    fs.writeFileSync(summaryPath, `${fullMessage}\n`, "utf8");
+    fs.writeFileSync(pendingSummaryPath, "<2P>\nsecond page\n", "utf8");
+
+    const video = upsertVideo(db, {
+      bvid: "BVpublishMissing2",
+      aid: 987003,
+      title: "Publish Stage Missing Root Pending Test",
+      pageCount: 2,
+      rootCommentRpid: 555001,
+      topCommentRpid: 555001,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst page",
+      summaryHash: createSummaryHash("<1P>\nfirst page"),
+      published: true,
+      publishedCommentRpid: 555001,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: "<2P>\nsecond page",
+      summaryHash: createSummaryHash("<2P>\nsecond page"),
+      published: false,
+      publishedCommentRpid: null,
+      publishedAt: null,
+      isDeleted: false,
+    });
+
+    const harness = createGuestFetchHarness(920001);
+    const calls = [];
+    const originalClient = harness.client.reply;
+    const client = {
+      reply: {
+        async list(...args) {
+          calls.push({ type: "list", args });
+          return {
+            upper: {
+              top: null,
+            },
+            replies: [],
+          };
+        },
+        async add(payload) {
+          calls.push({ type: "add", payload });
+          return originalClient.add(payload);
+        },
+        async top(payload) {
+          calls.push({ type: "top", payload });
+          return originalClient.top(payload);
+        },
+        async delete(payload) {
+          calls.push({ type: "delete", payload });
+          return originalClient.delete(payload);
+        },
+      },
+    };
+
+    const result = await runPublishStage({
+      client,
+      db,
+      video,
+      artifacts: {
+        summaryPath,
+        pendingSummaryPath,
+      },
+      oid: video.aid,
+      type: 1,
+      workRoot,
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rebuild, true);
+    assert.equal(result.rootCommentRpid, 920001);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVpublishMissing2" });
+    assert.equal(persistedVideo.root_comment_rpid, 920001);
+    assert.equal(persistedVideo.top_comment_rpid, 920001);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1, 1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [920001, 920001]);
+
+    assert.deepEqual(calls.map((entry) => entry.type), ["list", "add", "top", "delete"]);
+    assert.equal(calls[1].payload.message, fullMessage);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});

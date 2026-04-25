@@ -13,7 +13,7 @@ import {
   requireNonEmptyString,
   runCli,
 } from "../lib/cli/tools";
-import { groupSummaryBlocksByPage, normalizeSummaryMarkers } from "../lib/summary/format";
+import { groupSummaryBlocksByPage, inspectSummaryPageMarkers, normalizeSummaryMarkers } from "../lib/summary/format";
 import { openDatabase, savePartSummary } from "../lib/db/index";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index";
 
@@ -44,6 +44,19 @@ await runCli({
       const state = syncVideoSnapshotToDb(db, snapshot);
 
       const summaryText = normalizeSummaryMarkers(fs.readFileSync(summaryFile, "utf8"));
+      const pageInspection = inspectSummaryPageMarkers(
+        summaryText,
+        state.parts.map((part) => part.page_no),
+      );
+      if (pageInspection.duplicatePages.length > 0 || pageInspection.invalidPages.length > 0) {
+        throw createCliError("Summary file page markers are invalid", {
+          summaryFile,
+          duplicatePages: pageInspection.duplicatePages,
+          invalidPages: pageInspection.invalidPages,
+          availablePages: state.parts.map((part) => part.page_no),
+        });
+      }
+
       const pageGroups = groupSummaryBlocksByPage(summaryText);
       if (pageGroups.length === 0) {
         throw createCliError("No page markers found in summary file", { summaryFile });

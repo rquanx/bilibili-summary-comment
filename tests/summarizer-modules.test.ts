@@ -12,7 +12,7 @@ import {
   extractSummaryText,
   resolveSummaryApiTarget,
 } from "../scripts/lib/summary/client";
-import { splitSummaryForComments } from "../scripts/lib/summary/format";
+import { inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/lib/summary/format";
 import { writeSummaryArtifacts } from "../scripts/lib/summary/files";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
@@ -391,6 +391,25 @@ test("splitSummaryForComments splits oversized page blocks into multiple comment
   );
   assert.ok(chunks.every((chunk) => chunk.message.length <= 1000));
   assert.ok(chunks.every((chunk) => chunk.message.startsWith("<1P>")));
+});
+
+test("inspectSummaryPageMarkers reports duplicate and invalid page markers", () => {
+  const inspection = inspectSummaryPageMarkers(
+    [
+      "<1P> first",
+      "",
+      "<2P> second",
+      "",
+      "<2P> duplicate second",
+      "",
+      "<5P> invalid",
+    ].join("\n"),
+    [1, 2, 3, 4],
+  );
+
+  assert.deepEqual(inspection.pages, [1, 2, 5]);
+  assert.deepEqual(inspection.duplicatePages, [2]);
+  assert.deepEqual(inspection.invalidPages, [5]);
 });
 
 test("summarizePartFromSubtitle records fallback success metadata when glm-5 retry succeeds", async () => {
