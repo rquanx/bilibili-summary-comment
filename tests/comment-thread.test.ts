@@ -459,7 +459,7 @@ test("postSummaryThread splits comments so each payload stays within 700 charact
   }
 });
 
-test("postSummaryThread replaces invisible timepoint lines with paste links and stores processed summaries", async () => {
+test.skip("postSummaryThread replaces invisible timepoint lines with paste links and stores processed summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -540,7 +540,7 @@ test("postSummaryThread replaces invisible timepoint lines with paste links and 
   }
 });
 
-test("postSummaryThread confirms the initial comment is guest-visible before accepting duplicate-probe recovery", async () => {
+test.skip("postSummaryThread confirms the initial comment is guest-visible before accepting duplicate-probe recovery", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -625,7 +625,7 @@ test("postSummaryThread confirms the initial comment is guest-visible before acc
   }
 });
 
-test("postSummaryThread rejects duplicate-probe recovery when the initial comment is still not guest-visible", async () => {
+test.skip("postSummaryThread rejects duplicate-probe recovery when the initial comment is still not guest-visible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -698,6 +698,224 @@ test("postSummaryThread rejects duplicate-probe recovery when the initial commen
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [0]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread replaces an invisible comment chunk with a paste link and stores processed summaries", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const rawSummary = [
+    "<1P>",
+    "1#10:53 invisible summary line A",
+    "1#15:52 invisible summary line B",
+    "1#20:59 visible summary line C",
+  ].join("\n");
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentInvisibleWholePaste",
+      aid: 123450103,
+      title: "Invisible Comment Whole Paste Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: rawSummary,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 990101,
+      visibilityRule(message) {
+        return message.includes("https://paste.rs/");
+      },
+    });
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: rawSummary,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 990102);
+    assert.equal(result.createdComments.length, 1);
+    assert.equal(result.createdComments[0].rpid, 990102);
+    assert.equal(result.warnings.some((item) => item.step === "guest-visible-root-comment"), true);
+
+    const parts = listVideoParts(db, video.id);
+    assert.equal(parts[0].summary_text, rawSummary);
+    assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://paste.rs/3c31503e");
+    assert.equal(parts[0].published, 1);
+    assert.equal(parts[0].published_comment_rpid, 990102);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread retries once with a paste link instead of probe comments when the initial comment is invisible", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = "<1P>\n1#20:36 single chunk summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentPasteRetry",
+      aid: 123450104,
+      title: "Paste Retry Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: fullMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 990201,
+      visibilityRule(message) {
+        return message.includes("https://paste.rs/");
+      },
+    });
+    const addCalls = [];
+    const originalAdd = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => {
+      addCalls.push(payload.message);
+      return originalAdd(payload as never);
+    };
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 990202);
+    assert.equal(result.createdComments.length, 1);
+    assert.equal(result.createdComments[0].rpid, 990202);
+    assert.deepEqual(addCalls, [fullMessage, "<1P>\nhttps://paste.rs/3c31503e"]);
+    assert.equal(result.warnings.some((item) => item.step === "guest-visible-root-comment"), true);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentPasteRetry" });
+    assert.equal(persistedVideo?.root_comment_rpid, 990202);
+    assert.equal(persistedVideo?.top_comment_rpid, 990202);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [990202]);
+    assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://paste.rs/3c31503e");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread fails when the paste-link retry is still not guest-visible", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = "<1P>\n1#20:36 single chunk summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentPasteRetryInvisible",
+      aid: 123450105,
+      title: "Paste Retry Invisible Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: fullMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 990301,
+      visibilityRule() {
+        return false;
+      },
+    });
+    const addCalls = [];
+    const originalAdd = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => {
+      addCalls.push(payload.message);
+      return originalAdd(payload as never);
+    };
+
+    await assert.rejects(
+      postSummaryThread({
+        client: harness.client,
+        oid: video.aid,
+        type: 1,
+        message: fullMessage,
+        db,
+        videoId: video.id,
+        topCommentState: {
+          hasTopComment: false,
+          topComment: null,
+        },
+        sleepImpl: async () => {},
+        guestReplyListImpl: harness.guestReplyListImpl as never,
+        fetchImpl: harness.fetchImpl as typeof fetch,
+      }),
+      /Published comment is not visible to guests/,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentPasteRetryInvisible" });
+    assert.equal(persistedVideo?.root_comment_rpid, null);
+    assert.equal(persistedVideo?.top_comment_rpid, null);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [0]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
+    assert.deepEqual(addCalls, [fullMessage, "<1P>\nhttps://paste.rs/3c31503e"]);
+    assert.equal(parts[0].summary_text_processed, null);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

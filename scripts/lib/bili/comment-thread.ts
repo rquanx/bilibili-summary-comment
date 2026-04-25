@@ -655,199 +655,31 @@ function buildMessageFromPageBlocks(pageBlocks) {
     .trim();
 }
 
-function filterPageBlocksByUnitIds(pageBlocks, unitIds) {
-  const allowedUnitIds = new Set(unitIds);
-  return pageBlocks
-    .map((block) => ({
-      ...block,
-      units: block.units.filter((unit) => allowedUnitIds.has(unit.id)),
-    }))
-    .filter((block) => block.units.length > 0);
-}
-
-async function probeCommentVisibility({
-  client,
-  oid,
-  type,
-  rootRpid = null,
-  message,
-  isRoot,
-  sleepImpl = sleep,
-  guestReplyListImpl = defaultGuestReplyListImpl,
-  fetchImpl = fetch,
-}) {
-  let postedRpid = null;
-
-  try {
-    const replyRes = isRoot
-      ? await client.reply.add({
-        oid,
-        type,
-        message,
-        plat: 1,
-      })
-      : await client.reply.add({
-        oid,
-        type,
-        root: rootRpid,
-        parent: rootRpid,
-        message,
-        plat: 1,
-      });
-    postedRpid = normalizeCommentRpid(replyRes?.rpid);
-
-    if (!postedRpid) {
-      return false;
-    }
-
-    await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
-    const visibleComment = await findVisibleCommentAsGuest({
-      oid,
-      type,
-      rootRpid: isRoot ? postedRpid : rootRpid,
-      targetRpid: postedRpid,
-      expectedMessage: message,
-      isRoot,
-      guestReplyListImpl,
-      fetchImpl,
-    });
-    if (visibleComment) {
-      return true;
-    }
-    return Boolean(await findVisibleCommentAsGuest({
-      oid,
-      type,
-      rootRpid: isRoot ? postedRpid : rootRpid,
-      targetRpid: postedRpid,
-      expectedMessage: message,
-      isRoot,
-      guestReplyListImpl,
-      fetchImpl,
-    }));
-  } finally {
-    if (postedRpid) {
-      await client.reply.delete({
-        oid,
-        type,
-        rpid: postedRpid,
-      }).catch(() => null);
-    }
-  }
-}
-
-async function collectProblematicUnitIds({
-  pageBlocks,
-  client,
-  oid,
-  type,
-  rootRpid = null,
-  isRoot,
-  sleepImpl = sleep,
-  guestReplyListImpl = defaultGuestReplyListImpl,
-  fetchImpl = fetch,
-}) {
-  const allUnits = pageBlocks.flatMap((block) => block.units);
-  const cache = new Map();
-
-  const testUnitIds = async (unitIds) => {
-    const testMessage = buildMessageFromPageBlocks(filterPageBlocksByUnitIds(pageBlocks, unitIds));
-    if (!testMessage) {
-      return true;
-    }
-
-    if (cache.has(testMessage)) {
-      return cache.get(testMessage);
-    }
-
-    const visible = await probeCommentVisibility({
-      client,
-      oid,
-      type,
-      rootRpid,
-      message: testMessage,
-      isRoot,
-      sleepImpl,
-      guestReplyListImpl,
-      fetchImpl,
-    });
-    cache.set(testMessage, visible);
-    return visible;
-  };
-
-  async function collect(unitIds) {
-    if (unitIds.length === 0) {
-      return [];
-    }
-
-    const visible = await testUnitIds(unitIds);
-    if (visible) {
-      return [];
-    }
-
-    if (unitIds.length === 1) {
-      return unitIds;
-    }
-
-    const middleIndex = Math.ceil(unitIds.length / 2);
-    const leftIds = unitIds.slice(0, middleIndex);
-    const rightIds = unitIds.slice(middleIndex);
-    const badUnitIds = [];
-
-    if (leftIds.length > 0 && !(await testUnitIds(leftIds))) {
-      badUnitIds.push(...await collect(leftIds));
-    }
-
-    if (rightIds.length > 0 && !(await testUnitIds(rightIds))) {
-      badUnitIds.push(...await collect(rightIds));
-    }
-
-    if (badUnitIds.length > 0) {
-      return [...new Set(badUnitIds)];
-    }
-
-    const singleUnitMatches = [];
-    for (const unitId of unitIds) {
-      if (!(await testUnitIds([unitId]))) {
-        singleUnitMatches.push(unitId);
-      }
-    }
-
-    if (singleUnitMatches.length > 0) {
-      return singleUnitMatches;
-    }
-
-    return unitIds;
+function buildWholeCommentPasteFallback(pageBlocks, pasteUrl) {
+  if (pageBlocks.length === 0) {
+    return pasteUrl;
   }
 
-  return collect(allUnits.map((unit) => unit.id));
-}
-
-function buildSanitizedUnitText(unit, pasteUrl) {
-  if (unit.label) {
-    return `${unit.label} ${pasteUrl}`;
-  }
-
-  return pasteUrl;
-}
-
-function buildSanitizedPageBlocks(pageBlocks, badUnitUrls) {
-  return pageBlocks.map((block) => ({
+  return buildMessageFromPageBlocks(pageBlocks.map((block) => ({
     ...block,
-    units: block.units.map((unit) => {
-      const pasteUrl = badUnitUrls.get(unit.id);
-      if (!pasteUrl) {
-        return unit;
-      }
-
-      return {
-        ...unit,
-        text: buildSanitizedUnitText(unit, pasteUrl),
-      };
-    }),
-  }));
+    units: [{
+      id: `${block.page}|paste`,
+      page: block.page,
+      label: null,
+      kind: "text",
+      text: pasteUrl,
+    }],
+  })));
 }
 
 function applyProcessedPagePatch(baseText, originalBlock, processedBlock) {
+  if (
+    processedBlock.units.length === 1
+    && /^https:\/\/paste\.rs\/\S+$/u.test(String(processedBlock.units[0]?.text ?? "").trim())
+  ) {
+    return buildMessageFromPageBlocks([processedBlock]);
+  }
+
   const parsedBaseBlocks = parseCommentPageBlocks(baseText);
   const baseBlock = parsedBaseBlocks.find((candidate) => candidate.page === originalBlock.page) ?? {
     page: originalBlock.page,
@@ -916,52 +748,18 @@ function persistProcessedChunk({
 }
 
 async function diagnoseInvisibleComment({
-  client,
-  oid,
-  type,
-  rootRpid = null,
   message,
-  isRoot,
-  sleepImpl = sleep,
-  guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
   uploadToPasteImpl = uploadTextToPasteRs,
 }) {
   const pageBlocks = parseCommentPageBlocks(message);
-  if (pageBlocks.length === 0) {
-    const pasteUrl = await uploadToPasteImpl(message, fetchImpl);
-    return {
-      badUnitIds: ["full-comment"],
-      processedMessage: pasteUrl,
-    };
-  }
-
-  const badUnitIds = await collectProblematicUnitIds({
-    pageBlocks,
-    client,
-    oid,
-    type,
-    rootRpid,
-    isRoot,
-    sleepImpl,
-    guestReplyListImpl,
-    fetchImpl,
-  });
-
-  const badUnitUrls = new Map();
-  for (const block of pageBlocks) {
-    for (const unit of block.units) {
-      if (!badUnitIds.includes(unit.id)) {
-        continue;
-      }
-
-      badUnitUrls.set(unit.id, await uploadToPasteImpl(unit.text, fetchImpl));
-    }
-  }
+  const pasteUrl = await uploadToPasteImpl(message, fetchImpl);
 
   return {
-    badUnitIds,
-    processedMessage: buildMessageFromPageBlocks(buildSanitizedPageBlocks(pageBlocks, badUnitUrls)),
+    badUnitIds: pageBlocks.length > 0
+      ? pageBlocks.flatMap((block) => block.units.map((unit) => unit.id))
+      : ["full-comment"],
+    processedMessage: buildWholeCommentPasteFallback(pageBlocks, pasteUrl),
   };
 }
 
@@ -1106,14 +904,7 @@ async function publishCommentChunk({
     let diagnosis;
     try {
       diagnosis = await diagnoseInvisibleComment({
-        client,
-        oid,
-        type,
-        rootRpid,
         message: chunk.message,
-        isRoot,
-        sleepImpl,
-        guestReplyListImpl,
         fetchImpl,
         uploadToPasteImpl,
       });
