@@ -24,6 +24,19 @@ export interface PublishStageResult {
   deletedThreads?: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }>;
 }
 
+function shouldRebuildMissingStoredRootCommentThread(
+  video: Pick<VideoRecord, "root_comment_rpid">,
+  topCommentState: { hasTopComment?: boolean; topComment?: { rpid?: number | null } | null } | null,
+): boolean {
+  const storedRootRpid = Number(video.root_comment_rpid ?? 0);
+  if (!Number.isInteger(storedRootRpid) || storedRootRpid <= 0) {
+    return false;
+  }
+
+  const liveTopRpid = Number(topCommentState?.topComment?.rpid ?? 0);
+  return !topCommentState?.hasTopComment || liveTopRpid !== storedRootRpid;
+}
+
 function collectRebuildDeleteCandidates(
   video: Pick<VideoRecord, "root_comment_rpid" | "top_comment_rpid">,
   topCommentState: { topComment?: { rpid?: number | null } | null } | null,
@@ -64,9 +77,29 @@ export async function runPublishStage({
   fetchImpl?: Parameters<typeof postSummaryThread>[0]["fetchImpl"];
   uploadToPasteImpl?: Parameters<typeof postSummaryThread>[0]["uploadToPasteImpl"];
 }): Promise<PublishStageResult> {
-  const needsRebuildPublish = Boolean(video.publish_needs_rebuild);
+  let needsRebuildPublish = Boolean(video.publish_needs_rebuild);
   const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
   const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
+  let rebuildTopCommentState: Awaited<ReturnType<typeof getTopComment>> | null = null;
+
+  if (!needsRebuildPublish && !pendingMessage && Number(video.root_comment_rpid ?? 0) > 0) {
+    rebuildTopCommentState = await getTopComment(client, { oid, type });
+    if (shouldRebuildMissingStoredRootCommentThread(video, rebuildTopCommentState)) {
+      needsRebuildPublish = true;
+      eventLogger?.log({
+        scope: "publish",
+        action: "comment-thread-healthcheck",
+        status: "failed",
+        message: "Stored root comment thread is missing or no longer pinned",
+        details: {
+          storedRootCommentRpid: video.root_comment_rpid ?? null,
+          liveTopCommentRpid: rebuildTopCommentState.topComment?.rpid ?? null,
+          hasTopComment: rebuildTopCommentState.hasTopComment,
+        },
+      });
+      progress?.log("Stored root comment thread is missing, rebuilding published summary thread");
+    }
+  }
 
   if (needsRebuildPublish) {
     eventLogger?.log({
@@ -100,7 +133,7 @@ export async function runPublishStage({
       return skipped;
     }
 
-    const topCommentState = await getTopComment(client, { oid, type });
+    const topCommentState = rebuildTopCommentState ?? await getTopComment(client, { oid, type });
     const deleteCandidates = collectRebuildDeleteCandidates(video, topCommentState);
 
     resetPublishedStateForVideo(db, video.id);
