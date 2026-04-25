@@ -8,6 +8,133 @@ import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from
 import { createSummaryHash } from "../scripts/lib/video/change-detection";
 import { runPublishStage } from "../scripts/lib/pipeline/publish-stage";
 
+function createJsonFetchResponse(data) {
+  return {
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        code: 0,
+        data,
+      };
+    },
+  };
+}
+
+function createGuestFetchHarness(startRpid) {
+  const comments = new Map();
+  let nextRpid = startRpid;
+  let pinnedRootRpid = null;
+
+  function buildRootNode(comment) {
+    return {
+      rpid: comment.rpid,
+      count: [...comments.values()].filter((item) => item.root === comment.rpid && item.rpid !== comment.rpid).length,
+      content: {
+        message: comment.message,
+      },
+      replies: [...comments.values()]
+        .filter((item) => item.root === comment.rpid && item.rpid !== comment.rpid)
+        .map((item) => ({
+          rpid: item.rpid,
+          root: item.root,
+          parent: item.parent,
+          content: {
+            message: item.message,
+          },
+        })),
+    };
+  }
+
+  const client = {
+    reply: {
+      async list() {
+        const visibleRoots = [...comments.values()]
+          .filter((comment) => comment.root === comment.rpid)
+          .sort((left, right) => left.rpid - right.rpid);
+        return {
+          upper: {
+            top: pinnedRootRpid ? buildRootNode(comments.get(pinnedRootRpid)) : null,
+          },
+          replies: visibleRoots.filter((comment) => comment.rpid !== pinnedRootRpid).map(buildRootNode),
+        };
+      },
+      async add(payload) {
+        const rpid = nextRpid++;
+        const root = Number(payload.root ?? rpid);
+        comments.set(rpid, {
+          rpid,
+          root,
+          parent: Number(payload.parent ?? root),
+          message: payload.message,
+        });
+        return {
+          rpid,
+        };
+      },
+      async top(payload) {
+        pinnedRootRpid = Number(payload.rpid);
+        return { ok: true };
+      },
+      async delete(payload) {
+        comments.delete(Number(payload.rpid));
+        if (pinnedRootRpid === Number(payload.rpid)) {
+          pinnedRootRpid = null;
+        }
+        return { ok: true };
+      },
+    },
+  };
+
+  const fetchImpl = async (url) => {
+    const normalizedUrl = new URL(String(url));
+    if (normalizedUrl.pathname === "/x/v2/reply") {
+      const visibleRoots = [...comments.values()]
+        .filter((comment) => comment.root === comment.rpid)
+        .sort((left, right) => left.rpid - right.rpid);
+      return createJsonFetchResponse({
+        page: {
+          count: visibleRoots.length,
+        },
+        upper: {
+          top: pinnedRootRpid ? buildRootNode(comments.get(pinnedRootRpid)) : null,
+        },
+        replies: visibleRoots.filter((comment) => comment.rpid !== pinnedRootRpid).map(buildRootNode),
+      });
+    }
+
+    if (normalizedUrl.pathname === "/x/v2/reply/reply") {
+      const rootRpid = Number(normalizedUrl.searchParams.get("root"));
+      const rootComment = comments.get(rootRpid);
+      const replies = [...comments.values()]
+        .filter((comment) => comment.root === rootRpid && comment.rpid !== rootRpid)
+        .map((comment) => ({
+          rpid: comment.rpid,
+          root: comment.root,
+          parent: comment.parent,
+          content: {
+            message: comment.message,
+          },
+        }));
+      return createJsonFetchResponse({
+        page: {
+          count: replies.length,
+        },
+        root: rootComment ? buildRootNode(rootComment) : null,
+        replies,
+      });
+    }
+
+    throw new Error(`Unexpected fetch url: ${normalizedUrl.toString()}`);
+  };
+
+  return {
+    client,
+    fetchImpl,
+    comments,
+  };
+}
+
 test("runPublishStage rebuild posts a new pinned root before deleting stale old threads", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -58,15 +185,27 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
       isDeleted: false,
     });
 
+    const harness = createGuestFetchHarness(900001);
+    harness.comments.set(555001, {
+      rpid: 555001,
+      root: 555001,
+      parent: 555001,
+      message: "old root thread",
+    });
+    harness.comments.set(555002, {
+      rpid: 555002,
+      root: 555002,
+      parent: 555002,
+      message: "old top thread",
+    });
+
     const calls = [];
-    let nextRpid = 900001;
-    let listCallCount = 0;
+    const originalClient = harness.client.reply;
     const client = {
       reply: {
-        async list() {
-          calls.push({ type: "list" });
-          listCallCount += 1;
-          if (listCallCount === 1) {
+        async list(...args) {
+          calls.push({ type: "list", args });
+          if (calls.filter((entry) => entry.type === "list").length === 1) {
             return {
               upper: {
                 top: {
@@ -76,42 +215,29 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
                   },
                 },
               },
+              replies: [
+                {
+                  rpid: 555001,
+                  content: {
+                    message: "old root thread",
+                  },
+                },
+              ],
             };
           }
-
-          return {
-            page: {
-              count: 1,
-            },
-            upper: {
-              top: {
-                rpid: 900001,
-                count: 1,
-                replies: [
-                  {
-                    rpid: 900002,
-                  },
-                ],
-                content: {
-                  message: "new top thread",
-                },
-              },
-            },
-          };
+          return originalClient.list();
         },
         async add(payload) {
           calls.push({ type: "add", payload });
-          return {
-            rpid: nextRpid++,
-          };
+          return originalClient.add(payload);
         },
         async top(payload) {
           calls.push({ type: "top", payload });
-          return { ok: true };
+          return originalClient.top(payload);
         },
         async delete(payload) {
           calls.push({ type: "delete", payload });
-          return { ok: true };
+          return originalClient.delete(payload);
         },
       },
     };
@@ -130,6 +256,8 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
       oid: video.aid,
       type: 1,
       workRoot,
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
     assert.equal(result.rebuild, true);
@@ -140,7 +268,7 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
     );
 
     const callTypes = calls.map((entry) => entry.type);
-    assert.deepEqual(callTypes, ["list", "add", "top", "list", "list", "list", "delete", "delete"]);
+    assert.deepEqual(callTypes, ["list", "add", "top", "delete", "delete"]);
     assert.deepEqual(
       calls.filter((entry) => entry.type === "delete").map((entry) => entry.payload.rpid).sort((a, b) => a - b),
       [555001, 555002],

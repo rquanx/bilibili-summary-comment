@@ -9,7 +9,7 @@ import {
   createCliCommand,
   runCli,
 } from "../lib/cli/tools";
-import { openDatabase } from "../lib/db/index";
+import { hasPreferredSummaryText, openDatabase } from "../lib/db/index";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../lib/video/index";
 
 const command = addDatabaseOption(
@@ -54,7 +54,7 @@ await runCli({
           cid: part.cid,
           partTitle: part.part_title,
           durationSec: part.duration_sec,
-          hasSummary: Boolean(part.summary_text),
+          hasSummary: hasPreferredSummaryText(part),
           published: Boolean(part.published),
         })),
         pendingSummaryPages: state.pendingSummaryParts.map((part) => part.page_no),

@@ -50,6 +50,7 @@ export interface VideoPartRecord {
   subtitle_source: string | null;
   subtitle_lang: string | null;
   summary_text: string | null;
+  summary_text_processed: string | null;
   summary_hash: string | null;
   published: number;
   published_comment_rpid: number | null;
@@ -70,6 +71,7 @@ export interface VideoPartUpsert {
   subtitleSource?: string | null;
   subtitleLang?: string | null;
   summaryText?: string | null;
+  processedSummaryText?: string | null;
   summaryHash?: string | null;
   published?: boolean | number;
   publishedCommentRpid?: number | null;

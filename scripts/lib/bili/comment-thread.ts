@@ -1,6 +1,18 @@
 import { createCliError, extractErrorDetails } from "../cli/errors";
-import { extractCoveredPages, normalizeSummaryMarkers, splitSummaryForComments } from "../summary/format";
-import { markPartsPublished, updateVideoCommentThread } from "../db/index";
+import {
+  getActiveVideoPartByPageNo,
+  getPreferredSummaryTextForPart,
+  markPartsPublished,
+  normalizeStoredSummaryText,
+  savePartProcessedSummary,
+  updateVideoCommentThread,
+} from "../db/index";
+import {
+  extractCoveredPages,
+  normalizeSummaryMarkers,
+  parseSummaryBlocks,
+  splitSummaryForComments,
+} from "../summary/format";
 
 const sleep = (timeout) =>
   new Promise((resolve) => {
@@ -10,17 +22,32 @@ const sleep = (timeout) =>
 const ROOT_TOP_DELAY_MS = 5000;
 const ROOT_TOP_RETRY_DELAY_MS = 5000;
 const REPLY_POST_DELAY_MS = 5000;
-const THREAD_VISIBILITY_RETRY_DELAY_MS = 5000;
-const THREAD_VISIBILITY_MAX_ATTEMPTS = 3;
+const GUEST_VISIBILITY_DELAY_MS = 10000;
+const GUEST_COMMENT_SCAN_PAGE_LIMIT = 5;
 const BILIBILI_COMMENT_MAX_LENGTH = 700;
+const TIMESTAMP_UNIT_PATTERN = /^(?<label>\d+#\d{1,2}:\d{2}(?::\d{2})?)\s+(?<rest>.+)$/u;
+
+interface CommentUnit {
+  id: string;
+  page: number;
+  label: string | null;
+  kind: "timepoint" | "text";
+  text: string;
+}
+
+interface CommentPageBlock {
+  page: number;
+  marker: string;
+  units: CommentUnit[];
+}
 
 const DELETED_COMMENT_PATTERNS = [
-  "\u5df2\u7ecf\u88ab\u5220\u9664",
-  "\u5df2\u88ab\u5220\u9664",
-  "\u8bc4\u8bba\u4e0d\u5b58\u5728",
-  "\u8be5\u8bc4\u8bba\u4e0d\u5b58\u5728",
-  "\u6839\u8bc4\u8bba\u4e0d\u5b58\u5728",
-  "\u697c\u5c42\u4e0d\u5b58\u5728",
+  "已经被删除",
+  "已被删除",
+  "评论不存在",
+  "该评论不存在",
+  "根评论不存在",
+  "楼层不存在",
 ];
 
 function getCommentErrorMessages(error) {
@@ -43,11 +70,12 @@ function isRetryableRootTopError(error) {
   return messages.some((message) => message.includes("啥都木有") || message.includes("稍后"));
 }
 
-function buildCommentWarning({ step, rpid, error }) {
+function buildCommentWarning({ step, rpid, error, details = null }) {
   return {
     step,
     rpid,
     message: error?.message ?? "Unknown comment error",
+    ...(details && typeof details === "object" ? details : {}),
     ...extractErrorDetails(error),
   };
 }
@@ -60,6 +88,10 @@ function normalizeCommentCount(value) {
 function normalizeCommentRpid(value) {
   const rpid = Number(value ?? 0);
   return Number.isInteger(rpid) && rpid > 0 ? rpid : null;
+}
+
+function normalizeMessageForMatch(value) {
+  return String(value ?? "").replace(/\r\n/g, "\n").trim();
 }
 
 function collectReplyNodes(reply, bucket = []) {
@@ -76,23 +108,47 @@ function collectReplyNodes(reply, bucket = []) {
   return bucket;
 }
 
-function findReplyNodeByRpid(response, targetRpid) {
-  const normalizedTargetRpid = normalizeCommentRpid(targetRpid);
-  if (!normalizedTargetRpid || !response || typeof response !== "object") {
-    return null;
+function collectReplyCandidates(response) {
+  if (!response || typeof response !== "object") {
+    return [];
   }
 
   const safeResponse = response;
   const upper = safeResponse.upper && typeof safeResponse.upper === "object" ? safeResponse.upper : null;
-  const candidates = [
+  const root = safeResponse.root && typeof safeResponse.root === "object" ? safeResponse.root : null;
+
+  return [
     upper?.top ?? null,
     safeResponse.top ?? null,
+    root ?? null,
+    ...(Array.isArray(root?.replies) ? root.replies : []),
     ...(Array.isArray(safeResponse.replies) ? safeResponse.replies : []),
-  ];
+  ].filter(Boolean);
+}
 
-  for (const candidate of candidates) {
+function extractReplyMessage(reply) {
+  if (!reply || typeof reply !== "object") {
+    return "";
+  }
+
+  const content = (typeof reply.content === "object" && reply.content !== null
+    ? reply.content
+    : {}) as Record<string, unknown>;
+  return normalizeMessageForMatch(content.message);
+}
+
+function findReplyNode(response, { targetRpid = null, expectedMessage = null }) {
+  const normalizedTargetRpid = normalizeCommentRpid(targetRpid);
+  const normalizedExpectedMessage = normalizeMessageForMatch(expectedMessage);
+
+  for (const candidate of collectReplyCandidates(response)) {
     for (const reply of collectReplyNodes(candidate)) {
-      if (normalizeCommentRpid(reply?.rpid ?? reply?.rpid_str) === normalizedTargetRpid) {
+      const replyRpid = normalizeCommentRpid(reply?.rpid ?? reply?.rpid_str);
+      if (normalizedTargetRpid && replyRpid === normalizedTargetRpid) {
+        return reply;
+      }
+
+      if (normalizedExpectedMessage && extractReplyMessage(reply) === normalizedExpectedMessage) {
         return reply;
       }
     }
@@ -101,94 +157,604 @@ function findReplyNodeByRpid(response, targetRpid) {
   return null;
 }
 
-async function assertCommentThreadVisible({
-  client,
-  oid,
-  type,
-  rootRpid,
-  minVisibleReplyCount = null,
-  sleepImpl = sleep,
-}) {
-  const normalizedRootRpid = normalizeCommentRpid(rootRpid);
-  if (!normalizedRootRpid) {
-    throw createCliError("Missing root comment rpid for visibility check", {
-      oid,
-      type,
-      rootRpid,
+function unwrapBilibiliPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  if ("data" in payload && payload.data !== undefined) {
+    return payload.data;
+  }
+
+  return payload;
+}
+
+async function fetchBilibiliGuestJson(url, fetchImpl = fetch) {
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json, text/plain, */*",
+      referer: "https://www.bilibili.com/",
+      "user-agent": "Mozilla/5.0",
+    },
+  });
+
+  if (!response.ok) {
+    throw createCliError("Guest comment fetch failed", {
+      status: response.status,
+      url,
     });
   }
 
-  const expectedReplyCount =
-    minVisibleReplyCount === null || minVisibleReplyCount === undefined
-      ? null
-      : Math.max(0, normalizeCommentCount(minVisibleReplyCount));
-  let lastObservedReplyCount = null;
-  let lastObservedPageCount = null;
-  let lastHasTopComment = false;
-  let foundRootComment = false;
-  let threadVisible = false;
+  return unwrapBilibiliPayload(await response.json());
+}
 
-  for (let attempt = 0; attempt < THREAD_VISIBILITY_MAX_ATTEMPTS; attempt += 1) {
-    const response = await client.reply.list({
+function buildGuestApiUrl(pathname, params) {
+  const url = new URL(pathname, "https://api.bilibili.com");
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+    url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+async function fetchGuestTopLevelReplies({ oid, type, pn, ps = 20, fetchImpl = fetch }) {
+  return fetchBilibiliGuestJson(buildGuestApiUrl("/x/v2/reply", {
+    oid,
+    type,
+    sort: 0,
+    nohot: 0,
+    pn,
+    ps,
+  }), fetchImpl);
+}
+
+async function fetchGuestChildReplies({ oid, type, rootRpid, pn, ps = 20, fetchImpl = fetch }) {
+  return fetchBilibiliGuestJson(buildGuestApiUrl("/x/v2/reply/reply", {
+    oid,
+    type,
+    root: rootRpid,
+    pn,
+    ps,
+  }), fetchImpl);
+}
+
+async function findVisibleCommentAsGuest({
+  oid,
+  type,
+  rootRpid = null,
+  targetRpid,
+  expectedMessage,
+  isRoot,
+  fetchImpl = fetch,
+}) {
+  if (isRoot) {
+    for (let pageNo = 1; pageNo <= GUEST_COMMENT_SCAN_PAGE_LIMIT; pageNo += 1) {
+      const response = await fetchGuestTopLevelReplies({
+        oid,
+        type,
+        pn: pageNo,
+        fetchImpl,
+      });
+      const match = findReplyNode(response, {
+        targetRpid,
+        expectedMessage,
+      });
+      if (match) {
+        return match;
+      }
+
+      const totalCount = normalizeCommentCount(response?.page?.count);
+      if (totalCount === 0 || pageNo * 20 >= totalCount) {
+        break;
+      }
+    }
+
+    return null;
+  }
+
+  const normalizedRootRpid = normalizeCommentRpid(rootRpid);
+  if (!normalizedRootRpid) {
+    return null;
+  }
+
+  for (let pageNo = 1; pageNo <= GUEST_COMMENT_SCAN_PAGE_LIMIT; pageNo += 1) {
+    const response = await fetchGuestChildReplies({
       oid,
       type,
-      pn: 1,
-      ps: 20,
-      sort: 0,
-      nohot: 0,
+      rootRpid: normalizedRootRpid,
+      pn: pageNo,
+      fetchImpl,
     });
-    const rootComment = findReplyNodeByRpid(response, normalizedRootRpid);
+    const match = findReplyNode(response, {
+      targetRpid,
+      expectedMessage,
+    });
+    if (match) {
+      return match;
+    }
 
-    foundRootComment = Boolean(rootComment);
-    lastObservedReplyCount = rootComment ? normalizeCommentCount(rootComment.count ?? rootComment.rcount) : null;
-    lastObservedPageCount = normalizeCommentCount(response?.page?.count);
-    lastHasTopComment = Boolean(response?.upper?.top ?? response?.top);
-    threadVisible = Boolean(rootComment) && (expectedReplyCount === null || lastObservedReplyCount >= expectedReplyCount);
-
-    if (attempt < THREAD_VISIBILITY_MAX_ATTEMPTS - 1) {
-      await sleepImpl(THREAD_VISIBILITY_RETRY_DELAY_MS);
+    const totalCount = normalizeCommentCount(response?.page?.count ?? response?.page?.acount);
+    if (totalCount === 0 || pageNo * 20 >= totalCount) {
+      break;
     }
   }
 
-  if (threadVisible) {
-    return {
-      observedReplyCount: lastObservedReplyCount,
-      pageCount: lastObservedPageCount,
-    };
-  }
+  return null;
+}
 
-  throw createCliError("Published comment thread is not visible on the video page", {
+async function assertCommentVisibleAsGuest({
+  oid,
+  type,
+  targetRpid,
+  expectedMessage,
+  isRoot,
+  rootRpid = null,
+  sleepImpl = sleep,
+  fetchImpl = fetch,
+}) {
+  await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
+  const visibleComment = await findVisibleCommentAsGuest({
     oid,
     type,
-    rootRpid: normalizedRootRpid,
-    expectedReplyCount,
-    observedReplyCount: lastObservedReplyCount,
-    pageCount: lastObservedPageCount,
-    hasTopComment: lastHasTopComment,
-    foundRootComment,
+    rootRpid,
+    targetRpid,
+    expectedMessage,
+    isRoot,
+    fetchImpl,
+  });
+
+  if (visibleComment) {
+    return visibleComment;
+  }
+
+  throw createCliError("Published comment is not visible to guests", {
+    oid,
+    type,
+    rpid: normalizeCommentRpid(targetRpid),
+    rootRpid: normalizeCommentRpid(rootRpid),
+    isRoot,
+    expectedMessage: normalizeMessageForMatch(expectedMessage),
   });
 }
 
-export function isMissingCommentThreadError(error) {
-  return isDeletedCommentThreadError(error);
+async function uploadTextToPasteRs(text, fetchImpl = fetch) {
+  const response = await fetchImpl("https://paste.rs", {
+    method: "POST",
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+    },
+    body: String(text ?? ""),
+  });
+
+  if (!response.ok) {
+    throw createCliError("Failed to upload problematic comment content to paste.rs", {
+      status: response.status,
+    });
+  }
+
+  const pasteUrl = String(await response.text()).trim();
+  if (!/^https:\/\/paste\.rs\/\S+$/u.test(pasteUrl)) {
+    throw createCliError("paste.rs returned an invalid URL", {
+      pasteUrl,
+    });
+  }
+
+  return pasteUrl;
 }
 
-function buildCreatedCommentRecord({ replyRes, rootRpid, chunk, isRoot }) {
+function parseCommentPageBlocks(message) {
+  return parseSummaryBlocks(message).map((block): CommentPageBlock => {
+    const lines = String(block.text ?? "").replace(/\r\n/g, "\n").split("\n");
+    const firstLine = lines[0] ?? block.marker;
+    const markerMatch = firstLine.match(/^<(?<page>\d+)P>\s*(?<rest>.*)$/u);
+    const bodyLines = [];
+    if (markerMatch?.groups?.rest) {
+      bodyLines.push(markerMatch.groups.rest);
+    }
+    bodyLines.push(...lines.slice(1));
+
+    const units: CommentUnit[] = [];
+    let currentUnit: CommentUnit | null = null;
+    let textIndex = 0;
+    const flushCurrentUnit = () => {
+      if (!currentUnit) {
+        return;
+      }
+
+      units.push(currentUnit);
+      currentUnit = null;
+    };
+
+    const startUnit = ({ text, label = null, kind }: { text: string; label?: string | null; kind: CommentUnit["kind"] }) => {
+      flushCurrentUnit();
+      currentUnit = {
+        id: label ? `${block.page}|time|${label}` : `${block.page}|text|${textIndex}`,
+        page: block.page,
+        label,
+        kind,
+        text,
+      };
+      if (!label) {
+        textIndex += 1;
+      }
+    };
+
+    for (const rawLine of bodyLines) {
+      const line = String(rawLine ?? "");
+      if (!line.trim()) {
+        if (currentUnit) {
+          currentUnit.text = `${currentUnit.text}\n${line}`;
+        }
+        continue;
+      }
+
+      const timestampMatch = line.match(TIMESTAMP_UNIT_PATTERN);
+      if (timestampMatch?.groups?.label) {
+        startUnit({
+          text: line,
+          label: timestampMatch.groups.label,
+          kind: "timepoint",
+        });
+        continue;
+      }
+
+      if (!currentUnit || currentUnit.kind !== "timepoint") {
+        startUnit({
+          text: line,
+          kind: "text",
+        });
+        continue;
+      }
+
+      currentUnit.text = `${currentUnit.text}\n${line}`;
+    }
+
+    flushCurrentUnit();
+
+    return {
+      page: block.page,
+      marker: block.marker,
+      units,
+    };
+  });
+}
+
+function buildMessageFromPageBlocks(pageBlocks) {
+  return pageBlocks
+    .map((block) => {
+      if (!block.units.length) {
+        return block.marker;
+      }
+
+      return [block.marker, ...block.units.map((unit) => unit.text)].join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function filterPageBlocksByUnitIds(pageBlocks, unitIds) {
+  const allowedUnitIds = new Set(unitIds);
+  return pageBlocks
+    .map((block) => ({
+      ...block,
+      units: block.units.filter((unit) => allowedUnitIds.has(unit.id)),
+    }))
+    .filter((block) => block.units.length > 0);
+}
+
+async function probeCommentVisibility({
+  client,
+  oid,
+  type,
+  rootRpid = null,
+  message,
+  isRoot,
+  sleepImpl = sleep,
+  fetchImpl = fetch,
+}) {
+  let postedRpid = null;
+
+  try {
+    const replyRes = isRoot
+      ? await client.reply.add({
+          oid,
+          type,
+          message,
+          plat: 1,
+        })
+      : await client.reply.add({
+          oid,
+          type,
+          root: rootRpid,
+          parent: rootRpid,
+          message,
+          plat: 1,
+        });
+    postedRpid = normalizeCommentRpid(replyRes?.rpid);
+
+    if (!postedRpid) {
+      return false;
+    }
+
+    await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
+    const visibleComment = await findVisibleCommentAsGuest({
+      oid,
+      type,
+      rootRpid: isRoot ? postedRpid : rootRpid,
+      targetRpid: postedRpid,
+      expectedMessage: message,
+      isRoot,
+      fetchImpl,
+    });
+    if (visibleComment) {
+      return true;
+    }
+    return Boolean(await findVisibleCommentAsGuest({
+      oid,
+      type,
+      rootRpid: isRoot ? postedRpid : rootRpid,
+      targetRpid: postedRpid,
+      expectedMessage: message,
+      isRoot,
+      fetchImpl,
+    }));
+  } finally {
+    if (postedRpid) {
+      await client.reply.delete({
+        oid,
+        type,
+        rpid: postedRpid,
+      }).catch(() => null);
+    }
+  }
+}
+
+async function collectProblematicUnitIds({
+  pageBlocks,
+  client,
+  oid,
+  type,
+  rootRpid = null,
+  isRoot,
+  sleepImpl = sleep,
+  fetchImpl = fetch,
+}) {
+  const allUnits = pageBlocks.flatMap((block) => block.units);
+  const cache = new Map();
+
+  const testUnitIds = async (unitIds) => {
+    const testMessage = buildMessageFromPageBlocks(filterPageBlocksByUnitIds(pageBlocks, unitIds));
+    if (!testMessage) {
+      return true;
+    }
+
+    if (cache.has(testMessage)) {
+      return cache.get(testMessage);
+    }
+
+    const visible = await probeCommentVisibility({
+      client,
+      oid,
+      type,
+      rootRpid,
+      message: testMessage,
+      isRoot,
+      sleepImpl,
+      fetchImpl,
+    });
+    cache.set(testMessage, visible);
+    return visible;
+  };
+
+  async function collect(unitIds) {
+    if (unitIds.length === 0) {
+      return [];
+    }
+
+    const visible = await testUnitIds(unitIds);
+    if (visible) {
+      return [];
+    }
+
+    if (unitIds.length === 1) {
+      return unitIds;
+    }
+
+    const middleIndex = Math.ceil(unitIds.length / 2);
+    const leftIds = unitIds.slice(0, middleIndex);
+    const rightIds = unitIds.slice(middleIndex);
+    const badUnitIds = [];
+
+    if (leftIds.length > 0 && !(await testUnitIds(leftIds))) {
+      badUnitIds.push(...await collect(leftIds));
+    }
+
+    if (rightIds.length > 0 && !(await testUnitIds(rightIds))) {
+      badUnitIds.push(...await collect(rightIds));
+    }
+
+    if (badUnitIds.length > 0) {
+      return [...new Set(badUnitIds)];
+    }
+
+    const singleUnitMatches = [];
+    for (const unitId of unitIds) {
+      if (!(await testUnitIds([unitId]))) {
+        singleUnitMatches.push(unitId);
+      }
+    }
+
+    if (singleUnitMatches.length > 0) {
+      return singleUnitMatches;
+    }
+
+    return unitIds;
+  }
+
+  return collect(allUnits.map((unit) => unit.id));
+}
+
+function buildSanitizedUnitText(unit, pasteUrl) {
+  if (unit.label) {
+    return `${unit.label} ${pasteUrl}`;
+  }
+
+  return pasteUrl;
+}
+
+function buildSanitizedPageBlocks(pageBlocks, badUnitUrls) {
+  return pageBlocks.map((block) => ({
+    ...block,
+    units: block.units.map((unit) => {
+      const pasteUrl = badUnitUrls.get(unit.id);
+      if (!pasteUrl) {
+        return unit;
+      }
+
+      return {
+        ...unit,
+        text: buildSanitizedUnitText(unit, pasteUrl),
+      };
+    }),
+  }));
+}
+
+function applyProcessedPagePatch(baseText, originalBlock, processedBlock) {
+  const parsedBaseBlocks = parseCommentPageBlocks(baseText);
+  const baseBlock = parsedBaseBlocks.find((candidate) => candidate.page === originalBlock.page) ?? {
+    page: originalBlock.page,
+    marker: originalBlock.marker,
+    units: originalBlock.units,
+  };
+
+  const originalUnitsById = new Map<string, CommentUnit>(originalBlock.units.map((unit) => [unit.id, unit]));
+  const processedUnitsById = new Map<string, CommentUnit>(processedBlock.units.map((unit) => [unit.id, unit]));
+  const nextUnits = baseBlock.units.map((unit) => {
+    const originalUnit = originalUnitsById.get(unit.id);
+    if (!originalUnit) {
+      return unit;
+    }
+
+    const processedUnit = processedUnitsById.get(unit.id) ?? originalUnit;
+    if (processedUnit.text === originalUnit.text) {
+      return unit;
+    }
+
+    return {
+      ...unit,
+      text: processedUnit.text,
+      kind: processedUnit.kind,
+      label: processedUnit.label,
+    };
+  });
+
+  return buildMessageFromPageBlocks([{
+    page: baseBlock.page,
+    marker: baseBlock.marker,
+    units: nextUnits,
+  }]);
+}
+
+function persistProcessedChunk({
+  db,
+  videoId,
+  originalMessage,
+  processedMessage,
+}) {
+  if (normalizeMessageForMatch(originalMessage) === normalizeMessageForMatch(processedMessage)) {
+    return;
+  }
+
+  const originalBlocks = parseCommentPageBlocks(originalMessage);
+  const processedBlocks = new Map(parseCommentPageBlocks(processedMessage).map((block) => [block.page, block]));
+
+  for (const originalBlock of originalBlocks) {
+    const processedBlock = processedBlocks.get(originalBlock.page) ?? originalBlock;
+    const part = getActiveVideoPartByPageNo(db, videoId, originalBlock.page);
+    if (!part) {
+      continue;
+    }
+
+    const baseText = getPreferredSummaryTextForPart(part) || normalizeStoredSummaryText(part.summary_text) || "";
+    const nextProcessedText = applyProcessedPagePatch(baseText, originalBlock, processedBlock);
+    const rawText = normalizeStoredSummaryText(part.summary_text);
+    savePartProcessedSummary(
+      db,
+      videoId,
+      originalBlock.page,
+      normalizeMessageForMatch(nextProcessedText) === normalizeMessageForMatch(rawText) ? null : nextProcessedText,
+    );
+  }
+}
+
+async function diagnoseInvisibleComment({
+  client,
+  oid,
+  type,
+  rootRpid = null,
+  message,
+  isRoot,
+  sleepImpl = sleep,
+  fetchImpl = fetch,
+  uploadToPasteImpl = uploadTextToPasteRs,
+}) {
+  const pageBlocks = parseCommentPageBlocks(message);
+  if (pageBlocks.length === 0) {
+    const pasteUrl = await uploadToPasteImpl(message, fetchImpl);
+    return {
+      badUnitIds: ["full-comment"],
+      processedMessage: pasteUrl,
+    };
+  }
+
+  const badUnitIds = await collectProblematicUnitIds({
+    pageBlocks,
+    client,
+    oid,
+    type,
+    rootRpid,
+    isRoot,
+    sleepImpl,
+    fetchImpl,
+  });
+
+  const badUnitUrls = new Map();
+  for (const block of pageBlocks) {
+    for (const unit of block.units) {
+      if (!badUnitIds.includes(unit.id)) {
+        continue;
+      }
+
+      badUnitUrls.set(unit.id, await uploadToPasteImpl(unit.text, fetchImpl));
+    }
+  }
+
+  return {
+    badUnitIds,
+    processedMessage: buildMessageFromPageBlocks(buildSanitizedPageBlocks(pageBlocks, badUnitUrls)),
+  };
+}
+
+function buildCreatedCommentRecord({ replyRes, rootRpid, chunk, isRoot, sanitizedMessage = null }) {
   return {
     rpid: replyRes.rpid,
     root: rootRpid,
     parent: rootRpid,
     pages: chunk.pages,
-    messageLength: chunk.message.length,
+    messageLength: normalizeMessageForMatch(sanitizedMessage ?? chunk.message).length,
     isRoot,
   };
 }
 
-async function createRootComment({ client, oid, type, chunk, sleepImpl = sleep }) {
+async function createRootComment({ client, oid, type, message, sleepImpl = sleep }) {
   const rootRes = await client.reply.add({
     oid,
     type,
-    message: chunk.message,
+    message,
     plat: 1,
   });
 
@@ -215,15 +781,178 @@ async function createRootComment({ client, oid, type, chunk, sleepImpl = sleep }
   }
 
   return {
-    rootRes,
-    topWarning: topError
-      ? buildCommentWarning({
-          step: "top-root-comment",
-          rpid: rootRes.rpid,
-          error: topError,
-        })
-      : null,
+    replyRes: rootRes,
+    warnings: topError
+      ? [
+          buildCommentWarning({
+            step: "top-root-comment",
+            rpid: rootRes.rpid,
+            error: topError,
+          }),
+        ]
+      : [],
   };
+}
+
+async function createReplyComment({ client, oid, type, rootRpid, message }) {
+  return {
+    replyRes: await client.reply.add({
+      oid,
+      type,
+      root: rootRpid,
+      parent: rootRpid,
+      message,
+      plat: 1,
+    }),
+    warnings: [],
+  };
+}
+
+async function deleteCommentSilently({ client, oid, type, rpid }) {
+  const normalizedRpid = normalizeCommentRpid(rpid);
+  if (!normalizedRpid) {
+    return;
+  }
+
+  await client.reply.delete({
+    oid,
+    type,
+    rpid: normalizedRpid,
+  }).catch(() => null);
+}
+
+async function publishCommentChunk({
+  client,
+  oid,
+  type,
+  db,
+  videoId,
+  chunk,
+  isRoot,
+  rootRpid = null,
+  sleepImpl = sleep,
+  fetchImpl = fetch,
+  uploadToPasteImpl = uploadTextToPasteRs,
+}) {
+  const createComment = isRoot
+    ? async (message) => createRootComment({
+        client,
+        oid,
+        type,
+        message,
+        sleepImpl,
+      })
+    : async (message) => createReplyComment({
+        client,
+        oid,
+        type,
+        rootRpid,
+        message,
+      });
+
+  const initialPublish = await createComment(chunk.message);
+  const initialRpid = normalizeCommentRpid(initialPublish.replyRes?.rpid);
+  const visibilityRootRpid = isRoot ? initialRpid : rootRpid;
+
+  try {
+    await assertCommentVisibleAsGuest({
+      oid,
+      type,
+      targetRpid: initialRpid,
+      expectedMessage: chunk.message,
+      isRoot,
+      rootRpid: visibilityRootRpid,
+      sleepImpl,
+      fetchImpl,
+    });
+
+    return {
+      replyRes: initialPublish.replyRes,
+      rootRpid: isRoot ? initialRpid : rootRpid,
+      finalMessage: chunk.message,
+      warnings: initialPublish.warnings,
+      recoveredByProcessing: false,
+      replacedInvisibleRpid: null,
+    };
+  } catch (error) {
+    const diagnosis = await diagnoseInvisibleComment({
+      client,
+      oid,
+      type,
+      rootRpid,
+      message: chunk.message,
+      isRoot,
+      sleepImpl,
+      fetchImpl,
+      uploadToPasteImpl,
+    });
+
+    const processedMessage = normalizeSummaryMarkers(diagnosis.processedMessage);
+    if (!processedMessage || processedMessage === normalizeSummaryMarkers(chunk.message)) {
+      throw createCliError("Published comment is not visible to guests", {
+        oid,
+        type,
+        rpid: initialRpid,
+        rootRpid: visibilityRootRpid,
+        isRoot,
+        badUnitIds: diagnosis.badUnitIds,
+      });
+    }
+
+    await deleteCommentSilently({
+      client,
+      oid,
+      type,
+      rpid: initialRpid,
+    });
+
+    const retryPublish = await createComment(processedMessage);
+    const retryRpid = normalizeCommentRpid(retryPublish.replyRes?.rpid);
+    const retryVisibilityRootRpid = isRoot ? retryRpid : rootRpid;
+
+    await assertCommentVisibleAsGuest({
+      oid,
+      type,
+      targetRpid: retryRpid,
+      expectedMessage: processedMessage,
+      isRoot,
+      rootRpid: retryVisibilityRootRpid,
+      sleepImpl,
+      fetchImpl,
+    });
+
+    persistProcessedChunk({
+      db,
+      videoId,
+      originalMessage: chunk.message,
+      processedMessage,
+    });
+
+    return {
+      replyRes: retryPublish.replyRes,
+      rootRpid: isRoot ? retryRpid : rootRpid,
+      finalMessage: processedMessage,
+      warnings: [
+        ...initialPublish.warnings,
+        ...retryPublish.warnings,
+        buildCommentWarning({
+          step: isRoot ? "guest-visible-root-comment" : "guest-visible-reply-comment",
+          rpid: initialRpid,
+          error,
+          details: {
+            recoveredByProcessing: true,
+            badUnitIds: diagnosis.badUnitIds,
+          },
+        }),
+      ],
+      recoveredByProcessing: true,
+      replacedInvisibleRpid: initialRpid,
+    };
+  }
+}
+
+export function isMissingCommentThreadError(error) {
+  return isDeletedCommentThreadError(error);
 }
 
 export async function postSummaryThread({
@@ -237,6 +966,8 @@ export async function postSummaryThread({
   existingRootRpid = null,
   forcedRootRpid = null,
   sleepImpl = sleep,
+  fetchImpl = fetch,
+  uploadToPasteImpl = uploadTextToPasteRs,
 }) {
   const normalizedMessage = normalizeSummaryMarkers(message);
   if (!normalizedMessage) {
@@ -250,95 +981,80 @@ export async function postSummaryThread({
 
   let rootRpid = forcedRootRpid ?? existingRootRpid ?? topCommentState.topComment?.rpid ?? null;
   const initialRootRpid = rootRpid;
-  const initialVisibleReplyCount =
-    normalizeCommentRpid(topCommentState.topComment?.rpid) === normalizeCommentRpid(rootRpid)
-      ? normalizeCommentCount(topCommentState.topComment?.count)
-      : null;
   const createdComments = [];
   const warnings = [];
   let recoveredFromDeletedRoot = false;
   let replacedRootCommentRpid = null;
 
-  if (!rootRpid) {
-    const firstChunk = chunks.shift();
-    const { rootRes, topWarning } = await createRootComment({
-      client,
+  if (rootRpid && (!topCommentState.hasTopComment || topCommentState.topComment?.rpid !== rootRpid)) {
+    await client.reply.top({
       oid,
       type,
-      chunk: firstChunk,
-      sleepImpl,
-    });
-    if (topWarning) {
-      warnings.push(topWarning);
-    }
-
-    rootRpid = rootRes.rpid;
-    createdComments.push(
-      buildCreatedCommentRecord({
-        replyRes: rootRes,
-        rootRpid: rootRes.rpid,
-        chunk: firstChunk,
-        isRoot: true,
-      }),
-    );
-  } else if (!topCommentState.hasTopComment || topCommentState.topComment?.rpid !== rootRpid) {
-    await client.reply
-      .top({
-        oid,
-        type,
-        rpid: rootRpid,
-        action: 1,
-      })
-      .catch(() => null);
+      rpid: rootRpid,
+      action: 1,
+    }).catch(() => null);
   }
 
   for (const [index, chunk] of chunks.entries()) {
+    const shouldCreateRoot = !rootRpid;
+
     try {
-      const replyRes = await client.reply.add({
+      const published = await publishCommentChunk({
+        client,
         oid,
         type,
-        root: rootRpid,
-        parent: rootRpid,
-        message: chunk.message,
-        plat: 1,
+        db,
+        videoId,
+        chunk,
+        isRoot: shouldCreateRoot,
+        rootRpid,
+        sleepImpl,
+        fetchImpl,
+        uploadToPasteImpl,
       });
 
+      rootRpid = published.rootRpid;
+      warnings.push(...published.warnings);
       createdComments.push(
         buildCreatedCommentRecord({
-          replyRes,
+          replyRes: published.replyRes,
           rootRpid,
           chunk,
-          isRoot: false,
+          isRoot: shouldCreateRoot,
+          sanitizedMessage: published.finalMessage,
         }),
       );
 
-      // Bilibili child replies can appear out of order when they land too close together.
-      // Spacing out posts makes the visible thread order match the summary page order more reliably.
       if (index < chunks.length - 1) {
         await sleepImpl(REPLY_POST_DELAY_MS);
       }
     } catch (error) {
       if (createdComments.length === 0 && rootRpid && isDeletedCommentThreadError(error)) {
-        const { rootRes, topWarning } = await createRootComment({
+        replacedRootCommentRpid = rootRpid;
+        rootRpid = null;
+        recoveredFromDeletedRoot = true;
+        const retried = await publishCommentChunk({
           client,
           oid,
           type,
+          db,
+          videoId,
           chunk,
+          isRoot: true,
+          rootRpid: null,
           sleepImpl,
+          fetchImpl,
+          uploadToPasteImpl,
         });
-        if (topWarning) {
-          warnings.push(topWarning);
-        }
-
-        replacedRootCommentRpid = rootRpid;
-        rootRpid = rootRes.rpid;
-        recoveredFromDeletedRoot = true;
+        rootRpid = retried.rootRpid;
+        warnings.push(...retried.warnings);
         createdComments.push(
           buildCreatedCommentRecord({
-            replyRes: rootRes,
+            replyRes: retried.replyRes,
             rootRpid,
             chunk,
             isRoot: true,
+            sanitizedMessage: retried.finalMessage,
           }),
         );
         continue;
@@ -347,23 +1063,6 @@ export async function postSummaryThread({
       throw error;
     }
   }
-
-  const createdReplyCount = createdComments.filter((item) => !item.isRoot).length;
-  const minVisibleReplyCount =
-    normalizeCommentRpid(initialRootRpid) === normalizeCommentRpid(rootRpid) && initialVisibleReplyCount !== null
-      ? initialVisibleReplyCount + createdReplyCount
-      : createdComments.some((item) => item.isRoot)
-        ? createdReplyCount
-        : null;
-
-  await assertCommentThreadVisible({
-    client,
-    oid,
-    type,
-    rootRpid,
-    minVisibleReplyCount,
-    sleepImpl,
-  });
 
   updateVideoCommentThread(db, videoId, {
     rootCommentRpid: rootRpid,
@@ -381,7 +1080,7 @@ export async function postSummaryThread({
     coveredPagesFromMessage: extractCoveredPages(normalizedMessage),
     rootCommentRpid: rootRpid,
     recoveredFromDeletedRoot,
-    replacedRootCommentRpid,
+    replacedRootCommentRpid: replacedRootCommentRpid ?? (normalizeCommentRpid(initialRootRpid) !== normalizeCommentRpid(rootRpid) ? initialRootRpid : null),
     createdComments,
     warnings,
   };

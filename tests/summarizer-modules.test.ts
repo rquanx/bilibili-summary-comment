@@ -154,7 +154,7 @@ test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_t
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
 });
 
-test("requestSummaryWithFallback does not retry non-matching errors", async () => {
+test("requestSummaryWithFallback retries 429 responses once before surfacing the failure", async () => {
   const calls = [];
 
   await assert.rejects(
@@ -179,7 +179,7 @@ test("requestSummaryWithFallback does not retry non-matching errors", async () =
     /429 Too Many Requests/u,
   );
 
-  assert.deepEqual(calls, ["kimi-k2.5"]);
+  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
 });
 
 test("buildSummaryPromptInput uses raw subtitles when there are no parsed segments", () => {
@@ -620,6 +620,53 @@ test("writeSummaryArtifacts refreshes per-page prompt files and removes stale pr
     assert.equal(fs.existsSync(path.join(workDir, "prompt-p03.md")), false);
     assert.match(fs.readFileSync(promptPath1, "utf8"), /## System Prompt/u);
     assert.match(fs.readFileSync(promptPath2, "utf8"), /## User Prompt/u);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("writeSummaryArtifacts prefers processed summary text when present", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-processed-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVprocessedpref1",
+      aid: 789013,
+      title: "Processed Summary Preference Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 301,
+      partTitle: "P1",
+      durationSec: 30,
+      summaryText: "<1P>\n1#00:00 原始内容",
+      processedSummaryText: "<1P>\n1#00:00 https://paste.rs/example",
+      summaryHash: "hash-processed",
+      isDeleted: false,
+    });
+
+    const artifacts = writeSummaryArtifacts(db, video, workRoot, {
+      promptConfigPath: null,
+    });
+
+    assert.equal(
+      fs.readFileSync(artifacts.summaryPath, "utf8").trim(),
+      "<1P>\n1#00:00 https://paste.rs/example",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(resolveVideoWorkDir(video, workRoot), "summary-p01.md"), "utf8").trim(),
+      "<1P>\n1#00:00 https://paste.rs/example",
+    );
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

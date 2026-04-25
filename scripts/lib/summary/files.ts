@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildSummarySegmentsFromSrt, formatSummaryTime } from "../subtitle/srt-utils";
 import { ensureVideoWorkDir } from "../shared/work-paths";
-import { listPendingPublishParts, listVideoParts } from "../db/index";
+import { getPreferredSummaryText, listPendingPublishParts, listVideoParts } from "../db/index";
 import { buildSummaryPromptInput } from "./client";
 import { resolveSummaryPromptProfile } from "./prompt-config";
 import type { Db, SummaryArtifacts, VideoPartRecord, VideoRecord } from "../db/index";
@@ -178,17 +178,17 @@ export function writeSummaryArtifacts(
   const activeParts = listVideoParts(db, video.id);
 
   const allSummaryText = activeParts
-    .map((part) => String(part.summary_text ?? "").trim())
+    .map((part) => getPreferredSummaryText(part))
     .filter(Boolean)
     .join("\n\n")
     .trim();
 
   const pendingSourceParts = Number(video.publish_needs_rebuild)
-    ? activeParts.filter((part) => String(part.summary_text ?? "").trim())
+    ? activeParts.filter((part) => getPreferredSummaryText(part))
     : listPendingPublishParts(db, video.id);
 
   const pendingSummaryText = pendingSourceParts
-    .map((part) => String(part.summary_text ?? "").trim())
+    .map((part) => getPreferredSummaryText(part))
     .filter(Boolean)
     .join("\n\n")
     .trim();
@@ -222,7 +222,7 @@ function rewritePerPageSummaryViews(workDir: string, parts: VideoPartRecord[]) {
   for (const part of parts) {
     const fileName = `summary-p${String(part.page_no).padStart(2, "0")}.md`;
     const filePath = path.join(workDir, fileName);
-    const normalizedSummary = String(part.summary_text ?? "").trim();
+    const normalizedSummary = getPreferredSummaryText(part);
     fs.writeFileSync(filePath, normalizedSummary ? `${normalizedSummary}\n` : "", "utf8");
   }
 

@@ -24,8 +24,15 @@ export {
   saveGapNotification,
 } from "./gap-notification-storage";
 export {
+  getPreferredSummaryText,
+  hasPreferredSummaryText,
+  hasRawSummaryText,
+  normalizeStoredSummaryText,
+} from "./summary-text";
+export {
   clearVideoPublishRebuildNeeded,
   getActiveVideoPartByPageNo,
+  getPreferredSummaryTextForPart,
   getVideoById,
   getVideoByIdentity,
   getVideoPartByCid,
@@ -39,6 +46,7 @@ export {
   markVideoPublishRebuildNeeded,
   replaceVideoSubtitlePathPrefix,
   resetPublishedStateForVideo,
+  savePartProcessedSummary,
   savePartSubtitle,
   savePartSummary,
   updateVideoCommentThread,

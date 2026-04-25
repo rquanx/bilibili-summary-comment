@@ -60,6 +60,10 @@ export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoSta
         moved && String(existingPart?.summary_text ?? "").trim()
           ? reindexSummaryText(existingPart.summary_text, page.pageNo)
           : existingPart?.summary_text ?? null;
+      const normalizedProcessedSummaryText =
+        moved && String(existingPart?.summary_text_processed ?? "").trim()
+          ? reindexSummaryText(existingPart.summary_text_processed, page.pageNo)
+          : existingPart?.summary_text_processed ?? null;
       const normalizedSummaryHash =
         normalizedSummaryText && normalizedSummaryText !== existingPart?.summary_text
           ? createSummaryHash(normalizedSummaryText)
@@ -78,6 +82,7 @@ export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoSta
         subtitleSource: existingPart?.subtitle_source ?? null,
         subtitleLang: existingPart?.subtitle_lang ?? null,
         summaryText: normalizedSummaryText,
+        processedSummaryText: normalizedProcessedSummaryText,
         summaryHash: normalizedSummaryHash,
         published: preservedPublished,
         publishedCommentRpid: preservedPublishedCommentRpid,
@@ -102,6 +107,7 @@ export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoSta
         subtitleSource: part.subtitle_source ?? null,
         subtitleLang: part.subtitle_lang ?? null,
         summaryText: part.summary_text ?? null,
+        processedSummaryText: part.summary_text_processed ?? null,
         summaryHash: part.summary_hash ?? null,
         published: false,
         publishedCommentRpid: null,

@@ -7,6 +7,7 @@ import type {
   VideoPartUpsert,
   VideoRecord,
 } from "./types";
+import { getPreferredSummaryText, normalizeStoredSummaryText } from "./summary-text";
 
 export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): VideoRecord | null {
   if (bvid) {
@@ -183,6 +184,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
       subtitle_source,
       subtitle_lang,
       summary_text,
+      summary_text_processed,
       summary_hash,
       published,
       published_comment_rpid,
@@ -192,7 +194,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(video_id, cid) DO UPDATE SET
       page_no = excluded.page_no,
       part_title = excluded.part_title,
@@ -201,6 +203,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
       subtitle_source = excluded.subtitle_source,
       subtitle_lang = excluded.subtitle_lang,
       summary_text = excluded.summary_text,
+      summary_text_processed = excluded.summary_text_processed,
       summary_hash = excluded.summary_hash,
       published = excluded.published,
       published_comment_rpid = excluded.published_comment_rpid,
@@ -218,6 +221,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
     part.subtitleSource ?? null,
     part.subtitleLang ?? null,
     part.summaryText ?? null,
+    normalizeStoredSummaryText(part.processedSummaryText),
     part.summaryHash ?? null,
     part.published ? 1 : 0,
     part.publishedCommentRpid ?? null,
@@ -286,8 +290,10 @@ export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecor
     SELECT * FROM video_parts
     WHERE video_id = ?
       AND is_deleted = 0
-      AND summary_text IS NOT NULL
-      AND TRIM(summary_text) <> ''
+      AND (
+        (summary_text_processed IS NOT NULL AND TRIM(summary_text_processed) <> '')
+        OR (summary_text IS NOT NULL AND TRIM(summary_text) <> '')
+      )
       AND published = 0
     ORDER BY page_no ASC
   `).all(videoId) as unknown as VideoPartRecord[];
@@ -297,12 +303,25 @@ export function savePartSummary(
   db: Db,
   videoId: number,
   pageNo: number,
-  { summaryText, summaryHash }: { summaryText: string; summaryHash: string },
+  {
+    summaryText,
+    summaryHash,
+    processedSummaryText = null,
+  }: {
+    summaryText: string;
+    summaryHash: string;
+    processedSummaryText?: string | null;
+  },
 ): VideoPartRecord | null {
   const now = new Date().toISOString();
+  const normalizedProcessedSummaryText = normalizeStoredSummaryText(processedSummaryText);
   db.prepare(`
     UPDATE video_parts
     SET summary_text = ?,
+        summary_text_processed = CASE
+          WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN ?
+          ELSE COALESCE(?, summary_text_processed)
+        END,
         summary_hash = ?,
         published = CASE
           WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN 0
@@ -320,7 +339,39 @@ export function savePartSummary(
     WHERE video_id = ?
       AND page_no = ?
       AND is_deleted = 0
-  `).run(summaryText, summaryHash, summaryHash, summaryHash, summaryHash, now, videoId, pageNo);
+  `).run(
+    summaryText,
+    summaryHash,
+    normalizedProcessedSummaryText,
+    normalizedProcessedSummaryText,
+    summaryHash,
+    summaryHash,
+    summaryHash,
+    summaryHash,
+    now,
+    videoId,
+    pageNo,
+  );
+
+  return getActiveVideoPartByPageNo(db, videoId, pageNo);
+}
+
+export function savePartProcessedSummary(
+  db: Db,
+  videoId: number,
+  pageNo: number,
+  processedSummaryText: string | null | undefined,
+): VideoPartRecord | null {
+  const now = new Date().toISOString();
+  const normalizedProcessedSummaryText = normalizeStoredSummaryText(processedSummaryText);
+  db.prepare(`
+    UPDATE video_parts
+    SET summary_text_processed = ?,
+        updated_at = ?
+    WHERE video_id = ?
+      AND page_no = ?
+      AND is_deleted = 0
+  `).run(normalizedProcessedSummaryText, now, videoId, pageNo);
 
   return getActiveVideoPartByPageNo(db, videoId, pageNo);
 }
@@ -385,4 +436,8 @@ export function resetPublishedStateForVideo(db: Db, videoId: number) {
         updated_at = ?
     WHERE video_id = ?
   `).run(now, videoId);
+}
+
+export function getPreferredSummaryTextForPart(part: Pick<VideoPartRecord, "summary_text" | "summary_text_processed"> | null | undefined): string {
+  return getPreferredSummaryText(part);
 }

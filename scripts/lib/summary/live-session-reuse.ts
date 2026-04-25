@@ -1,4 +1,10 @@
-import { listVideoParts, listVideos, savePartSummary } from "../db/index";
+import {
+  hasRawSummaryText,
+  listVideoParts,
+  listVideos,
+  normalizeStoredSummaryText,
+  savePartSummary,
+} from "../db/index";
 
 const TITLE_VARIANT_SUFFIX_PATTERN =
   /\s*[\[(（【]?\s*(?:纯净版|弹幕版|无弹幕版|无弹幕|录播版|熟肉版)\s*[\])）】]?\s*$/u;
@@ -45,10 +51,10 @@ export function findReusableSummarySource(db, currentVideo, currentParts) {
     const candidateParts = listVideoParts(db, candidateVideo.id);
     const reusableMatches = findMatchingParts(currentParts, candidateParts, {
       canReuseTargetPart(part) {
-        return !String(part.summary_text ?? "").trim();
+        return !hasRawSummaryText(part);
       },
       canReuseSourcePart(part) {
-        return Boolean(String(part.summary_text ?? "").trim() && String(part.summary_hash ?? "").trim());
+        return Boolean(hasRawSummaryText(part) && String(part.summary_hash ?? "").trim());
       },
     });
     if (reusableMatches.length === 0) {
@@ -82,19 +88,20 @@ export function reusePartSummaries(db, targetVideoId, sourceParts) {
   const reusedPages = [];
 
   const reusableMatches = findMatchingParts(targetParts, sourceActiveParts, {
-    canReuseTargetPart(part) {
-      return !String(part.summary_text ?? "").trim();
-    },
-    canReuseSourcePart(part) {
-      return Boolean(String(part.summary_text ?? "").trim() && String(part.summary_hash ?? "").trim());
-    },
+      canReuseTargetPart(part) {
+        return !hasRawSummaryText(part);
+      },
+      canReuseSourcePart(part) {
+        return Boolean(hasRawSummaryText(part) && String(part.summary_hash ?? "").trim());
+      },
   });
 
   for (const match of reusableMatches) {
-    const summaryText = String(match.sourcePart.summary_text ?? "").trim();
+    const summaryText = normalizeStoredSummaryText(match.sourcePart.summary_text) ?? "";
     const summaryHash = String(match.sourcePart.summary_hash ?? "").trim();
     savePartSummary(db, targetVideoId, match.targetPageNo, {
       summaryText,
+      processedSummaryText: normalizeStoredSummaryText(match.sourcePart.summary_text_processed),
       summaryHash,
     });
     reusedPages.push(match.targetPageNo);

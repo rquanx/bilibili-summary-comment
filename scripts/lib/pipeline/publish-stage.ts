@@ -46,6 +46,9 @@ export async function runPublishStage({
   forcedRootRpid = null,
   eventLogger = null,
   progress = null,
+  sleepImpl = undefined,
+  fetchImpl = undefined,
+  uploadToPasteImpl = undefined,
 }: {
   client: Parameters<typeof postSummaryThread>[0]["client"];
   db: Db;
@@ -57,6 +60,9 @@ export async function runPublishStage({
   forcedRootRpid?: number | null;
   eventLogger?: PipelineEventLogger | null;
   progress?: { log?: (message: string) => void } | null;
+  sleepImpl?: Parameters<typeof postSummaryThread>[0]["sleepImpl"];
+  fetchImpl?: Parameters<typeof postSummaryThread>[0]["fetchImpl"];
+  uploadToPasteImpl?: Parameters<typeof postSummaryThread>[0]["uploadToPasteImpl"];
 }): Promise<PublishStageResult> {
   const needsRebuildPublish = Boolean(video.publish_needs_rebuild);
   const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
@@ -116,6 +122,9 @@ export async function runPublishStage({
       },
       existingRootRpid: null,
       forcedRootRpid: null,
+      sleepImpl,
+      fetchImpl,
+      uploadToPasteImpl,
     });
 
     const deletedThreads: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }> = [];
@@ -210,6 +219,9 @@ export async function runPublishStage({
     topCommentState,
     existingRootRpid: video.root_comment_rpid,
     forcedRootRpid,
+    sleepImpl,
+    fetchImpl,
+    uploadToPasteImpl,
   });
   writeSummaryArtifacts(db, video, workRoot);
   eventLogger?.log({

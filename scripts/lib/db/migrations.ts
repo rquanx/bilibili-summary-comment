@@ -28,6 +28,7 @@ export function migrateDatabase(db) {
   ensureVideoColumn(db, "publish_rebuild_reason", "TEXT");
 
   migrateVideoPartsTable(db);
+  ensureVideoPartColumn(db, "summary_text_processed", "TEXT");
   createPipelineEventsTable(db);
   createGapNotificationsTable(db);
 
@@ -98,6 +99,7 @@ function migrateVideoPartsTable(db) {
         subtitle_source,
         subtitle_lang,
         summary_text,
+        summary_text_processed,
         summary_hash,
         published,
         published_comment_rpid,
@@ -118,6 +120,7 @@ function migrateVideoPartsTable(db) {
         subtitle_source,
         subtitle_lang,
         summary_text,
+        NULL,
         summary_hash,
         published,
         published_comment_rpid,
@@ -149,6 +152,7 @@ function createVideoPartsTable(db) {
       subtitle_source TEXT,
       subtitle_lang TEXT,
       summary_text TEXT,
+      summary_text_processed TEXT,
       summary_hash TEXT,
       published INTEGER NOT NULL DEFAULT 0,
       published_comment_rpid INTEGER,
@@ -160,6 +164,15 @@ function createVideoPartsTable(db) {
       FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
     )
   `);
+}
+
+function ensureVideoPartColumn(db, columnName, definition) {
+  const columns = db.prepare("PRAGMA table_info(video_parts)").all();
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE video_parts ADD COLUMN ${columnName} ${definition}`);
 }
 
 function createPipelineEventsTable(db) {
