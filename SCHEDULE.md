@@ -64,7 +64,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `BILI_REFRESH_DAYS`
   授权超过多少天后触发刷新，默认 `30`。
 - `WORK_CLEANUP_DAYS`
-  清理多少天前的 `work/<BV号>` 目录，默认 `2`。
+  清理多少天前的 `work/<owner_dir>/<video_dir>` 目录，默认 `2`。
 - `PIPELINE_DB_PATH`
   SQLite 路径，默认 `work/pipeline.sqlite3`。
 - `WORK_ROOT`
@@ -82,26 +82,30 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 
 ## 3. 调度行为
 
-`npm run schedule` 启动后，会注册这 4 个定时任务：
+`npm run schedule` 启动后，会注册这 5 个定时任务：
 
 - 每小时整点：
-  扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，默认自动发布。
+  扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，但这里的流水线会以 `publish=false` 运行，只负责生成 / 更新摘要与发布状态。
+- 每小时 `05` 分：
+  扫描数据库里的待发布视频，串行执行 publish sweep；除了真正待发布的视频，也会顺带检查最近 24 小时内已发布视频的评论线程是否仍然健康。
 - 每小时 `10` 分：
   对最近投稿执行缺段巡检；如果分 P 标题中的时间戳之间存在超过 `5` 秒的缺口，会把结果写入当天快照，并在配置了 `SERVER_CHAN_SEND_KEY` 时只通知“新发现”的缺口。
 - 每天 `03:15`：
   检查 `.auth/bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新授权信息。
 - 每天 `03:45`：
-  清理数据库里最后扫描时间早于 `WORK_CLEANUP_DAYS` 天之前的 `work/<BV号>` 目录。
+  清理数据库里最后扫描时间早于 `WORK_CLEANUP_DAYS` 天之前的 `work/<owner_dir>/<video_dir>` 目录。
 
 说明：
 
 - “每 30 天刷新一次”是通过“每天检查 + 超过阈值才执行”实现的，比直接写成“每月某一天”更接近真实的 30 天周期。
 - 扫描用户最近投稿时，命中的视频会复用现有 `run-video-pipeline` 流程，所以已经做过总结的分 P 会自动跳过。
-- 扫描用户最近投稿时，默认会自动发布待发布总结。
+- summary 阶段不会直接发布；发布统一交给 `05` 分的 publish sweep，避免多条视频并发写评论。
+- publish sweep 会优先处理真正待发布的视频；如果这些任务里某一条失败，会主动中断后续队列，避免持续给 B 站评论接口施压。
+- publish sweep 还会顺带对最近 24 小时内已经发布过的命中视频做一次线程健康检查；如果根评论失效，后续会自动重建整条线程。
 - 同一 UP、同一场录播的不同标题变体会串行排队，并优先处理更早上传的版本，便于后续版本复用总结和评论线程。
 - 缺段巡检的每日快照默认写到 `work/logs/gap-check/YYYY-MM-DD.json`。
 - 清理任务不会删除数据库记录，只会删除 `work` 目录里的过期文件。
-- 如果清理任务触发时总结任务还在运行，当前这轮清理会主动跳过。
+- 如果清理任务触发时 summary 或 publish 任务还在运行，当前这轮清理会主动跳过。
 
 ## 4. 常用命令
 
@@ -145,6 +149,7 @@ tsx scripts/commands/run-scheduler.ts --once gap-check
 
 ```bash
 tsx scripts/commands/run-scheduler.ts --once summary
+tsx scripts/commands/run-scheduler.ts --once publish
 tsx scripts/commands/run-scheduler.ts --once gap-check
 tsx scripts/commands/run-scheduler.ts --once refresh
 tsx scripts/commands/run-scheduler.ts --once cleanup

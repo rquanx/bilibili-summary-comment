@@ -9,12 +9,15 @@
 - 读取 `BV`、`aid` 或视频 URL，并同步视频与分 P 元数据到本地 SQLite
 - 优先复用本地字幕，再尝试 Bilibili 原生字幕 / AI 字幕，最后再走 `yt-dlp + videocaptioner`
 - 默认使用 `faster-whisper` 转写，失败后会按顺序回退到 `bijian`、`jianying`
-- 为每个分 P 生成独立总结，并产出 `summary-pXX.md`、`summary.md`、`pending-summary.md`
+- 为每个分 P 生成独立总结，并产出 `summary-pXX.md`、`prompt-pXX.md`、`summary.md`、`pending-summary.md`
 - 支持导入人工整理的总结文件，`1P` 和 `<1P>` 标记都会被规范化为 `<1P>`
 - 将待发布内容统一发布到同一条评论线程，并按 `<nP>` 标记识别覆盖范围
+- 发布后会以游客视角校验评论可见性；如果原文不可见，会自动改写为更稳妥的发布文本，必要时回退到 `paste.rs` 链接
 - 当视频分 P 顺序发生插入、删除、重排时，自动标记“已发布线程需要重建”
 - 对同标题且分 P 结构一致的录播自动复用历史总结，减少重复生成
 - 扫描指定 UP 最近投稿时，会把同一场录播的不同标题变体串行排队，优先跑更早的版本，便于复用总结和评论线程
+- 调度器将“生成总结”和“串行发布评论”拆成两个阶段，并额外对最近已发布视频做评论线程健康检查
+- 工作目录按 `work/<owner_dir>/<video_dir>/` 组织，并兼容迁移旧的 `work/<BV号>/` 目录
 - 支持 TV 终端二维码登录、refresh token 刷新授权、缺段巡检、定时巡检、工作目录清理、事件巡检和 `dist` 打包
 - 自动加载仓库根目录 `.env`
 
@@ -258,7 +261,7 @@ npm run sync:video -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx
 ### 3. 手工导入总结
 
 ```bash
-npm run import:summary -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --summary-file work/BVxxxxxxxxxx/summary.md
+npm run import:summary -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --summary-file "work/<owner_dir>/<video_dir>/summary.md"
 ```
 
 ### 4. 只发布未发布总结
@@ -279,10 +282,16 @@ npm run publish:pending -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxx
 tsx scripts/commands/get-bili-top-comment.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
+如果要看游客视角可见的顶层评论列表：
+
+```bash
+tsx scripts/commands/get-bili-guest-replies.ts --bvid BVxxxxxxxxxx --pn 1 --ps 20
+```
+
 ### 6. 手工发送一份总结
 
 ```bash
-tsx scripts/commands/post-bili-summary.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --message-file work/BVxxxxxxxxxx/pending-summary.md
+tsx scripts/commands/post-bili-summary.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --message-file "work/<owner_dir>/<video_dir>/pending-summary.md"
 ```
 
 ### 7. 初始化 TV 登录
@@ -354,6 +363,7 @@ npm run start
 
 ```bash
 tsx scripts/commands/run-scheduler.ts --once summary
+tsx scripts/commands/run-scheduler.ts --once publish
 tsx scripts/commands/run-scheduler.ts --once gap-check
 tsx scripts/commands/run-scheduler.ts --once refresh
 tsx scripts/commands/run-scheduler.ts --once cleanup
@@ -362,7 +372,8 @@ tsx scripts/commands/run-scheduler.ts --once all
 
 说明：
 
-- 调度器当前会注册 4 个任务：整点跑总结、每小时 `10` 分跑缺段巡检、每天 `03:15` 检查授权刷新、每天 `03:45` 清理工作目录
+- 调度器当前会注册 5 个任务：整点跑总结、每小时 `05` 分串行跑发布队列、每小时 `10` 分跑缺段巡检、每天 `03:15` 检查授权刷新、每天 `03:45` 清理工作目录
+- 调度器里的整点总结任务只负责生成 / 更新摘要，不直接发布；发布统一由 `05` 分的 publish sweep 接管
 - 缺段巡检会把当天快照写到 `work/logs/gap-check/YYYY-MM-DD.json`
 
 调度细节见 [SCHEDULE.md](./SCHEDULE.md)。
@@ -402,8 +413,9 @@ npm run inspect:events -- --since-hours 24 --limit 100
 5. 对缺总结的分 P：
    - 优先尝试复用“同标题 + 同分 P 结构”的历史录播总结
    - 其余部分调用总结模型生成内容
-6. 写出 `summary-pXX.md`、`summary.md`、`pending-summary.md`
-7. 如果指定了 `--publish`：
+6. 写出 `summary-pXX.md`、`prompt-pXX.md`、`summary.md`、`pending-summary.md`
+7. 如果本次没有指定 `--publish`，但数据库里已有根评论线程，会先做一次线程健康检查；如果发现原线程丢失或不再置顶，则标记下次发布时重建
+8. 如果指定了 `--publish`：
    - 正常情况下只发布 `pending-summary.md`
    - 如果检测到分 P 结构变化，则删除旧线程并按 `summary.md` 全量重建
 
@@ -412,21 +424,26 @@ npm run inspect:events -- --since-hours 24 --limit 100
 默认工作目录：
 
 ```text
-work/<BV号>/
+work/<owner_dir>/<video_dir>/
 ```
 
 常见产物：
 
 - `cid-<cid>.srt`：该分 P 的字幕
 - `cid-<cid>.m4a`：转写兜底时下载的音频
+- `prompt-p01.md`、`prompt-p02.md`：发送给总结模型的 prompt 快照
 - `summary-p01.md`、`summary-p02.md`：分 P 总结
 - `summary.md`：所有分 P 的完整汇总
 - `pending-summary.md`：当前尚未发布的汇总
+- `work/logs/...`：流水线、调度器和缺段巡检日志
 
 说明：
 
+- `owner_dir` 和 `video_dir` 会基于 UP 主名、视频标题和 `BV` 号做安全化命名
+- 旧版 `work/<BV号>/` 目录如果存在，会在首次命中时自动迁移到新的分层目录
 - 字幕和音频文件按 `cid` 命名，避免分 P 号变化时路径失效
 - `summary-pXX.md` 仍按页码输出，便于人工查看
+- `prompt-pXX.md` 默认会随每轮总结一起刷新，便于排查 prompt 配置和模型输入
 - 如果分 P 被删除，对应的旧 `summary-pXX.md` 会在重写汇总时自动清理
 
 ## SQLite 状态
@@ -458,7 +475,10 @@ work/pipeline.sqlite3
 - 第一次发布时创建根评论并尝试置顶
 - 后续增量内容全部回复到同一条根评论下
 - 已存在根评论失效或被删时，脚本会自动创建新线程
-- 发布后会检查线程是否真正出现在视频评论页里
+- 发布后会以游客视角检查评论是否真正可见
+- 如果评论对游客不可见，脚本会自动删除该条、改写后重发，并把处理后的文本记到 `summary_text_processed`
+- 极端情况下会把整段内容上传到 `paste.rs`，评论里仅保留 `<nP>` 覆盖范围和外链
+- 即使本次不发布，普通流水线也会探测已记录的根评论线程是否仍然存在；如果不存在，会标记下次发布时重建
 
 拆分规则：
 

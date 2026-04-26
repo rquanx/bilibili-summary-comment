@@ -184,9 +184,10 @@ npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --ven
 默认会生成：
 
 ```text
-work/<BV号>/
+work/<owner_dir>/<video_dir>/
   cid-<cid>.srt
   cid-<cid>.m4a
+  prompt-p01.md
   summary-p01.md
   summary.md
   pending-summary.md
@@ -225,6 +226,7 @@ npm run sync:users
 说明：
 
 - 该命令当前默认会执行完整流水线并自动发布
+- 常驻调度与这个命令不同：调度器会先在 summary 阶段生成 / 更新摘要，再在 publish 阶段串行发布
 - 同一 UP、同一场录播的不同标题变体会被串行处理，避免总结和评论线程互相覆盖
 
 启动常驻调度：
@@ -243,6 +245,7 @@ npm run start
 
 ```bash
 tsx scripts/commands/run-scheduler.ts --once summary
+tsx scripts/commands/run-scheduler.ts --once publish
 tsx scripts/commands/run-scheduler.ts --once gap-check
 tsx scripts/commands/run-scheduler.ts --once refresh
 tsx scripts/commands/run-scheduler.ts --once cleanup
@@ -262,7 +265,7 @@ npm run build
 说明：
 
 - 构建时会编译 TypeScript 到 `dist/`
-- 构建脚本会一并复制 `.env`、`config/`、`.auth/bili-auth*.json`、按环境变量指定的 auth / cookie 文件、`work/pipeline.sqlite3` 与 `sql/`
+- 构建脚本会一并复制 `.env`、`config/`、`.auth/bili-auth*.json`、匹配到的 indexed auth / cookie 文件、按环境变量指定的 auth / cookie 文件、`work/pipeline.sqlite3` 与 `sql/`
 - 调度器在 `dist` 环境下会优先直接执行编译后的 `scripts/commands/run-video-pipeline.js`
 
 运行测试与类型检查：
