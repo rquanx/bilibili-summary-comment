@@ -849,6 +849,100 @@ test("postSummaryThread retries once with a paste link instead of probe comments
   }
 });
 
+test("postSummaryThread compacts multi-page paste fallbacks into a single page range in comments", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = [
+    "<1P>",
+    "1#00:00 first page summary",
+    "",
+    "<2P>",
+    "2#00:00 second page summary",
+    "",
+    "<3P>",
+    "3#00:00 third page summary",
+    "",
+    "<4P>",
+    "4#00:00 fourth page summary",
+    "",
+    "<5P>",
+    "5#00:00 fifth page summary",
+  ].join("\n");
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentPasteRetryRange",
+      aid: 123450106,
+      title: "Paste Retry Range Test",
+      pageCount: 5,
+    });
+
+    for (let pageNo = 1; pageNo <= 5; pageNo += 1) {
+      upsertVideoPart(db, {
+        videoId: video.id,
+        pageNo,
+        cid: 100 + pageNo,
+        partTitle: `P${pageNo}`,
+        durationSec: 10,
+        summaryText: `<${pageNo}P>\n${pageNo}#00:00 page ${pageNo} summary`,
+        summaryHash: `hash-${pageNo}`,
+        published: false,
+        isDeleted: false,
+      });
+    }
+
+    const harness = createGuestCommentHarness({
+      startRpid: 990401,
+      visibilityRule(message) {
+        return message.includes("https://paste.rs/");
+      },
+    });
+    const addCalls = [];
+    const originalAdd = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => {
+      addCalls.push(payload.message);
+      return originalAdd(payload as never);
+    };
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 990402);
+    assert.equal(result.createdComments.length, 1);
+    assert.deepEqual(result.createdComments[0].pages, [1, 2, 3, 4, 5]);
+    assert.deepEqual(addCalls, [fullMessage, "<1P> ~ <5P>\nhttps://paste.rs/3c31503e"]);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(
+      parts.map((part) => part.summary_text_processed),
+      [
+        "<1P>\nhttps://paste.rs/3c31503e",
+        "<2P>\nhttps://paste.rs/3c31503e",
+        "<3P>\nhttps://paste.rs/3c31503e",
+        "<4P>\nhttps://paste.rs/3c31503e",
+        "<5P>\nhttps://paste.rs/3c31503e",
+      ],
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("postSummaryThread fails when the paste-link retry is still not guest-visible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

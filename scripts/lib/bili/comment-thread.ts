@@ -672,6 +672,49 @@ function buildWholeCommentPasteFallback(pageBlocks, pasteUrl) {
   })));
 }
 
+function buildWholeCommentPasteComment(pageBlocks, pasteUrl) {
+  const pageSet = new Set<number>();
+  for (const block of pageBlocks) {
+    const page = Number(block.page);
+    if (Number.isInteger(page) && page > 0) {
+      pageSet.add(page);
+    }
+  }
+
+  const pages = [...pageSet].sort((left, right) => left - right);
+
+  if (pages.length === 0) {
+    return pasteUrl;
+  }
+
+  const pageGroups = [];
+  let rangeStart = pages[0];
+  let previousPage = pages[0];
+
+  for (const page of pages.slice(1)) {
+    if (page === previousPage + 1) {
+      previousPage = page;
+      continue;
+    }
+
+    pageGroups.push(
+      rangeStart === previousPage
+        ? `<${rangeStart}P>`
+        : `<${rangeStart}P> ~ <${previousPage}P>`,
+    );
+    rangeStart = page;
+    previousPage = page;
+  }
+
+  pageGroups.push(
+    rangeStart === previousPage
+      ? `<${rangeStart}P>`
+      : `<${rangeStart}P> ~ <${previousPage}P>`,
+  );
+
+  return `${pageGroups.join(", ")}\n${pasteUrl}`;
+}
+
 function applyProcessedPagePatch(baseText, originalBlock, processedBlock) {
   if (
     processedBlock.units.length === 1
@@ -759,6 +802,7 @@ async function diagnoseInvisibleComment({
     badUnitIds: pageBlocks.length > 0
       ? pageBlocks.flatMap((block) => block.units.map((unit) => unit.id))
       : ["full-comment"],
+    processedCommentMessage: buildWholeCommentPasteComment(pageBlocks, pasteUrl),
     processedMessage: buildWholeCommentPasteFallback(pageBlocks, pasteUrl),
   };
 }
@@ -955,8 +999,9 @@ async function publishCommentChunk({
       throw diagnosisError;
     }
 
+    const processedCommentMessage = normalizeMessageForMatch(diagnosis.processedCommentMessage);
     const processedMessage = normalizeSummaryMarkers(diagnosis.processedMessage);
-    if (!processedMessage || processedMessage === normalizeSummaryMarkers(chunk.message)) {
+    if (!processedCommentMessage || !processedMessage || processedMessage === normalizeSummaryMarkers(chunk.message)) {
       throw createCliError("Published comment is not visible to guests", {
         oid,
         type,
@@ -974,7 +1019,7 @@ async function publishCommentChunk({
       rpid: initialRpid,
     });
 
-    const retryPublish = await createComment(processedMessage);
+    const retryPublish = await createComment(processedCommentMessage);
     const retryRpid = normalizeCommentRpid(retryPublish.replyRes?.rpid);
     const retryVisibilityRootRpid = isRoot ? retryRpid : rootRpid;
 
@@ -982,7 +1027,7 @@ async function publishCommentChunk({
       oid,
       type,
       targetRpid: retryRpid,
-      expectedMessage: processedMessage,
+      expectedMessage: processedCommentMessage,
       isRoot,
       rootRpid: retryVisibilityRootRpid,
       sleepImpl,
@@ -1000,7 +1045,7 @@ async function publishCommentChunk({
     return {
       replyRes: retryPublish.replyRes,
       rootRpid: isRoot ? retryRpid : rootRpid,
-      finalMessage: processedMessage,
+      finalMessage: processedCommentMessage,
       warnings: [
         ...initialPublish.warnings,
         ...retryPublish.warnings,
