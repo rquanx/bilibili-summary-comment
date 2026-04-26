@@ -694,6 +694,72 @@ test("writeSummaryArtifacts prefers processed summary text when present", () => 
   }
 });
 
+test("writeSummaryArtifacts uses raw summary text during rebuild publish preparation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-rebuild-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVrebuildraw1",
+      aid: 789015,
+      title: "Rebuild Summary Raw Preference Test",
+      pageCount: 2,
+    });
+    const rebuildVideo = {
+      ...video,
+      publish_needs_rebuild: 1,
+    };
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 311,
+      partTitle: "P1",
+      durationSec: 30,
+      summaryText: "<1P>\n1#00:00 原始内容一",
+      processedSummaryText: "<1P>\nhttps://paste.rs/example",
+      summaryHash: "hash-rebuild-1",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 312,
+      partTitle: "P2",
+      durationSec: 30,
+      summaryText: "<2P>\n2#00:00 原始内容二",
+      processedSummaryText: "<2P>\nhttps://paste.rs/example",
+      summaryHash: "hash-rebuild-2",
+      isDeleted: false,
+    });
+
+    const artifacts = writeSummaryArtifacts(db, rebuildVideo, workRoot, {
+      promptConfigPath: null,
+    });
+
+    assert.equal(
+      fs.readFileSync(artifacts.summaryPath, "utf8").trim(),
+      "<1P>\n1#00:00 原始内容一\n\n<2P>\n2#00:00 原始内容二",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(resolveVideoWorkDir(rebuildVideo, workRoot), "summary-p01.md"), "utf8").trim(),
+      "<1P>\n1#00:00 原始内容一",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(resolveVideoWorkDir(rebuildVideo, workRoot), "summary-p02.md"), "utf8").trim(),
+      "<2P>\n2#00:00 原始内容二",
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
 test("reindexSummaryTextToPage aligns markers and page-prefixed timestamps to the actual page number", () => {
   const reindexed = reindexSummaryTextToPage(
     "<15P>\n15#00:00 开场\n00:30 继续\n15#01:00 收尾",

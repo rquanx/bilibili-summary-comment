@@ -181,19 +181,20 @@ export function writeSummaryArtifacts(
     workRoot,
   });
   const activeParts = listVideoParts(db, video.id);
+  const useProcessedSummaryText = !Number(video.publish_needs_rebuild);
 
   const allSummaryText = activeParts
-    .map((part) => getAlignedSummaryText(part))
+    .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
     .filter(Boolean)
     .join("\n\n")
     .trim();
 
   const pendingSourceParts = Number(video.publish_needs_rebuild)
-    ? activeParts.filter((part) => getAlignedSummaryText(part))
+    ? activeParts.filter((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
     : listPendingPublishParts(db, video.id);
 
   const pendingSummaryText = pendingSourceParts
-    .map((part) => getAlignedSummaryText(part))
+    .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
     .filter(Boolean)
     .join("\n\n")
     .trim();
@@ -203,7 +204,7 @@ export function writeSummaryArtifacts(
 
   fs.writeFileSync(summaryPath, allSummaryText ? `${allSummaryText}\n` : "", "utf8");
   fs.writeFileSync(pendingPath, pendingSummaryText ? `${pendingSummaryText}\n` : "", "utf8");
-  rewritePerPageSummaryViews(workDir, activeParts);
+  rewritePerPageSummaryViews(workDir, activeParts, { useProcessedSummaryText });
 
   const shouldRewritePrompts = Object.prototype.hasOwnProperty.call(options, "promptConfigPath");
   if (shouldRewritePrompts) {
@@ -223,11 +224,15 @@ export function writeSummaryArtifacts(
   };
 }
 
-function rewritePerPageSummaryViews(workDir: string, parts: VideoPartRecord[]) {
+function rewritePerPageSummaryViews(
+  workDir: string,
+  parts: VideoPartRecord[],
+  { useProcessedSummaryText }: { useProcessedSummaryText: boolean },
+) {
   for (const part of parts) {
     const fileName = `summary-p${String(part.page_no).padStart(2, "0")}.md`;
     const filePath = path.join(workDir, fileName);
-    const normalizedSummary = getAlignedSummaryText(part);
+    const normalizedSummary = getAlignedSummaryText(part, { useProcessedSummaryText });
     fs.writeFileSync(filePath, normalizedSummary ? `${normalizedSummary}\n` : "", "utf8");
   }
 
@@ -300,6 +305,12 @@ function readPromptSubtitleText(subtitlePath: string | null | undefined) {
   return fs.readFileSync(normalizedSubtitlePath, "utf8");
 }
 
-function getAlignedSummaryText(part: VideoPartRecord): string {
-  return reindexSummaryTextToPage(getPreferredSummaryText(part), part.page_no);
+function getAlignedSummaryText(
+  part: VideoPartRecord,
+  { useProcessedSummaryText = true }: { useProcessedSummaryText?: boolean } = {},
+): string {
+  const summaryText = useProcessedSummaryText
+    ? getPreferredSummaryText(part)
+    : String(part.summary_text ?? "").trim();
+  return reindexSummaryTextToPage(summaryText, part.page_no);
 }
