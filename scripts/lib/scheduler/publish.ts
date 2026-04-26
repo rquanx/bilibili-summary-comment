@@ -8,10 +8,10 @@ import { collectRecentUploadsFromUsers } from "./uploads";
 import type { FileLogger } from "../shared/logger";
 import type { VideoRecord } from "../db/index";
 
-const PUBLISH_APPEND_COOLDOWN_MIN_MS = 30_000;
-const PUBLISH_APPEND_COOLDOWN_MAX_MS = 90_000;
-const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 30_000;
-const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 90_000;
+const PUBLISH_APPEND_COOLDOWN_MIN_MS = 15_000;
+const PUBLISH_APPEND_COOLDOWN_MAX_MS = 30_000;
+const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 15_000;
+const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 30_000;
 const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
 
 export interface PendingPublishTask {
