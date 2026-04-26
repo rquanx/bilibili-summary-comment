@@ -1208,6 +1208,116 @@ test("runPendingVideoPublishSweep healthchecks recently uploaded published video
   }
 });
 
+test("runPendingVideoPublishSweep only cools down after a task that actually created comments", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-cooldown-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const sleepCalls: number[] = [];
+
+  try {
+    const firstVideo = upsertVideo(db, {
+      bvid: "BVNOCOOLDOWN",
+      aid: 1,
+      title: "No Cooldown",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: firstVideo.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst",
+      published: false,
+      isDeleted: false,
+    });
+
+    const secondVideo = upsertVideo(db, {
+      bvid: "BVWITHCOOLDOWN",
+      aid: 2,
+      title: "With Cooldown",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: secondVideo.id,
+      pageNo: 1,
+      cid: 102,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nsecond",
+      published: false,
+      isDeleted: false,
+    });
+
+    const thirdVideo = upsertVideo(db, {
+      bvid: "BVAFTERCOOLDOWN",
+      aid: 3,
+      title: "After Cooldown",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: thirdVideo.id,
+      pageNo: 1,
+      cid: 103,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nthird",
+      published: false,
+      isDeleted: false,
+    });
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth-1.json");
+      },
+      runPipelineForBvidImpl: async (options) => {
+        if (options.bvid === "BVNOCOOLDOWN") {
+          return {
+            ok: true,
+            publishResult: {
+              action: "skip-publish",
+              createdComments: [],
+            },
+          };
+        }
+
+        return {
+          ok: true,
+          publishResult: {
+            action: "append-replies",
+            createdComments: [{ rpid: options.bvid === "BVWITHCOOLDOWN" ? 1 : 2 }],
+          },
+        };
+      },
+      computePublishCooldownMsImpl: () => 1234,
+      sleepImpl: async (timeoutMs) => {
+        sleepCalls.push(timeoutMs);
+      },
+    });
+
+    assert.deepEqual(result.tasks.map((item) => item.video.bvid), [
+      "BVNOCOOLDOWN",
+      "BVWITHCOOLDOWN",
+      "BVAFTERCOOLDOWN",
+    ]);
+    assert.deepEqual(sleepCalls, [1234]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("scheduler-tasks barrel re-exports split modules", () => {
   assert.equal(schedulerTasks.parseSummaryUsers, parseSummaryUsers);
   assert.equal(schedulerTasks.runPipelinesWithConcurrency, runPipelinesWithConcurrency);

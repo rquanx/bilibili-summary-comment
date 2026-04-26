@@ -27,6 +27,20 @@ export interface PendingPublishFailure {
   publishMode: "append" | "rebuild";
 }
 
+function didPublishCreateComments(result: unknown) {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+
+  const publishResult = (result as { publishResult?: unknown }).publishResult;
+  if (!publishResult || typeof publishResult !== "object") {
+    return false;
+  }
+
+  const createdComments = (publishResult as { createdComments?: unknown }).createdComments;
+  return Array.isArray(createdComments) && createdComments.length > 0;
+}
+
 export async function runPendingVideoPublishSweep({
   summaryUsers,
   authFile = DEFAULT_AUTH_FILE,
@@ -179,7 +193,7 @@ export async function runPendingVideoPublishSweep({
           result,
         });
 
-        if (index < tasks.length - 1) {
+        if (index < tasks.length - 1 && didPublishCreateComments(result)) {
           const cooldownMs = computePublishCooldownMsImpl(task.publishMode);
           onLog(`Cooling down ${Math.round(cooldownMs / 1000)}s before the next publish task`);
           await sleepImpl(cooldownMs);
