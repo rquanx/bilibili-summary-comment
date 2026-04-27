@@ -4,14 +4,13 @@ import { buildSummarySegmentsFromSrt } from "../subtitle/srt-utils";
 import { getVideoById, savePartSummary } from "../db/index";
 import { writePartPromptArtifact, writePartSummaryArtifact } from "./files";
 import { requestSummary } from "./client";
+import { requestSummaryWithGeminiSdk } from "./gemini";
 import { normalizeSummaryOutput } from "./output";
 import { resolveSummaryPromptProfile } from "./prompt-config";
 
 const KIMI_PRIMARY_MODEL = "kimi-k2.5";
 const GLM_FALLBACK_MODEL = "glm-5";
 const GEMINI_FLASH_FALLBACK_MODEL = "gemini-3-flash-preview";
-const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
-const GEMINI_OPENAI_FORMAT = "openai-chat";
 const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
 const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
 const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
@@ -35,6 +34,7 @@ export function shouldRetrySummaryWithGeminiFlash({ error, geminiApiKey }) {
 export async function requestSummaryWithFallback({
   requestArgs,
   requestSummaryImpl = requestSummary,
+  requestGeminiSummaryImpl = requestSummaryWithGeminiSdk,
   onFallback = null,
   geminiApiKey = process.env.GEMINI_KEY ?? "",
 }) {
@@ -63,10 +63,14 @@ export async function requestSummaryWithFallback({
       error,
     });
 
-    const summaryText = await requestSummaryImpl({
+    const fallbackRequestArgs = {
       ...requestArgs,
       ...fallbackTarget.requestOverrides,
-    });
+    };
+    const requestImpl = fallbackTarget.provider === "gemini-sdk"
+      ? requestGeminiSummaryImpl
+      : requestSummaryImpl;
+    const summaryText = await requestImpl(fallbackRequestArgs);
 
     return {
       summaryText,
@@ -96,6 +100,7 @@ export async function summarizePartFromSubtitle({
   workRoot = "work",
   eventLogger = null,
   requestSummaryImpl = requestSummary,
+  requestGeminiSummaryImpl = requestSummaryWithGeminiSdk,
   geminiApiKey = process.env.GEMINI_KEY ?? "",
 }) {
   if (!apiKey) {
@@ -162,6 +167,7 @@ export async function summarizePartFromSubtitle({
     const summaryAttempt = await requestSummaryWithFallback({
       requestArgs: summaryRequest,
       requestSummaryImpl,
+      requestGeminiSummaryImpl,
       geminiApiKey,
       onFallback: async ({ failedModel, fallbackModel, fallbackReason, error }) => {
         eventLogger?.log({
@@ -293,11 +299,11 @@ function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
     return {
       model: GEMINI_FLASH_FALLBACK_MODEL,
       reason: "content-filter-high-risk",
+      provider: "gemini-sdk",
       requestOverrides: {
         model: GEMINI_FLASH_FALLBACK_MODEL,
         apiKey: String(geminiApiKey).trim(),
-        apiBaseUrl: GEMINI_OPENAI_BASE_URL,
-        apiFormat: GEMINI_OPENAI_FORMAT,
+        proxyUrl: process.env.GEMINI_PROXY_URL ?? "http://127.0.0.1:7897",
       },
     };
   }

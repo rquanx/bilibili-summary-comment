@@ -213,7 +213,8 @@ test("requestSummaryWithFallback retries 429 responses once before surfacing the
 });
 
 test("requestSummaryWithFallback retries high-risk content filter errors with Gemini Flash when GEMINI_KEY is available", async () => {
-  const calls = [];
+  const requestSummaryCalls = [];
+  const geminiCalls = [];
   const result = await requestSummaryWithFallback({
     requestArgs: {
       pageNo: 3,
@@ -229,7 +230,7 @@ test("requestSummaryWithFallback retries high-risk content filter errors with Ge
     },
     geminiApiKey: "gemini-key-123",
     requestSummaryImpl: async (args) => {
-      calls.push({
+      requestSummaryCalls.push({
         model: args.model,
         apiBaseUrl: args.apiBaseUrl,
         apiFormat: args.apiFormat,
@@ -238,22 +239,30 @@ test("requestSummaryWithFallback retries high-risk content filter errors with Ge
       if (args.model === "kimi-k2.5") {
         throw new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}");
       }
+    },
+    requestGeminiSummaryImpl: async (args) => {
+      geminiCalls.push({
+        model: args.model,
+        apiKey: args.apiKey,
+        proxyUrl: args.proxyUrl,
+      });
       return "<3P> 3#00:00 Gemini fallback summary";
     },
   });
 
-  assert.deepEqual(calls, [
+  assert.deepEqual(requestSummaryCalls, [
     {
       model: "kimi-k2.5",
       apiBaseUrl: "https://example.com/v1",
       apiFormat: "openai-chat",
       apiKey: "key-123",
     },
+  ]);
+  assert.deepEqual(geminiCalls, [
     {
       model: "gemini-3-flash-preview",
-      apiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-      apiFormat: "openai-chat",
       apiKey: "gemini-key-123",
+      proxyUrl: "http://127.0.0.1:7897",
     },
   ]);
   assert.equal(result.modelUsed, "gemini-3-flash-preview");
@@ -626,6 +635,7 @@ test("summarizePartFromSubtitle records Gemini fallback success metadata for hig
 
   const events = [];
   const requestCalls = [];
+  const geminiCalls = [];
   const db = openDatabase(dbPath);
 
   try {
@@ -675,6 +685,13 @@ test("summarizePartFromSubtitle records Gemini fallback success metadata for hig
         if (args.model === "kimi-k2.5") {
           throw new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}");
         }
+      },
+      requestGeminiSummaryImpl: async (args) => {
+        geminiCalls.push({
+          model: args.model,
+          apiKey: args.apiKey,
+          proxyUrl: args.proxyUrl,
+        });
         return "<3P> 3#00:00 Gemini fallback summary";
       },
     });
@@ -686,11 +703,12 @@ test("summarizePartFromSubtitle records Gemini fallback success metadata for hig
         apiFormat: "openai-chat",
         apiKey: "key-123",
       },
+    ]);
+    assert.deepEqual(geminiCalls, [
       {
         model: "gemini-3-flash-preview",
-        apiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-        apiFormat: "openai-chat",
         apiKey: "gemini-key-123",
+        proxyUrl: "http://127.0.0.1:7897",
       },
     ]);
     assert.equal(result.modelUsed, "gemini-3-flash-preview");
