@@ -9,6 +9,9 @@ import { resolveSummaryPromptProfile } from "./prompt-config";
 
 const KIMI_PRIMARY_MODEL = "kimi-k2.5";
 const GLM_FALLBACK_MODEL = "glm-5";
+const GEMINI_FLASH_FALLBACK_MODEL = "gemini-3-flash-preview";
+const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+const GEMINI_OPENAI_FORMAT = "openai-chat";
 const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
 const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
 const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
@@ -25,10 +28,15 @@ export function shouldSkipSummaryPart({ error }) {
   return SUMMARY_CONTENT_FILTER_PATTERN.test(message) && SUMMARY_HIGH_RISK_PATTERN.test(message);
 }
 
+export function shouldRetrySummaryWithGeminiFlash({ error, geminiApiKey }) {
+  return Boolean(String(geminiApiKey ?? "").trim()) && shouldSkipSummaryPart({ error });
+}
+
 export async function requestSummaryWithFallback({
   requestArgs,
   requestSummaryImpl = requestSummary,
   onFallback = null,
+  geminiApiKey = process.env.GEMINI_KEY ?? "",
 }) {
   try {
     const summaryText = await requestSummaryImpl(requestArgs);
@@ -39,28 +47,32 @@ export async function requestSummaryWithFallback({
       fallbackReason: null,
     };
   } catch (error) {
-    if (!shouldRetrySummaryWithGlm5({ model: requestArgs.model, error })) {
+    const fallbackTarget = resolveSummaryFallbackTarget({
+      model: requestArgs.model,
+      error,
+      geminiApiKey,
+    });
+    if (!fallbackTarget) {
       throw error;
     }
 
-    const fallbackReason = "kimi-prompt_tokens-error";
     await onFallback?.({
       failedModel: requestArgs.model,
-      fallbackModel: GLM_FALLBACK_MODEL,
-      fallbackReason,
+      fallbackModel: fallbackTarget.model,
+      fallbackReason: fallbackTarget.reason,
       error,
     });
 
     const summaryText = await requestSummaryImpl({
       ...requestArgs,
-      model: GLM_FALLBACK_MODEL,
+      ...fallbackTarget.requestOverrides,
     });
 
     return {
       summaryText,
-      modelUsed: GLM_FALLBACK_MODEL,
+      modelUsed: fallbackTarget.model,
       fallbackUsed: true,
-      fallbackReason,
+      fallbackReason: fallbackTarget.reason,
     };
   }
 }
@@ -84,6 +96,7 @@ export async function summarizePartFromSubtitle({
   workRoot = "work",
   eventLogger = null,
   requestSummaryImpl = requestSummary,
+  geminiApiKey = process.env.GEMINI_KEY ?? "",
 }) {
   if (!apiKey) {
     throw new Error("Missing summary API key. Set SUMMARY_API_KEY or OPENAI_API_KEY.");
@@ -149,6 +162,7 @@ export async function summarizePartFromSubtitle({
     const summaryAttempt = await requestSummaryWithFallback({
       requestArgs: summaryRequest,
       requestSummaryImpl,
+      geminiApiKey,
       onFallback: async ({ failedModel, fallbackModel, fallbackReason, error }) => {
         eventLogger?.log({
           scope: "summary",
@@ -253,9 +267,40 @@ export async function summarizePartFromSubtitle({
         model,
         subtitlePath,
         promptPath,
-        fallbackEligible: shouldRetrySummaryWithGlm5({ model, error }),
+        fallbackEligible: Boolean(resolveSummaryFallbackTarget({
+          model,
+          error,
+          geminiApiKey,
+        })),
       },
     });
     throw error;
   }
+}
+
+function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
+  if (shouldRetrySummaryWithGlm5({ model, error })) {
+    return {
+      model: GLM_FALLBACK_MODEL,
+      reason: "kimi-prompt_tokens-error",
+      requestOverrides: {
+        model: GLM_FALLBACK_MODEL,
+      },
+    };
+  }
+
+  if (shouldRetrySummaryWithGeminiFlash({ error, geminiApiKey })) {
+    return {
+      model: GEMINI_FLASH_FALLBACK_MODEL,
+      reason: "content-filter-high-risk",
+      requestOverrides: {
+        model: GEMINI_FLASH_FALLBACK_MODEL,
+        apiKey: String(geminiApiKey).trim(),
+        apiBaseUrl: GEMINI_OPENAI_BASE_URL,
+        apiFormat: GEMINI_OPENAI_FORMAT,
+      },
+    };
+  }
+
+  return null;
 }

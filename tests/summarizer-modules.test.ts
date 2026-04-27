@@ -20,6 +20,7 @@ import { reindexSummaryTextToPage } from "../scripts/lib/db/summary-text";
 import {
   requestSummaryWithFallback,
   shouldSkipSummaryPart,
+  shouldRetrySummaryWithGeminiFlash,
   shouldRetrySummaryWithGlm5,
   summarizePartFromSubtitle,
 } from "../scripts/lib/summary/service";
@@ -124,6 +125,34 @@ test("shouldSkipSummaryPart only matches provider high-risk content filter error
   );
 });
 
+test("shouldRetrySummaryWithGeminiFlash only matches high-risk content filter errors when GEMINI_KEY is available", () => {
+  const highRiskError = new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}");
+
+  assert.equal(
+    shouldRetrySummaryWithGeminiFlash({
+      error: highRiskError,
+      geminiApiKey: "gemini-key-123",
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryWithGeminiFlash({
+      error: highRiskError,
+      geminiApiKey: "",
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldRetrySummaryWithGeminiFlash({
+      error: new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"message\":\"content filter triggered for another reason\"}}"),
+      geminiApiKey: "gemini-key-123",
+    }),
+    false,
+  );
+});
+
 test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_tokens errors", async () => {
   const calls = [];
   const result = await requestSummaryWithFallback({
@@ -181,6 +210,85 @@ test("requestSummaryWithFallback retries 429 responses once before surfacing the
   );
 
   assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+});
+
+test("requestSummaryWithFallback retries high-risk content filter errors with Gemini Flash when GEMINI_KEY is available", async () => {
+  const calls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 3,
+      partTitle: "P3",
+      durationSec: 180,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    geminiApiKey: "gemini-key-123",
+    requestSummaryImpl: async (args) => {
+      calls.push({
+        model: args.model,
+        apiBaseUrl: args.apiBaseUrl,
+        apiFormat: args.apiFormat,
+        apiKey: args.apiKey,
+      });
+      if (args.model === "kimi-k2.5") {
+        throw new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}");
+      }
+      return "<3P> 3#00:00 Gemini fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, [
+    {
+      model: "kimi-k2.5",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+      apiKey: "key-123",
+    },
+    {
+      model: "gemini-3-flash-preview",
+      apiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiFormat: "openai-chat",
+      apiKey: "gemini-key-123",
+    },
+  ]);
+  assert.equal(result.modelUsed, "gemini-3-flash-preview");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "content-filter-high-risk");
+  assert.equal(result.summaryText, "<3P> 3#00:00 Gemini fallback summary");
+});
+
+test("requestSummaryWithFallback does not retry high-risk content filter errors without GEMINI_KEY", async () => {
+  const calls = [];
+
+  await assert.rejects(
+    requestSummaryWithFallback({
+      requestArgs: {
+        pageNo: 3,
+        partTitle: "P3",
+        durationSec: 180,
+        subtitleText: "subtitle text",
+        segments: [],
+        promptProfile: null,
+        model: "kimi-k2.5",
+        apiKey: "key-123",
+        apiBaseUrl: "https://example.com/v1",
+        apiFormat: "openai-chat",
+      },
+      geminiApiKey: "",
+      requestSummaryImpl: async (args) => {
+        calls.push(args.model);
+        throw new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}");
+      },
+    }),
+    /high risk/u,
+  );
+
+  assert.deepEqual(calls, ["kimi-k2.5"]);
 });
 
 test("buildSummaryPromptInput uses raw subtitles when there are no parsed segments", () => {
@@ -496,6 +604,113 @@ test("summarizePartFromSubtitle records fallback success metadata when glm-5 ret
 
     const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 2);
     assert.equal(savedPart.summary_text, "<2P> 2#00:00 fallback summary");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("summarizePartFromSubtitle records Gemini fallback success metadata for high-risk content filter retries", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-gemini-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const subtitlePath = path.join(tempRoot, "p3.srt");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  fs.writeFileSync(subtitlePath, [
+    "1",
+    "00:00:00,000 --> 00:00:03,000",
+    "娴嬭瘯 Gemini fallback",
+    "",
+  ].join("\n"), "utf8");
+
+  const events = [];
+  const requestCalls = [];
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVtestgemini1",
+      aid: 123457,
+      title: "Gemini Fallback Summary Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 3,
+      cid: 303,
+      partTitle: "P3",
+      durationSec: 180,
+      subtitlePath,
+      isDeleted: false,
+    });
+
+    const result = await summarizePartFromSubtitle({
+      db,
+      videoId: video.id,
+      bvid: video.bvid,
+      pageNo: 3,
+      cid: 303,
+      partTitle: "P3",
+      durationSec: 180,
+      subtitlePath,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+      geminiApiKey: "gemini-key-123",
+      workRoot,
+      eventLogger: {
+        log(event) {
+          events.push(event);
+        },
+      },
+      requestSummaryImpl: async (args) => {
+        requestCalls.push({
+          model: args.model,
+          apiBaseUrl: args.apiBaseUrl,
+          apiFormat: args.apiFormat,
+          apiKey: args.apiKey,
+        });
+        if (args.model === "kimi-k2.5") {
+          throw new Error("Summary request failed: 400 Bad Request\n{\"error\":{\"metadata\":{\"raw\":\"{\\\"error\\\":{\\\"message\\\":\\\"The request was rejected because it was considered high risk\\\",\\\"param\\\":\\\"prompt\\\",\\\"type\\\":\\\"content_filter\\\"}}\"}}}");
+        }
+        return "<3P> 3#00:00 Gemini fallback summary";
+      },
+    });
+
+    assert.deepEqual(requestCalls, [
+      {
+        model: "kimi-k2.5",
+        apiBaseUrl: "https://example.com/v1",
+        apiFormat: "openai-chat",
+        apiKey: "key-123",
+      },
+      {
+        model: "gemini-3-flash-preview",
+        apiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+        apiFormat: "openai-chat",
+        apiKey: "gemini-key-123",
+      },
+    ]);
+    assert.equal(result.modelUsed, "gemini-3-flash-preview");
+    assert.equal(result.fallbackUsed, true);
+
+    const fallbackStarted = events.find((event) => event.action === "llm-fallback" && event.status === "started");
+    assert.ok(fallbackStarted);
+    assert.equal(fallbackStarted.details.failedModel, "kimi-k2.5");
+    assert.equal(fallbackStarted.details.fallbackModel, "gemini-3-flash-preview");
+    assert.equal(fallbackStarted.details.fallbackReason, "content-filter-high-risk");
+
+    const llmSucceeded = events.find((event) => event.action === "llm" && event.status === "succeeded");
+    assert.ok(llmSucceeded);
+    assert.equal(llmSucceeded.details.model, "gemini-3-flash-preview");
+    assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
+    assert.equal(llmSucceeded.details.fallbackUsed, true);
+    assert.equal(llmSucceeded.details.fallbackReason, "content-filter-high-risk");
+
+    const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 3);
+    assert.equal(savedPart.summary_text, "<3P> 3#00:00 Gemini fallback summary");
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
