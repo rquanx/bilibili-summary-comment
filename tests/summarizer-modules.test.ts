@@ -12,7 +12,7 @@ import {
   extractSummaryText,
   resolveSummaryApiTarget,
 } from "../scripts/lib/summary/client";
-import { inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/lib/summary/format";
+import { compactPasteLinkSummaryRanges, inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/lib/summary/format";
 import { writeSummaryArtifacts } from "../scripts/lib/summary/files";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
@@ -511,6 +511,39 @@ test("splitSummaryForComments splits oversized page blocks into multiple comment
   assert.ok(chunks.every((chunk) => chunk.message.startsWith("<1P>")));
 });
 
+test("compactPasteLinkSummaryRanges merges consecutive identical paste-only page blocks", () => {
+  const compacted = compactPasteLinkSummaryRanges([
+    "<5P>",
+    "5#00:00 normal summary",
+    "",
+    "<6P>",
+    "https://paste.rs/LhQJQ",
+    "",
+    "<7P>",
+    "https://paste.rs/LhQJQ",
+    "",
+    "<8P>",
+    "https://paste.rs/LhQJQ",
+    "",
+    "<10P>",
+    "https://paste.rs/LhQJQ",
+  ].join("\n"));
+
+  assert.equal(
+    compacted,
+    [
+      "<5P>",
+      "5#00:00 normal summary",
+      "",
+      "<6P> ~ <8P>",
+      "https://paste.rs/LhQJQ",
+      "",
+      "<10P>",
+      "https://paste.rs/LhQJQ",
+    ].join("\n"),
+  );
+});
+
 test("inspectSummaryPageMarkers reports duplicate and invalid page markers", () => {
   const inspection = inspectSummaryPageMarkers(
     [
@@ -919,6 +952,106 @@ test("writeSummaryArtifacts prefers processed summary text when present", () => 
     assert.equal(
       fs.readFileSync(path.join(resolveVideoWorkDir(video, workRoot), "summary-p01.md"), "utf8").trim(),
       "<1P>\n1#00:00 https://paste.rs/example",
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("writeSummaryArtifacts compacts consecutive paste-only processed summaries in aggregate views", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-paste-ranges-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVpastecompact1",
+      aid: 789016,
+      title: "Processed Paste Range Compaction Test",
+      pageCount: 4,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 5,
+      cid: 401,
+      partTitle: "P5",
+      durationSec: 30,
+      summaryText: "<5P>\n5#00:00 normal summary",
+      summaryHash: "hash-5",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 6,
+      cid: 402,
+      partTitle: "P6",
+      durationSec: 30,
+      summaryText: "<6P>\n6#00:00 original summary 6",
+      processedSummaryText: "<6P>\nhttps://paste.rs/LhQJQ",
+      summaryHash: "hash-6",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 7,
+      cid: 403,
+      partTitle: "P7",
+      durationSec: 30,
+      summaryText: "<7P>\n7#00:00 original summary 7",
+      processedSummaryText: "<7P>\nhttps://paste.rs/LhQJQ",
+      summaryHash: "hash-7",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 8,
+      cid: 404,
+      partTitle: "P8",
+      durationSec: 30,
+      summaryText: "<8P>\n8#00:00 original summary 8",
+      processedSummaryText: "<8P>\nhttps://paste.rs/LhQJQ",
+      summaryHash: "hash-8",
+      isDeleted: false,
+    });
+
+    const artifacts = writeSummaryArtifacts(db, video, workRoot, {
+      promptConfigPath: null,
+    });
+    const workDir = resolveVideoWorkDir(video, workRoot);
+
+    assert.equal(
+      fs.readFileSync(artifacts.summaryPath, "utf8").trim(),
+      [
+        "<5P>",
+        "5#00:00 normal summary",
+        "",
+        "<6P> ~ <8P>",
+        "https://paste.rs/LhQJQ",
+      ].join("\n"),
+    );
+    assert.equal(
+      fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim(),
+      [
+        "<5P>",
+        "5#00:00 normal summary",
+        "",
+        "<6P> ~ <8P>",
+        "https://paste.rs/LhQJQ",
+      ].join("\n"),
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p06.md"), "utf8").trim(),
+      "<6P>\nhttps://paste.rs/LhQJQ",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p08.md"), "utf8").trim(),
+      "<8P>\nhttps://paste.rs/LhQJQ",
     );
   } finally {
     db.close?.();

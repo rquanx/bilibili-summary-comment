@@ -106,6 +106,56 @@ export function inspectSummaryPageMarkers(text, availablePages = null) {
   };
 }
 
+export function compactPasteLinkSummaryRanges(text) {
+  const blocks = parseSummaryBlocks(text);
+  if (blocks.length === 0) {
+    return "";
+  }
+
+  const compactedBlocks = [];
+  let pendingGroup = null;
+
+  const flushPendingGroup = () => {
+    if (!pendingGroup) {
+      return;
+    }
+
+    const marker = pendingGroup.startPage === pendingGroup.endPage
+      ? `<${pendingGroup.startPage}P>`
+      : `<${pendingGroup.startPage}P> ~ <${pendingGroup.endPage}P>`;
+    compactedBlocks.push(`${marker}\n${pendingGroup.url}`);
+    pendingGroup = null;
+  };
+
+  for (const block of blocks) {
+    const pasteUrl = extractPasteLinkOnlyBody(block.text, block.marker);
+    if (!pasteUrl) {
+      flushPendingGroup();
+      compactedBlocks.push(block.text);
+      continue;
+    }
+
+    if (
+      pendingGroup
+      && pendingGroup.url === pasteUrl
+      && block.page === pendingGroup.endPage + 1
+    ) {
+      pendingGroup.endPage = block.page;
+      continue;
+    }
+
+    flushPendingGroup();
+    pendingGroup = {
+      startPage: block.page,
+      endPage: block.page,
+      url: pasteUrl,
+    };
+  }
+
+  flushPendingGroup();
+  return compactedBlocks.join("\n\n").trim();
+}
+
 export function splitSummaryForComments(text, maxLength = 1000) {
   const blocks = parseSummaryBlocks(text).flatMap((block) => splitSummaryBlockForComments(block, maxLength));
   if (blocks.length === 0) {
@@ -174,6 +224,11 @@ function extractBlockBody(blockText, marker) {
   }
 
   return normalizedText.slice(marker.length).trim();
+}
+
+function extractPasteLinkOnlyBody(blockText, marker) {
+  const body = extractBlockBody(blockText, marker);
+  return /^https:\/\/paste\.rs\/\S+$/u.test(body) ? body : null;
 }
 
 function splitBlockBodyText(text, maxBodyLength) {

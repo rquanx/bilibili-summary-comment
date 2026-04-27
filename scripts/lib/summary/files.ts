@@ -8,6 +8,7 @@ import {
   listVideoParts,
   reindexSummaryTextToPage,
 } from "../db/index";
+import { compactPasteLinkSummaryRanges } from "./format";
 import { buildSummaryPromptInput } from "./client";
 import { resolveSummaryPromptProfile } from "./prompt-config";
 import type { Db, SummaryArtifacts, VideoPartRecord, VideoRecord } from "../db/index";
@@ -199,11 +200,14 @@ export function writeSummaryArtifacts(
     .join("\n\n")
     .trim();
 
+  const compactedAllSummaryText = compactPasteLinkSummaryRanges(allSummaryText);
+  const compactedPendingSummaryText = compactPasteLinkSummaryRanges(pendingSummaryText);
+
   const summaryPath = path.join(workDir, "summary.md");
   const pendingPath = path.join(workDir, "pending-summary.md");
 
-  fs.writeFileSync(summaryPath, allSummaryText ? `${allSummaryText}\n` : "", "utf8");
-  fs.writeFileSync(pendingPath, pendingSummaryText ? `${pendingSummaryText}\n` : "", "utf8");
+  fs.writeFileSync(summaryPath, compactedAllSummaryText ? `${compactedAllSummaryText}\n` : "", "utf8");
+  fs.writeFileSync(pendingPath, compactedPendingSummaryText ? `${compactedPendingSummaryText}\n` : "", "utf8");
   rewritePerPageSummaryViews(workDir, activeParts, { useProcessedSummaryText });
 
   const shouldRewritePrompts = Object.prototype.hasOwnProperty.call(options, "promptConfigPath");
