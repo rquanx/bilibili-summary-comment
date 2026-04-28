@@ -4,7 +4,9 @@ import path from "node:path";
 import {
   buildLocalFasterWhisperExecutableDirCandidates,
   buildLocalFasterWhisperModelPathCandidates,
+  findFasterWhisperProgramInDir,
   inferFasterWhisperModelName,
+  inferFasterWhisperDevice,
   prependPathEntries,
   resolveLocalFasterWhisperConfig,
   resolveLocalFasterWhisperExecutableConfig,
@@ -19,6 +21,16 @@ test("model path candidates prefer explicit env config before LocalAppData fallb
   assert.deepEqual(buildLocalFasterWhisperModelPathCandidates(env), [
     "D:\\models\\custom-fw",
     "C:\\Users\\tester\\AppData\\Local\\VideoCaptioner\\AppData\\models\\faster-whisper-large-v3-turbo",
+  ]);
+});
+
+test("model path candidates include Linux user-data fallback", () => {
+  const env = {
+    HOME: "/home/tester",
+  };
+
+  assert.deepEqual(buildLocalFasterWhisperModelPathCandidates(env), [
+    path.join("/home/tester", ".local", "share", "VideoCaptioner", "models", "faster-whisper-large-v3-turbo"),
   ]);
 });
 
@@ -47,6 +59,23 @@ test("executable dir candidates include configured and LocalAppData locations", 
     "D:\\fw-bin",
     "C:\\Users\\tester\\AppData\\Local\\VideoCaptioner\\resource\\bin\\Faster-Whisper-XXL",
     "C:\\Users\\tester\\AppData\\Local\\VideoCaptioner\\resource\\bin",
+    "/opt/videocaptioner/bin/Faster-Whisper-XXL",
+    "/opt/videocaptioner/bin",
+    "/usr/local/bin",
+  ]);
+});
+
+test("executable dir candidates include Linux fallback locations", () => {
+  const env = {
+    HOME: "/home/tester",
+  };
+
+  assert.deepEqual(buildLocalFasterWhisperExecutableDirCandidates(env), [
+    path.join("/home/tester", ".local", "share", "VideoCaptioner", "resource", "bin", "Faster-Whisper-XXL"),
+    path.join("/home/tester", ".local", "share", "VideoCaptioner", "resource", "bin"),
+    "/opt/videocaptioner/bin/Faster-Whisper-XXL",
+    "/opt/videocaptioner/bin",
+    "/usr/local/bin",
   ]);
 });
 
@@ -62,11 +91,73 @@ test("resolveLocalFasterWhisperExecutableConfig picks the first existing program
   const config = resolveLocalFasterWhisperExecutableConfig({
     env,
     existsSync: (targetPath) => existingPaths.has(path.resolve(targetPath)),
+    statSync: (targetPath) => ({
+      isFile: () => path.resolve(targetPath) === path.resolve("D:\\fw-bin\\faster-whisper-xxl.exe"),
+      isDirectory: () => path.resolve(targetPath) === path.resolve("D:\\fw-bin"),
+    }),
   });
 
   assert.equal(config.device, "cuda");
   assert.equal(config.programPath, path.resolve("D:\\fw-bin\\faster-whisper-xxl.exe"));
   assert.deepEqual(config.pathEntries, [path.resolve("D:\\fw-bin")]);
+});
+
+test("resolveLocalFasterWhisperExecutableConfig accepts a Linux program path directly", () => {
+  const env = {
+    VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN: "/opt/faster-whisper/faster-whisper-xxl",
+  };
+
+  const existingPaths = new Set([
+    path.resolve("/opt/faster-whisper/faster-whisper-xxl"),
+  ]);
+  const config = resolveLocalFasterWhisperExecutableConfig({
+    env,
+    existsSync: (targetPath) => existingPaths.has(path.resolve(targetPath)),
+    statSync: () => ({
+      isFile: () => true,
+      isDirectory: () => false,
+    }),
+  });
+
+  assert.equal(config.device, "cuda");
+  assert.equal(config.programPath, path.resolve("/opt/faster-whisper/faster-whisper-xxl"));
+  assert.deepEqual(config.pathEntries, [path.resolve("/opt/faster-whisper")]);
+});
+
+test("findFasterWhisperProgramInDir finds a Linux binary inside a directory", () => {
+  const existingPaths = new Set([
+    path.resolve("/opt/videocaptioner/bin"),
+    path.resolve("/opt/videocaptioner/bin/faster-whisper-xxl"),
+  ]);
+
+  const programPath = findFasterWhisperProgramInDir(
+    "/opt/videocaptioner/bin",
+    (targetPath) => existingPaths.has(path.resolve(targetPath)),
+    (targetPath) => ({
+      isFile: () => path.resolve(targetPath) === path.resolve("/opt/videocaptioner/bin/faster-whisper-xxl"),
+      isDirectory: () => path.resolve(targetPath) === path.resolve("/opt/videocaptioner/bin"),
+    }),
+  );
+
+  assert.equal(programPath, path.join("/opt/videocaptioner/bin", "faster-whisper-xxl"));
+});
+
+test("findFasterWhisperProgramInDir does not treat a same-named directory as the executable", () => {
+  const existingPaths = new Set([
+    path.resolve("/opt/videocaptioner/bin/Faster-Whisper-XXL"),
+    path.resolve("/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl"),
+  ]);
+
+  const programPath = findFasterWhisperProgramInDir(
+    "/opt/videocaptioner/bin/Faster-Whisper-XXL",
+    (targetPath) => existingPaths.has(path.resolve(targetPath)),
+    (targetPath) => ({
+      isFile: () => path.resolve(targetPath) === path.resolve("/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl"),
+      isDirectory: () => path.resolve(targetPath) === path.resolve("/opt/videocaptioner/bin/Faster-Whisper-XXL"),
+    }),
+  );
+
+  assert.equal(programPath, path.join("/opt/videocaptioner/bin/Faster-Whisper-XXL", "faster-whisper-xxl"));
 });
 
 test("prependPathEntries keeps order while removing duplicates", () => {
@@ -77,4 +168,9 @@ test("prependPathEntries keeps order while removing duplicates", () => {
 
 test("inferFasterWhisperModelName falls back to the default model for unknown names", () => {
   assert.equal(inferFasterWhisperModelName("mystery-model"), "large-v3-turbo");
+});
+
+test("inferFasterWhisperDevice honors explicit device overrides", () => {
+  assert.equal(inferFasterWhisperDevice("/opt/videocaptioner/bin/faster-whisper", "cuda"), "cuda");
+  assert.equal(inferFasterWhisperDevice("/opt/videocaptioner/bin/faster-whisper-xxl", "cpu"), "cpu");
 });

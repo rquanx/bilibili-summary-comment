@@ -16,3 +16,32 @@ services:
       - ./work:/app/work
       - ./.auth:/app/.auth
     command: ["npm", "run", "start"]
+
+  video-pipeline-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: video-pipeline:gpu
+    env_file:
+      - .env
+    environment:
+      TZ: ${CRON_TIMEZONE:-Asia/Shanghai}
+      CRON_TIMEZONE: ${CRON_TIMEZONE:-Asia/Shanghai}
+      WORK_ROOT: work
+      PIPELINE_DB_PATH: work/pipeline.sqlite3
+      BILI_AUTH_FILE: .auth/bili-auth.json
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN: /opt/videocaptioner/bin/Faster-Whisper-XXL
+      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH: /opt/videocaptioner/models/faster-whisper-large-v3-turbo
+      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE: cuda
+      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD: silero-v4
+      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD: "0.4"
+    volumes:
+      - ./work:/app/work
+      - ./.auth:/app/.auth
+      - type: bind
+        source: ${VIDEOCAPTIONER_HOST_MODEL_ROOT:-./.videocaptioner/models}
+        target: /opt/videocaptioner/models
+    gpus: all
+    command: ["npm", "run", "start"]

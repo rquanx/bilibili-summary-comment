@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildTranscribeArgs, transcribeWithRetries } from "../scripts/lib/subtitle/transcriber";
+import { buildDirectFasterWhisperArgs, buildTranscribeArgs, transcribeWithRetries } from "../scripts/lib/subtitle/transcriber";
 
 function createProgressRecorder() {
   const messages: string[] = [];
@@ -31,6 +31,40 @@ test("buildTranscribeArgs requests Chinese transcription", () => {
   assert.equal(args[languageIndex + 1], "zh");
 });
 
+test("buildDirectFasterWhisperArgs normalizes local binary arguments", () => {
+  const originalVadMethod = process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD;
+  const originalVadThreshold = process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD;
+  process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD = "silero-v4";
+  process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD = "0.4";
+
+  try {
+    const args = buildDirectFasterWhisperArgs({
+      audioPath: "/tmp/audio.m4a",
+      subtitlePath: "/tmp/audio.srt",
+      localFasterWhisper: {
+        exists: true,
+        modelName: "large-v3-turbo",
+        modelDir: "/models",
+        modelPath: "/models/faster-whisper-large-v3-turbo",
+      },
+      executableConfig: {
+        device: "cuda",
+        programPath: "/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl",
+        pathEntries: ["/opt/videocaptioner/bin/Faster-Whisper-XXL"],
+      },
+    });
+
+    assert.deepEqual(args.slice(0, 5), ["-m", "large-v3-turbo", "--print_progress", "--model_dir", "/models"]);
+    assert.ok(args.includes("--compute_type"));
+    assert.ok(args.includes("float16"));
+    assert.ok(args.includes("--vad_method"));
+    assert.ok(args.includes("silero_v4"));
+  } finally {
+    process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD = originalVadMethod;
+    process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD = originalVadThreshold;
+  }
+});
+
 test("transcribeWithRetries removes sparse volunteer-credit cues without fallback", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subtitle-clean-"));
   const subtitlePath = path.join(tempRoot, "subtitle.srt");
@@ -52,6 +86,7 @@ test("transcribeWithRetries removes sparse volunteer-credit cues without fallbac
       progress,
       eventLogger: null,
       resolveLocalFasterWhisperConfigImpl: () => null,
+      resolveLocalFasterWhisperExecutableConfigImpl: () => null,
       withTranscriptionQueueLockImpl: async (_options, callback) => callback(),
       notifyTranscriptionFailureImpl: async () => {},
       runTranscribeCommandImpl: async (_moduleName, args) => {
@@ -112,6 +147,7 @@ test("transcribeWithRetries falls back to bijian when volunteer-credit cues domi
       progress,
       eventLogger: null,
       resolveLocalFasterWhisperConfigImpl: () => null,
+      resolveLocalFasterWhisperExecutableConfigImpl: () => null,
       withTranscriptionQueueLockImpl: async (_options, callback) => callback(),
       notifyTranscriptionFailureImpl: async () => {},
       runTranscribeCommandImpl: async (_moduleName, args) => {
@@ -176,6 +212,70 @@ test("transcribeWithRetries falls back to bijian when volunteer-credit cues domi
     assert.match(finalSubtitle, /重新识别成功/u);
     assert.match(finalSubtitle, /正常中文字幕/u);
     assert.doesNotMatch(finalSubtitle, /李宗盛/u);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("transcribeWithRetries uses the local FasterWhisper binary directly when available", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subtitle-direct-fw-"));
+  const audioPath = path.join(tempRoot, "audio.m4a");
+  const subtitlePath = path.join(tempRoot, "audio.srt");
+  const { progress } = createProgressRecorder();
+  const directCalls: Array<{ command: string; args: string[] }> = [];
+
+  fs.writeFileSync(audioPath, "fake-audio", "utf8");
+
+  try {
+    await transcribeWithRetries({
+      audioPath,
+      subtitlePath,
+      asr: "faster-whisper",
+      bvid: "BVdirect",
+      videoTitle: "Direct FasterWhisper Test",
+      cid: 3,
+      pageNo: 3,
+      partTitle: "P3",
+      workRoot: tempRoot,
+      venvPath: ".3.11",
+      progress,
+      eventLogger: null,
+      resolveLocalFasterWhisperConfigImpl: () => ({
+        exists: true,
+        modelName: "large-v3-turbo",
+        modelDir: "/models",
+        modelPath: "/models/faster-whisper-large-v3-turbo",
+      }),
+      resolveLocalFasterWhisperExecutableConfigImpl: () => ({
+        device: "cuda",
+        programPath: "/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl",
+        pathEntries: ["/opt/videocaptioner/bin/Faster-Whisper-XXL"],
+      }),
+      withTranscriptionQueueLockImpl: async (_options, callback) => callback(),
+      notifyTranscriptionFailureImpl: async () => {},
+      runTranscribeCommandImpl: async () => {
+        throw new Error("videocaptioner CLI should not be used when a direct FasterWhisper binary is available");
+      },
+      runDirectCommandImpl: async (command, args) => {
+        directCalls.push({ command, args });
+        fs.writeFileSync(subtitlePath, [
+          "1",
+          "00:00:00,000 --> 00:00:02,000",
+          "二进制直调成功",
+          "",
+        ].join("\n"), "utf8");
+        return {
+          code: 0,
+          stdout: "",
+          stderr: "",
+        };
+      },
+    });
+
+    assert.equal(directCalls.length, 1);
+    assert.equal(directCalls[0]?.command, "/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl");
+    assert.ok(directCalls[0]?.args.includes("--compute_type"));
+    assert.match(fs.readFileSync(subtitlePath, "utf8"), /二进制直调成功/u);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

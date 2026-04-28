@@ -4,6 +4,7 @@ dist
 .3.11
 .auth
 work
+.videocaptioner
 .tmp-tests
 .vscode
 .env

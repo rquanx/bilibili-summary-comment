@@ -1,6 +1,8 @@
 import fs from "node:fs";
-import { runVenvModule } from "../shared/runtime-tools";
+import path from "node:path";
+import { runCommand, runVenvModule } from "../shared/runtime-tools";
 import {
+  DEFAULT_FASTER_WHISPER_MODEL_NAME,
   prependPathEntries,
   resolveLocalFasterWhisperConfig,
   resolveLocalFasterWhisperExecutableConfig,
@@ -21,6 +23,12 @@ interface LocalFasterWhisperConfig {
   modelPath: string;
 }
 
+interface LocalFasterWhisperExecutableConfig {
+  device: string;
+  programPath: string;
+  pathEntries: string[];
+}
+
 export async function transcribeWithRetries({
   audioPath,
   subtitlePath,
@@ -35,13 +43,16 @@ export async function transcribeWithRetries({
   progress,
   eventLogger,
   runTranscribeCommandImpl = runVenvModule,
+  runDirectCommandImpl = runCommand,
   withTranscriptionQueueLockImpl = withTranscriptionQueueLock,
   notifyTranscriptionFailureImpl = notifyTranscriptionFailure,
   resolveLocalFasterWhisperConfigImpl = resolveLocalFasterWhisperConfig,
+  resolveLocalFasterWhisperExecutableConfigImpl = resolveLocalFasterWhisperExecutableConfig,
 }) {
   const engines = buildAsrFallbackPlan(asr);
   const failures = [];
   const localFasterWhisper = resolveLocalFasterWhisperConfigImpl();
+  const localFasterWhisperExecutable = resolveLocalFasterWhisperExecutableConfigImpl();
 
   for (const [engineIndex, engine] of engines.entries()) {
     if (engineIndex > 0) {
@@ -74,18 +85,6 @@ export async function transcribeWithRetries({
           eventLogger,
           cid,
         }, async () => {
-          const transcribeArgs = buildTranscribeArgs({
-            audioPath,
-            subtitlePath,
-            engine,
-            localFasterWhisper,
-          });
-          const transcribeEnv = buildTranscribeEnv({
-            engine,
-            localFasterWhisper,
-            progress,
-            pageNo,
-          });
           const transcriptionLabel = formatTranscriptionTarget({
             bvid,
             videoTitle,
@@ -113,23 +112,71 @@ export async function transcribeWithRetries({
             "Subtitle",
             `Running transcription with ASR ${engine} (${attempt}/${TRANSCRIPTION_RETRY_LIMIT}): ${transcriptionLabel}`,
           );
-          await runTranscribeCommandImpl("videocaptioner", transcribeArgs, {
-            venvPath,
-            env: transcribeEnv,
-            streamOutput: true,
-            outputStream: progress?.rawOutputStream ?? progress?.outputStream,
-            logger: progress?.logger ?? null,
-            logContext: {
-              scope: "subtitle",
-              action: "asr-command",
-              bvid,
+
+          if (shouldUseDirectFasterWhisper(engine, localFasterWhisperExecutable)) {
+            const directArgs = buildDirectFasterWhisperArgs({
+              audioPath,
+              subtitlePath,
+              localFasterWhisper,
+              executableConfig: localFasterWhisperExecutable,
+            });
+            progress?.logPartStage?.(
               pageNo,
-              cid,
-              partTitle,
+              "Subtitle",
+              `Running direct FasterWhisper binary ${localFasterWhisperExecutable.programPath}`,
+            );
+            await runDirectCommandImpl(localFasterWhisperExecutable.programPath, directArgs, {
+              env: buildDirectFasterWhisperEnv(localFasterWhisperExecutable),
+              streamOutput: true,
+              outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+              logger: progress?.logger ?? null,
+              logContext: {
+                scope: "subtitle",
+                action: "asr-command",
+                bvid,
+                pageNo,
+                cid,
+                partTitle,
+                engine,
+                attempt,
+              },
+            });
+            finalizeDirectFasterWhisperOutput({
+              audioPath,
+              subtitlePath,
+            });
+          } else {
+            const transcribeArgs = buildTranscribeArgs({
+              audioPath,
+              subtitlePath,
               engine,
-              attempt,
-            },
-          });
+              localFasterWhisper,
+            });
+            const transcribeEnv = buildTranscribeEnv({
+              engine,
+              localFasterWhisper,
+              executableConfig: localFasterWhisperExecutable,
+              progress,
+              pageNo,
+            });
+            await runTranscribeCommandImpl("videocaptioner", transcribeArgs, {
+              venvPath,
+              env: transcribeEnv,
+              streamOutput: true,
+              outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+              logger: progress?.logger ?? null,
+              logContext: {
+                scope: "subtitle",
+                action: "asr-command",
+                bvid,
+                pageNo,
+                cid,
+                partTitle,
+                engine,
+                attempt,
+              },
+            });
+          }
         });
         const subtitleText = fs.readFileSync(subtitlePath, "utf8");
         const qualityCheck = inspectSubtitleQuality(subtitleText);
@@ -330,8 +377,80 @@ export function buildTranscribeArgs({
     subtitlePath,
   ];
 
-  if (engine === "faster-whisper" && localFasterWhisper?.modelName) {
-    args.push("--fw-model", localFasterWhisper.modelName);
+  if (engine === "faster-whisper") {
+    args.push("--fw-model", localFasterWhisper?.modelName ?? DEFAULT_FASTER_WHISPER_MODEL_NAME);
+
+    const configuredVadMethod = String(process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD ?? "").trim();
+    if (configuredVadMethod) {
+      args.push("--fw-vad-method", configuredVadMethod);
+    }
+
+    const configuredVadThreshold = String(process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD ?? "").trim();
+    if (configuredVadThreshold) {
+      args.push("--fw-vad-threshold", configuredVadThreshold);
+    }
+  }
+
+  return args;
+}
+
+export function buildDirectFasterWhisperArgs({
+  audioPath,
+  subtitlePath,
+  localFasterWhisper,
+  executableConfig,
+}: {
+  audioPath: string;
+  subtitlePath: string;
+  localFasterWhisper: LocalFasterWhisperConfig | null;
+  executableConfig: LocalFasterWhisperExecutableConfig;
+}): string[] {
+  const args = [
+    "-m",
+    localFasterWhisper?.modelName ?? DEFAULT_FASTER_WHISPER_MODEL_NAME,
+    "--print_progress",
+  ];
+
+  if (localFasterWhisper?.modelDir) {
+    args.push("--model_dir", localFasterWhisper.modelDir);
+  }
+
+  args.push(
+    audioPath,
+    "-d",
+    executableConfig.device,
+    "--output_format",
+    "srt",
+    "-l",
+    EXPECTED_TRANSCRIPTION_LANGUAGE,
+    "-o",
+    path.dirname(subtitlePath),
+    "--vad_filter",
+    "true",
+    "--one_word",
+    "0",
+    "--sentence",
+    "--max_line_width",
+    "30",
+    "--max_line_count",
+    "1",
+    "--max_comma",
+    "20",
+    "--max_comma_cent",
+    "50",
+    "--beep_off",
+  );
+
+  const configuredVadThreshold = String(process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD ?? "").trim();
+  args.push("--vad_threshold", configuredVadThreshold || "0.5");
+
+  const configuredVadMethod = String(process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD ?? "").trim();
+  if (configuredVadMethod) {
+    args.push("--vad_method", configuredVadMethod.replaceAll("-", "_"));
+  }
+
+  if (executableConfig.device === "cuda") {
+    args.push("--compute_type", "float16");
   }
 
   return args;
@@ -340,11 +459,13 @@ export function buildTranscribeArgs({
 function buildTranscribeEnv({
   engine,
   localFasterWhisper,
+  executableConfig,
   progress,
   pageNo,
 }: {
   engine: string;
   localFasterWhisper: LocalFasterWhisperConfig | null;
+  executableConfig: LocalFasterWhisperExecutableConfig | null;
   progress: { logPartStage?: (pageNo: number, stage: string, message: string) => void } | null | undefined;
   pageNo: number;
 }): NodeJS.ProcessEnv | undefined {
@@ -355,7 +476,6 @@ function buildTranscribeEnv({
   const env: NodeJS.ProcessEnv = {
     VIDEOCAPTIONER_FW_MODEL: localFasterWhisper.modelName,
   };
-  const executableConfig = resolveLocalFasterWhisperExecutableConfig();
 
   if (localFasterWhisper.exists) {
     env.VIDEOCAPTIONER_FW_MODEL_DIR = localFasterWhisper.modelDir;
@@ -389,4 +509,41 @@ function buildTranscribeEnv({
   }
 
   return env;
+}
+
+function buildDirectFasterWhisperEnv(
+  executableConfig: LocalFasterWhisperExecutableConfig | null,
+): NodeJS.ProcessEnv | undefined {
+  if (!executableConfig) {
+    return undefined;
+  }
+
+  return {
+    ...process.env,
+    PATH: prependPathEntries(process.env.PATH, executableConfig.pathEntries),
+  };
+}
+
+function shouldUseDirectFasterWhisper(
+  engine: string,
+  executableConfig: LocalFasterWhisperExecutableConfig | null,
+): executableConfig is LocalFasterWhisperExecutableConfig {
+  return engine === "faster-whisper" && Boolean(executableConfig?.programPath);
+}
+
+function finalizeDirectFasterWhisperOutput({
+  audioPath,
+  subtitlePath,
+}: {
+  audioPath: string;
+  subtitlePath: string;
+}) {
+  const generatedSubtitlePath = path.join(path.dirname(subtitlePath), `${path.parse(audioPath).name}.srt`);
+  if (path.resolve(generatedSubtitlePath) === path.resolve(subtitlePath)) {
+    return;
+  }
+
+  if (fs.existsSync(generatedSubtitlePath)) {
+    fs.copyFileSync(generatedSubtitlePath, subtitlePath);
+  }
 }

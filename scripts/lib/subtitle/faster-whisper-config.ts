@@ -4,10 +4,16 @@ import { firstNonEmptyString } from "./utils";
 
 export const DEFAULT_FASTER_WHISPER_MODEL_NAME = "large-v3-turbo";
 
+type FileStatLike = Pick<fs.Stats, "isFile" | "isDirectory">;
+type StatSyncFn = (filePath: string) => FileStatLike;
+
 interface FasterWhisperEnv extends Record<string, string | undefined> {
   VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH?: string;
   VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN?: string;
+  VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE?: string;
   LOCALAPPDATA?: string;
+  XDG_DATA_HOME?: string;
+  HOME?: string;
 }
 
 export function resolveLocalFasterWhisperConfig({
@@ -42,6 +48,12 @@ export function buildLocalFasterWhisperModelPathCandidates(env: FasterWhisperEnv
     env.LOCALAPPDATA
       ? path.join(env.LOCALAPPDATA, "VideoCaptioner", "AppData", "models", "faster-whisper-large-v3-turbo")
       : null,
+    env.XDG_DATA_HOME
+      ? path.join(env.XDG_DATA_HOME, "VideoCaptioner", "models", "faster-whisper-large-v3-turbo")
+      : null,
+    env.HOME
+      ? path.join(env.HOME, ".local", "share", "VideoCaptioner", "models", "faster-whisper-large-v3-turbo")
+      : null,
   ]);
 }
 
@@ -73,25 +85,29 @@ export function inferFasterWhisperModelName(value: unknown): string {
 export function resolveLocalFasterWhisperExecutableConfig({
   env = process.env,
   existsSync = fs.existsSync,
+  statSync = fs.statSync,
 }: {
   env?: FasterWhisperEnv;
   existsSync?: (filePath: string) => boolean;
+  statSync?: StatSyncFn;
 } = {}) {
   const candidates = buildLocalFasterWhisperExecutableDirCandidates(env);
 
-  for (const directory of candidates) {
-    const programPath = findFasterWhisperProgramInDir(directory, existsSync);
+  for (const candidate of candidates) {
+    const programPath = findFasterWhisperProgramInDir(candidate, existsSync, statSync);
     if (!programPath) {
       continue;
     }
 
+    const candidatePath = path.resolve(candidate);
+    const candidateDir = isDirectFasterWhisperProgramPath(candidatePath, statSync) ? path.dirname(candidatePath) : candidatePath;
     const pathEntries = [path.dirname(programPath)];
-    if (path.dirname(programPath) !== directory) {
-      pathEntries.push(directory);
+    if (path.dirname(programPath) !== candidateDir) {
+      pathEntries.push(candidateDir);
     }
 
     return {
-      device: inferFasterWhisperDevice(programPath),
+      device: inferFasterWhisperDevice(programPath, env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE),
       programPath,
       pathEntries,
     };
@@ -105,21 +121,36 @@ export function buildLocalFasterWhisperExecutableDirCandidates(env: FasterWhispe
     firstNonEmptyString(env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN),
     env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "VideoCaptioner", "resource", "bin", "Faster-Whisper-XXL") : null,
     env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "VideoCaptioner", "resource", "bin") : null,
+    env.XDG_DATA_HOME ? path.join(env.XDG_DATA_HOME, "VideoCaptioner", "resource", "bin", "Faster-Whisper-XXL") : null,
+    env.XDG_DATA_HOME ? path.join(env.XDG_DATA_HOME, "VideoCaptioner", "resource", "bin") : null,
+    env.HOME ? path.join(env.HOME, ".local", "share", "VideoCaptioner", "resource", "bin", "Faster-Whisper-XXL") : null,
+    env.HOME ? path.join(env.HOME, ".local", "share", "VideoCaptioner", "resource", "bin") : null,
+    "/opt/videocaptioner/bin/Faster-Whisper-XXL",
+    "/opt/videocaptioner/bin",
+    "/usr/local/bin",
   ]);
 }
 
 export function findFasterWhisperProgramInDir(
   directory: string | null | undefined,
   existsSync: (filePath: string) => boolean = fs.existsSync,
+  statSync: StatSyncFn = fs.statSync,
 ): string | null {
   if (!directory || !existsSync(directory)) {
     return null;
   }
 
+  if (isDirectFasterWhisperProgramPath(directory, statSync)) {
+    return path.resolve(directory);
+  }
+
   const programCandidates = [
     path.join(directory, "faster-whisper-xxl.exe"),
+    path.join(directory, "faster-whisper-xxl"),
     path.join(directory, "faster-whisper.exe"),
+    path.join(directory, "faster-whisper"),
     path.join(directory, "faster_whisper.exe"),
+    path.join(directory, "faster_whisper"),
   ];
 
   for (const programPath of programCandidates) {
@@ -142,11 +173,43 @@ export function prependPathEntries(existingPath: string | undefined, entries: st
   return [...new Set([...cleanedEntries, ...existingEntries])].join(path.delimiter);
 }
 
-export function inferFasterWhisperDevice(programPath: string | null | undefined): string {
+export function inferFasterWhisperDevice(programPath: string | null | undefined, configuredDevice?: string | null): string {
+  const normalizedConfiguredDevice = String(configuredDevice ?? "").trim().toLowerCase();
+  if (normalizedConfiguredDevice === "cpu" || normalizedConfiguredDevice === "cuda" || normalizedConfiguredDevice === "auto") {
+    return normalizedConfiguredDevice;
+  }
+
   const normalizedPath = String(programPath ?? "").toLowerCase();
   return normalizedPath.includes("faster-whisper-xxl") ? "cuda" : "cpu";
 }
 
 function uniqueNonEmptyPaths(candidates: Array<string | null | undefined>): string[] {
   return [...new Set(candidates.filter((candidate) => typeof candidate === "string" && candidate.trim()))];
+}
+
+function isFasterWhisperProgramPathName(targetPath: string): boolean {
+  const baseName = path.basename(targetPath).toLowerCase();
+  return new Set([
+    "faster-whisper-xxl.exe",
+    "faster-whisper-xxl",
+    "faster-whisper.exe",
+    "faster-whisper",
+    "faster_whisper.exe",
+    "faster_whisper",
+  ]).has(baseName);
+}
+
+function isDirectFasterWhisperProgramPath(
+  targetPath: string,
+  statSync: StatSyncFn,
+): boolean {
+  if (!isFasterWhisperProgramPathName(targetPath)) {
+    return false;
+  }
+
+  try {
+    return statSync(targetPath).isFile();
+  } catch {
+    return false;
+  }
 }

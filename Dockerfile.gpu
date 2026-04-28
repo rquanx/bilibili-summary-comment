@@ -1,0 +1,65 @@
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+
+ARG NODE_MAJOR=24
+ARG FASTER_WHISPER_XXL_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/Faster-Whisper-XXL/Faster-Whisper-XXL_r245.4_linux.7z
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    VENV_PATH=/app/.3.11 \
+    PATH=/app/.3.11/bin:/opt/videocaptioner/bin/Faster-Whisper-XXL:/opt/videocaptioner/bin:${PATH} \
+    WORK_ROOT=work \
+    PIPELINE_DB_PATH=work/pipeline.sqlite3 \
+    BILI_AUTH_FILE=.auth/bili-auth.json \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN=/opt/videocaptioner/bin/Faster-Whisper-XXL \
+    VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH=/opt/videocaptioner/models/faster-whisper-large-v3-turbo \
+    VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE=cuda \
+    VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD=silero-v4 \
+    VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD=0.4
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    ffmpeg \
+    gnupg \
+    p7zip-full \
+    python3 \
+    python3-pip \
+    python3-venv \
+  && mkdir -p /etc/apt/keyrings \
+  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json requirements.txt ./
+
+RUN npm ci \
+  && python3 -m venv .3.11 \
+  && ./.3.11/bin/python -m pip install --upgrade pip \
+  && ./.3.11/bin/python -m pip install -r requirements.txt
+
+RUN mkdir -p /opt/videocaptioner/bin /opt/videocaptioner/models \
+  && curl -L "${FASTER_WHISPER_XXL_URL}" -o /tmp/faster-whisper-xxl.7z \
+  && 7z x -y /tmp/faster-whisper-xxl.7z -o/opt/videocaptioner/bin >/dev/null \
+  && find /opt/videocaptioner/bin -type f \( -name "faster-whisper-xxl" -o -name "faster-whisper" \) -exec chmod +x {} \; \
+  && rm -f /tmp/faster-whisper-xxl.7z
+
+COPY . .
+
+RUN mkdir -p /app/work /app/.auth
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+VOLUME ["/app/work", "/app/.auth", "/opt/videocaptioner/models"]
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["npm", "run", "start"]
