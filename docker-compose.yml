@@ -1,0 +1,18 @@
+services:
+  video-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: video-pipeline:local
+    env_file:
+      - .env
+    environment:
+      TZ: ${CRON_TIMEZONE:-Asia/Shanghai}
+      CRON_TIMEZONE: ${CRON_TIMEZONE:-Asia/Shanghai}
+      WORK_ROOT: work
+      PIPELINE_DB_PATH: work/pipeline.sqlite3
+      BILI_AUTH_FILE: .auth/bili-auth.json
+    volumes:
+      - ./work:/app/work
+      - ./.auth:/app/.auth
+    command: ["npm", "run", "start"]

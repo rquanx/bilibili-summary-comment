@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.3.11
+.auth
+work
+.tmp-tests
+.vscode
+.env
+cookie.txt
+npm-debug.log
