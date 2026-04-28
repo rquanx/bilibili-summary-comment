@@ -1,41 +1,44 @@
+import { withDatabaseWriteLock } from "./database";
 import type { Db, PipelineEventInput, PipelineEventRecord } from "./types";
 
 export function insertPipelineEvent(db: Db, event: PipelineEventInput): PipelineEventRecord | null {
   const createdAt = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO pipeline_events (
-      run_id,
-      video_id,
-      bvid,
-      video_title,
-      page_no,
-      cid,
-      part_title,
-      scope,
-      action,
-      status,
-      message,
-      details_json,
-      created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    normalizeNullableText(event.runId),
-    normalizeNullableInteger(event.videoId),
-    normalizeNullableText(event.bvid),
-    normalizeNullableText(event.videoTitle),
-    normalizeNullableInteger(event.pageNo),
-    normalizeNullableInteger(event.cid),
-    normalizeNullableText(event.partTitle),
-    requirePipelineEventField(event.scope, "scope"),
-    requirePipelineEventField(event.action, "action"),
-    requirePipelineEventField(event.status, "status"),
-    normalizeNullableText(event.message),
-    serializePipelineEventDetails(event.details),
-    createdAt,
-  );
+  return withDatabaseWriteLock(db, () => {
+    db.prepare(`
+      INSERT INTO pipeline_events (
+        run_id,
+        video_id,
+        bvid,
+        video_title,
+        page_no,
+        cid,
+        part_title,
+        scope,
+        action,
+        status,
+        message,
+        details_json,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      normalizeNullableText(event.runId),
+      normalizeNullableInteger(event.videoId),
+      normalizeNullableText(event.bvid),
+      normalizeNullableText(event.videoTitle),
+      normalizeNullableInteger(event.pageNo),
+      normalizeNullableInteger(event.cid),
+      normalizeNullableText(event.partTitle),
+      requirePipelineEventField(event.scope, "scope"),
+      requirePipelineEventField(event.action, "action"),
+      requirePipelineEventField(event.status, "status"),
+      normalizeNullableText(event.message),
+      serializePipelineEventDetails(event.details),
+      createdAt,
+    );
 
-  return ((db.prepare("SELECT * FROM pipeline_events WHERE id = last_insert_rowid()").get()) as unknown as PipelineEventRecord | undefined) ?? null;
+    return ((db.prepare("SELECT * FROM pipeline_events WHERE id = last_insert_rowid()").get()) as unknown as PipelineEventRecord | undefined) ?? null;
+  });
 }
 
 export function listPipelineEvents(

@@ -1,3 +1,4 @@
+import { withDatabaseWriteLock } from "./database";
 import type { Db, GapNotificationInsert, GapNotificationRecord } from "./types";
 
 export function getGapNotificationByKey(db: Db, gapKey: string): GapNotificationRecord | null {
@@ -23,49 +24,51 @@ export function saveGapNotification(db: Db, notification: GapNotificationInsert)
   const gapKey = requireGapKey(notification.gapKey);
   const notifiedAt = normalizeNullableText(notification.notifiedAt) ?? now;
 
-  db.prepare(`
-    INSERT INTO gap_notifications (
-      gap_key,
-      bvid,
-      video_title,
-      from_page_no,
-      from_cid,
-      to_page_no,
-      to_cid,
-      gap_start_at,
-      gap_end_at,
-      gap_seconds,
-      notified_at,
-      created_at,
-      updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(gap_key) DO UPDATE SET
-      video_title = excluded.video_title,
-      from_page_no = excluded.from_page_no,
-      from_cid = excluded.from_cid,
-      to_page_no = excluded.to_page_no,
-      to_cid = excluded.to_cid,
-      gap_start_at = excluded.gap_start_at,
-      gap_end_at = excluded.gap_end_at,
-      gap_seconds = excluded.gap_seconds,
-      notified_at = excluded.notified_at,
-      updated_at = excluded.updated_at
-  `).run(
-    gapKey,
-    requireText(notification.bvid, "bvid"),
-    normalizeNullableText(notification.videoTitle),
-    requirePositiveInteger(notification.fromPageNo, "fromPageNo"),
-    requirePositiveInteger(notification.fromCid, "fromCid"),
-    requirePositiveInteger(notification.toPageNo, "toPageNo"),
-    requirePositiveInteger(notification.toCid, "toCid"),
-    requireText(notification.gapStartAt, "gapStartAt"),
-    requireText(notification.gapEndAt, "gapEndAt"),
-    requireNonNegativeInteger(notification.gapSeconds, "gapSeconds"),
-    notifiedAt,
-    now,
-    now,
-  );
+  withDatabaseWriteLock(db, () => {
+    db.prepare(`
+      INSERT INTO gap_notifications (
+        gap_key,
+        bvid,
+        video_title,
+        from_page_no,
+        from_cid,
+        to_page_no,
+        to_cid,
+        gap_start_at,
+        gap_end_at,
+        gap_seconds,
+        notified_at,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(gap_key) DO UPDATE SET
+        video_title = excluded.video_title,
+        from_page_no = excluded.from_page_no,
+        from_cid = excluded.from_cid,
+        to_page_no = excluded.to_page_no,
+        to_cid = excluded.to_cid,
+        gap_start_at = excluded.gap_start_at,
+        gap_end_at = excluded.gap_end_at,
+        gap_seconds = excluded.gap_seconds,
+        notified_at = excluded.notified_at,
+        updated_at = excluded.updated_at
+    `).run(
+      gapKey,
+      requireText(notification.bvid, "bvid"),
+      normalizeNullableText(notification.videoTitle),
+      requirePositiveInteger(notification.fromPageNo, "fromPageNo"),
+      requirePositiveInteger(notification.fromCid, "fromCid"),
+      requirePositiveInteger(notification.toPageNo, "toPageNo"),
+      requirePositiveInteger(notification.toCid, "toCid"),
+      requireText(notification.gapStartAt, "gapStartAt"),
+      requireText(notification.gapEndAt, "gapEndAt"),
+      requireNonNegativeInteger(notification.gapSeconds, "gapSeconds"),
+      notifiedAt,
+      now,
+      now,
+    );
+  });
 
   return getGapNotificationByKey(db, gapKey);
 }

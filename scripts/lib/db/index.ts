@@ -1,5 +1,6 @@
 export { openDatabase } from "./database";
 export { runInTransaction } from "./database";
+export { withDatabaseWriteLock } from "./database";
 export type {
   Db,
   GapNotificationInsert,
