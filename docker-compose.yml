@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: video-pipeline:local
+    restart: always
     env_file:
       - .env
     environment:
@@ -22,6 +23,7 @@ services:
       context: .
       dockerfile: Dockerfile.gpu
     image: video-pipeline:gpu
+    restart: always
     env_file:
       - .env
     environment:
