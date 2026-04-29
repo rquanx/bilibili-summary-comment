@@ -12,7 +12,7 @@ import {
   extractSummaryText,
   resolveSummaryApiTarget,
 } from "../scripts/lib/summary/client";
-import { compactPasteLinkSummaryRanges, inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/lib/summary/format";
+import { compactPasteLinkSummaryRanges, extractCoveredPages, inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/lib/summary/format";
 import { writeSummaryArtifacts } from "../scripts/lib/summary/files";
 import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
 import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
@@ -542,6 +542,39 @@ test("compactPasteLinkSummaryRanges merges consecutive identical paste-only page
       "https://paste.rs/LhQJQ",
     ].join("\n"),
   );
+});
+
+test("extractCoveredPages expands compacted paste-link ranges", () => {
+  const pages = extractCoveredPages([
+    "<6P> ~ <8P>",
+    "https://paste.rs/LhQJQ",
+    "",
+    "<10P>",
+    "https://paste.rs/LhQJQ",
+  ].join("\n"));
+
+  assert.deepEqual(pages, [6, 7, 8, 10]);
+});
+
+test("splitSummaryForComments keeps every covered page from compacted ranges", () => {
+  const chunks = splitSummaryForComments([
+    "<10P> ~ <14P>",
+    "https://paste.rs/MfIPi",
+    "",
+    "<24P> ~ <31P>",
+    "https://paste.rs/zfJzj",
+  ].join("\n"));
+
+  assert.deepEqual(chunks, [{
+    message: [
+      "<10P> ~ <14P>",
+      "https://paste.rs/MfIPi",
+      "",
+      "<24P> ~ <31P>",
+      "https://paste.rs/zfJzj",
+    ].join("\n"),
+    pages: [10, 11, 12, 13, 14, 24, 25, 26, 27, 28, 29, 30, 31],
+  }]);
 });
 
 test("inspectSummaryPageMarkers reports duplicate and invalid page markers", () => {

@@ -1,4 +1,4 @@
-const PAGE_MARKER_PATTERN = /^(?:<(?<bracketPage>\d+)P>|(?<plainPage>\d+)P)\s*(?<rest>.*)$/u;
+const PAGE_MARKER_PATTERN = /^(?:<(?<bracketPage>\d+)P>|(?<plainPage>\d+)P)(?:\s*~\s*<(?<rangeEnd>\d+)P>)?\s*(?<rest>.*)$/u;
 
 export function normalizeSummaryMarkers(text) {
   const lines = splitLines(text);
@@ -9,8 +9,11 @@ export function normalizeSummaryMarkers(text) {
     }
 
     const page = Number(match.groups?.bracketPage ?? match.groups?.plainPage);
+    const rangeEnd = Number(match.groups?.rangeEnd ?? page);
+    const endPage = Number.isInteger(rangeEnd) && rangeEnd >= page ? rangeEnd : page;
     const rest = (match.groups?.rest ?? "").trim();
-    return rest ? `<${page}P> ${rest}` : `<${page}P>`;
+    const marker = buildSummaryBlockMarker(page, endPage);
+    return rest ? `${marker} ${rest}` : marker;
   });
 
   return normalizedLines.join("\n").trim();
@@ -27,18 +30,23 @@ export function parseSummaryBlocks(text) {
   let currentBlock = null;
 
   for (const line of lines) {
-    const match = line.match(/^<(?<page>\d+)P>\s*(?<rest>.*)$/u);
+    const match = line.match(PAGE_MARKER_PATTERN);
     if (match) {
       if (currentBlock) {
         currentBlock.text = trimTrailingEmptyLines(currentBlock.lines).join("\n").trim();
         blocks.push(currentBlock);
       }
 
-      const page = Number(match.groups?.page);
-      const firstLine = match.groups?.rest ? `<${page}P> ${match.groups.rest.trim()}` : `<${page}P>`;
+      const page = Number(match.groups?.bracketPage ?? match.groups?.plainPage);
+      const rangeEnd = Number(match.groups?.rangeEnd ?? page);
+      const endPage = Number.isInteger(rangeEnd) && rangeEnd >= page ? rangeEnd : page;
+      const marker = buildSummaryBlockMarker(page, endPage);
+      const firstLine = match.groups?.rest ? `${marker} ${match.groups.rest.trim()}` : marker;
       currentBlock = {
         page,
-        marker: `<${page}P>`,
+        endPage,
+        coveredPages: buildCoveredPages(page, endPage),
+        marker,
         lines: [firstLine],
         text: "",
       };
@@ -61,7 +69,7 @@ export function parseSummaryBlocks(text) {
 }
 
 export function extractCoveredPages(text) {
-  return [...new Set(parseSummaryBlocks(text).map((block) => block.page))].sort((a, b) => a - b);
+  return [...new Set(parseSummaryBlocks(text).flatMap((block) => block.coveredPages ?? [block.page]))].sort((a, b) => a - b);
 }
 
 export function groupSummaryBlocksByPage(text) {
@@ -88,7 +96,9 @@ export function inspectSummaryPageMarkers(text, availablePages = null) {
   const pageCounts = new Map();
 
   for (const block of blocks) {
-    pageCounts.set(block.page, (pageCounts.get(block.page) ?? 0) + 1);
+    for (const page of block.coveredPages ?? [block.page]) {
+      pageCounts.set(page, (pageCounts.get(page) ?? 0) + 1);
+    }
   }
 
   const pages = [...pageCounts.keys()].sort((a, b) => a - b);
@@ -174,7 +184,7 @@ export function splitSummaryForComments(text, maxLength = 1000) {
     const candidate = currentChunk ? `${currentChunk}\n\n${block.text}` : block.text;
     if (candidate.length <= maxLength) {
       currentChunk = candidate;
-      currentPages.push(block.page);
+      currentPages.push(...(block.coveredPages ?? [block.page]));
       continue;
     }
 
@@ -186,7 +196,7 @@ export function splitSummaryForComments(text, maxLength = 1000) {
     }
 
     currentChunk = block.text;
-    currentPages = [block.page];
+    currentPages = [...(block.coveredPages ?? [block.page])];
   }
 
   if (currentChunk) {
@@ -229,6 +239,21 @@ function extractBlockBody(blockText, marker) {
 function extractPasteLinkOnlyBody(blockText, marker) {
   const body = extractBlockBody(blockText, marker);
   return /^https:\/\/paste\.rs\/\S+$/u.test(body) ? body : null;
+}
+
+function buildSummaryBlockMarker(startPage, endPage = startPage) {
+  return startPage === endPage
+    ? `<${startPage}P>`
+    : `<${startPage}P> ~ <${endPage}P>`;
+}
+
+function buildCoveredPages(startPage, endPage = startPage) {
+  if (!Number.isInteger(startPage) || startPage <= 0) {
+    return [];
+  }
+
+  const safeEndPage = Number.isInteger(endPage) && endPage >= startPage ? endPage : startPage;
+  return Array.from({ length: safeEndPage - startPage + 1 }, (_value, index) => startPage + index);
 }
 
 function splitBlockBodyText(text, maxBodyLength) {
