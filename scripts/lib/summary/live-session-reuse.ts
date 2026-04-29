@@ -101,7 +101,6 @@ export function reusePartSummaries(db, targetVideoId, sourceParts) {
     const summaryHash = String(match.sourcePart.summary_hash ?? "").trim();
     savePartSummary(db, targetVideoId, match.targetPageNo, {
       summaryText,
-      processedSummaryText: normalizeStoredSummaryText(match.sourcePart.summary_text_processed),
       summaryHash,
     });
     reusedPages.push(match.targetPageNo);

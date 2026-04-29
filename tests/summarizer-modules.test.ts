@@ -76,7 +76,7 @@ test("buildSummaryHttpRequest creates chat-completions payloads", () => {
   });
 });
 
-test("shouldRetrySummaryWithGlm5 only matches kimi prompt_tokens compatibility errors", () => {
+test("shouldRetrySummaryWithGlm5 only matches kimi-compatible fallback errors", () => {
   assert.equal(
     shouldRetrySummaryWithGlm5({
       model: "kimi-k2.5",
@@ -91,6 +91,14 @@ test("shouldRetrySummaryWithGlm5 only matches kimi prompt_tokens compatibility e
       error: new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"Cannot read properties of undefined (reading 'prompt_tokens')\"}"),
     }),
     false,
+  );
+
+  assert.equal(
+    shouldRetrySummaryWithGlm5({
+      model: "kimi-k2.5",
+      error: new Error("Summary response did not contain text output."),
+    }),
+    true,
   );
 
   assert.equal(
@@ -210,6 +218,37 @@ test("requestSummaryWithFallback retries 429 responses once before surfacing the
   );
 
   assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+});
+
+test("requestSummaryWithFallback retries empty-text responses once with glm-5", async () => {
+  const calls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "kimi-k2.5") {
+        throw new Error("Summary response did not contain text output.");
+      }
+      return "<2P> 2#00:00 fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "kimi-empty-text-response");
+  assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
 });
 
 test("requestSummaryWithFallback retries high-risk content filter errors with Gemini Flash when GEMINI_KEY is available", async () => {
@@ -676,6 +715,94 @@ test("summarizePartFromSubtitle records fallback success metadata when glm-5 ret
     assert.equal(llmSucceeded.details.model, "glm-5");
     assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
     assert.equal(llmSucceeded.details.fallbackUsed, true);
+
+    const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 2);
+    assert.equal(savedPart.summary_text, "<2P> 2#00:00 fallback summary");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("summarizePartFromSubtitle records empty-text fallback success metadata when glm-5 retry succeeds", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-empty-text-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const subtitlePath = path.join(tempRoot, "p2.srt");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  fs.writeFileSync(subtitlePath, [
+    "1",
+    "00:00:00,000 --> 00:00:03,000",
+    "娴嬭瘯绌虹粨鏋滃洖閫€",
+    "",
+  ].join("\n"), "utf8");
+
+  const events = [];
+  const requestModels = [];
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVtestemptytxt",
+      aid: 123458,
+      title: "Empty Text Fallback Summary Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 204,
+      partTitle: "P2",
+      durationSec: 180,
+      subtitlePath,
+      isDeleted: false,
+    });
+
+    const result = await summarizePartFromSubtitle({
+      db,
+      videoId: video.id,
+      bvid: video.bvid,
+      pageNo: 2,
+      cid: 204,
+      partTitle: "P2",
+      durationSec: 180,
+      subtitlePath,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+      workRoot,
+      eventLogger: {
+        log(event) {
+          events.push(event);
+        },
+      },
+      requestSummaryImpl: async (args) => {
+        requestModels.push(args.model);
+        if (args.model === "kimi-k2.5") {
+          throw new Error("Summary response did not contain text output.");
+        }
+        return "<2P> 2#00:00 fallback summary";
+      },
+    });
+
+    assert.deepEqual(requestModels, ["kimi-k2.5", "glm-5"]);
+    assert.equal(result.modelUsed, "glm-5");
+    assert.equal(result.fallbackUsed, true);
+
+    const fallbackStarted = events.find((event) => event.action === "llm-fallback" && event.status === "started");
+    assert.ok(fallbackStarted);
+    assert.equal(fallbackStarted.details.failedModel, "kimi-k2.5");
+    assert.equal(fallbackStarted.details.fallbackModel, "glm-5");
+    assert.equal(fallbackStarted.details.fallbackReason, "kimi-empty-text-response");
+
+    const llmSucceeded = events.find((event) => event.action === "llm" && event.status === "succeeded");
+    assert.ok(llmSucceeded);
+    assert.equal(llmSucceeded.details.model, "glm-5");
+    assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
+    assert.equal(llmSucceeded.details.fallbackUsed, true);
+    assert.equal(llmSucceeded.details.fallbackReason, "kimi-empty-text-response");
 
     const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 2);
     assert.equal(savedPart.summary_text, "<2P> 2#00:00 fallback summary");

@@ -85,6 +85,61 @@ test("same-session summary reuse works across variants even when page counts dif
   }
 });
 
+test("same-session summary reuse does not copy processed paste-link fallbacks into the target video", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-live-reuse-processed-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const sourceVideo = upsertVideo(db, {
+      bvid: "BVSOURCEPROC1",
+      aid: 1016,
+      title: "Anchor Session 2026.04.11 20.29.51",
+      pageCount: 1,
+    });
+    const targetVideo = upsertVideo(db, {
+      bvid: "BVTARGETPROC1",
+      aid: 1209,
+      title: "Anchor Session 2026.04.11 20.29.51",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: sourceVideo.id,
+      pageNo: 1,
+      cid: 1100,
+      partTitle: "Anchor Session 2026.04.11 20.29.51",
+      durationSec: 60,
+      summaryText: "<1P>\n1#00:00 original summary",
+      processedSummaryText: "<1P>\nhttps://paste.rs/source01",
+      summaryHash: "hash-source-1",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: targetVideo.id,
+      pageNo: 1,
+      cid: 2100,
+      partTitle: "Anchor Session 2026.04.11 20.29.51",
+      durationSec: 60,
+      isDeleted: false,
+    });
+
+    const targetParts = listVideoParts(db, targetVideo.id);
+    const reuseSource = findReusableSummarySource(db, targetVideo, targetParts);
+    assert.equal(reuseSource?.video.bvid, "BVSOURCEPROC1");
+
+    const reusedPages = reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
+    assert.deepEqual(reusedPages, [1]);
+
+    const [reusedPart] = listVideoParts(db, targetVideo.id);
+    assert.equal(String(reusedPart?.summary_text ?? "").trim(), "<1P>\n1#00:00 original summary");
+    assert.equal(reusedPart?.summary_text_processed, null);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("ensureSubtitleForPart reuses same-session subtitles across variants with different page counts", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-subtitle-reuse-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

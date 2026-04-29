@@ -20,6 +20,10 @@ function createJsonFetchResponse(data) {
   };
 }
 
+function expectedPasteUrlForText(text) {
+  return `https://paste.rs/${Buffer.from(String(text ?? "")).toString("hex").slice(0, 8)}`;
+}
+
 function createGuestCommentHarness({
   startRpid,
   visibilityRule = (_message) => true,
@@ -924,17 +928,135 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
     assert.equal(result.rootCommentRpid, 990402);
     assert.equal(result.createdComments.length, 1);
     assert.deepEqual(result.createdComments[0].pages, [1, 2, 3, 4, 5]);
-    assert.deepEqual(addCalls, [fullMessage, "<1P> ~ <5P>\nhttps://paste.rs/3c31503e"]);
+    assert.deepEqual(addCalls, [
+      fullMessage,
+      [
+        `<1P>`,
+        expectedPasteUrlForText("<1P>\n1#00:00 first page summary"),
+        "",
+        `<2P>`,
+        expectedPasteUrlForText("<2P>\n2#00:00 second page summary"),
+        "",
+        `<3P>`,
+        expectedPasteUrlForText("<3P>\n3#00:00 third page summary"),
+        "",
+        `<4P>`,
+        expectedPasteUrlForText("<4P>\n4#00:00 fourth page summary"),
+        "",
+        `<5P>`,
+        expectedPasteUrlForText("<5P>\n5#00:00 fifth page summary"),
+      ].join("\n"),
+    ]);
 
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(
       parts.map((part) => part.summary_text_processed),
       [
-        "<1P>\nhttps://paste.rs/3c31503e",
-        "<2P>\nhttps://paste.rs/3c31503e",
-        "<3P>\nhttps://paste.rs/3c31503e",
-        "<4P>\nhttps://paste.rs/3c31503e",
-        "<5P>\nhttps://paste.rs/3c31503e",
+        `<1P>\n${expectedPasteUrlForText("<1P>\n1#00:00 first page summary")}`,
+        `<2P>\n${expectedPasteUrlForText("<2P>\n2#00:00 second page summary")}`,
+        `<3P>\n${expectedPasteUrlForText("<3P>\n3#00:00 third page summary")}`,
+        `<4P>\n${expectedPasteUrlForText("<4P>\n4#00:00 fourth page summary")}`,
+        `<5P>\n${expectedPasteUrlForText("<5P>\n5#00:00 fifth page summary")}`,
+      ],
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread keeps existing per-page paste links when retrying an invisible mixed chunk", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-mixed-paste-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = [
+    "<1P>",
+    "1#00:00 first page summary",
+    "",
+    "<2P>",
+    "https://paste.rs/gbLcw",
+  ].join("\n");
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentMixedPasteRetry",
+      aid: 123450108,
+      title: "Mixed Paste Retry Test",
+      pageCount: 2,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 201,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\n1#00:00 first page summary",
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: "<2P>\n2#00:00 second page summary",
+      processedSummaryText: "<2P>\nhttps://paste.rs/gbLcw",
+      summaryHash: "hash-2",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 990601,
+      visibilityRule(message) {
+        return message.includes(expectedPasteUrlForText("<1P>\n1#00:00 first page summary"));
+      },
+    });
+    const addCalls = [];
+    const originalAdd = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => {
+      addCalls.push(payload.message);
+      return originalAdd(payload as never);
+    };
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 990602);
+    assert.equal(result.createdComments.length, 1);
+    assert.deepEqual(addCalls, [
+      fullMessage,
+      [
+        "<1P>",
+        expectedPasteUrlForText("<1P>\n1#00:00 first page summary"),
+        "",
+        "<2P>",
+        "https://paste.rs/gbLcw",
+      ].join("\n"),
+    ]);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(
+      parts.map((part) => part.summary_text_processed),
+      [
+        `<1P>\n${expectedPasteUrlForText("<1P>\n1#00:00 first page summary")}`,
+        "<2P>\nhttps://paste.rs/gbLcw",
       ],
     );
   } finally {

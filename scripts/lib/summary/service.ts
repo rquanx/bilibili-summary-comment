@@ -12,6 +12,7 @@ const KIMI_PRIMARY_MODEL = "kimi-k2.5";
 const GLM_FALLBACK_MODEL = "glm-5";
 const GEMINI_FLASH_FALLBACK_MODEL = "gemini-3-flash-preview";
 const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
+const SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN = /Summary response did not contain text output\./u;
 const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
 const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
 const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
@@ -19,7 +20,12 @@ const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return normalizedModel === KIMI_PRIMARY_MODEL && (KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message) || SUMMARY_TOO_MANY_REQUEST.test(message));
+  return normalizedModel === KIMI_PRIMARY_MODEL
+    && (
+      KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message)
+      || SUMMARY_TOO_MANY_REQUEST.test(message)
+      || SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
+    );
 }
 
 export function shouldSkipSummaryPart({ error }) {
@@ -286,9 +292,12 @@ export async function summarizePartFromSubtitle({
 
 function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
   if (shouldRetrySummaryWithGlm5({ model, error })) {
+    const message = error instanceof Error ? error.message : String(error ?? "");
     return {
       model: GLM_FALLBACK_MODEL,
-      reason: "kimi-prompt_tokens-error",
+      reason: SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
+        ? "kimi-empty-text-response"
+        : "kimi-prompt_tokens-error",
       requestOverrides: {
         model: GLM_FALLBACK_MODEL,
       },

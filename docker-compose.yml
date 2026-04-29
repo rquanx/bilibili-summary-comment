@@ -1,3 +1,14 @@
+x-proxy-env: &proxy-env
+  HTTP_PROXY: ${DOCKER_HTTP_PROXY:-http://host.docker.internal:7897}
+  HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-http://host.docker.internal:7897}
+  ALL_PROXY: ${DOCKER_ALL_PROXY:-socks5://host.docker.internal:7897}
+  http_proxy: ${DOCKER_HTTP_PROXY:-http://host.docker.internal:7897}
+  https_proxy: ${DOCKER_HTTPS_PROXY:-http://host.docker.internal:7897}
+  all_proxy: ${DOCKER_ALL_PROXY:-socks5://host.docker.internal:7897}
+  NO_PROXY: ${DOCKER_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+  no_proxy: ${DOCKER_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+  GEMINI_PROXY_URL: ${GEMINI_PROXY_URL:-http://host.docker.internal:7897}
+
 services:
   video-pipeline:
     build:
@@ -8,11 +19,14 @@ services:
     env_file:
       - .env
     environment:
+      <<: *proxy-env
       TZ: ${CRON_TIMEZONE:-Asia/Shanghai}
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Asia/Shanghai}
       WORK_ROOT: work
       PIPELINE_DB_PATH: work/pipeline.sqlite3
       BILI_AUTH_FILE: .auth/bili-auth.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./work:/app/work
       - ./.auth:/app/.auth
@@ -27,6 +41,7 @@ services:
     env_file:
       - .env
     environment:
+      <<: *proxy-env
       TZ: ${CRON_TIMEZONE:-Asia/Shanghai}
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Asia/Shanghai}
       WORK_ROOT: work
@@ -39,6 +54,8 @@ services:
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE: cuda
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD: silero-v4
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD: "0.4"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./work:/app/work
       - ./.auth:/app/.auth

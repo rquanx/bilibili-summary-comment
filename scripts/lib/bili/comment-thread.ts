@@ -715,11 +715,29 @@ function buildWholeCommentPasteComment(pageBlocks, pasteUrl) {
   return `${pageGroups.join(", ")}\n${pasteUrl}`;
 }
 
+function isPasteOnlyPageBlock(block) {
+  return (
+    Array.isArray(block?.units)
+    && block.units.length === 1
+    && /^https:\/\/paste\.rs\/\S+$/u.test(String(block.units[0]?.text ?? "").trim())
+  );
+}
+
+function buildPasteOnlyPageBlock(block, pasteUrl) {
+  return {
+    ...block,
+    units: [{
+      id: `${block.page}|paste`,
+      page: block.page,
+      label: null,
+      kind: "text",
+      text: pasteUrl,
+    }],
+  };
+}
+
 function applyProcessedPagePatch(baseText, originalBlock, processedBlock) {
-  if (
-    processedBlock.units.length === 1
-    && /^https:\/\/paste\.rs\/\S+$/u.test(String(processedBlock.units[0]?.text ?? "").trim())
-  ) {
+  if (isPasteOnlyPageBlock(processedBlock)) {
     return buildMessageFromPageBlocks([processedBlock]);
   }
 
@@ -796,14 +814,30 @@ async function diagnoseInvisibleComment({
   uploadToPasteImpl = uploadTextToPasteRs,
 }) {
   const pageBlocks = parseCommentPageBlocks(message);
-  const pasteUrl = await uploadToPasteImpl(message, fetchImpl);
+  if (pageBlocks.length === 0) {
+    const pasteUrl = await uploadToPasteImpl(message, fetchImpl);
+    return {
+      badUnitIds: ["full-comment"],
+      processedCommentMessage: pasteUrl,
+      processedMessage: pasteUrl,
+    };
+  }
+
+  const processedPageBlocks = [];
+  for (const block of pageBlocks) {
+    if (isPasteOnlyPageBlock(block)) {
+      processedPageBlocks.push(block);
+      continue;
+    }
+
+    const pasteUrl = await uploadToPasteImpl(buildMessageFromPageBlocks([block]), fetchImpl);
+    processedPageBlocks.push(buildPasteOnlyPageBlock(block, pasteUrl));
+  }
 
   return {
-    badUnitIds: pageBlocks.length > 0
-      ? pageBlocks.flatMap((block) => block.units.map((unit) => unit.id))
-      : ["full-comment"],
-    processedCommentMessage: buildWholeCommentPasteComment(pageBlocks, pasteUrl),
-    processedMessage: buildWholeCommentPasteFallback(pageBlocks, pasteUrl),
+    badUnitIds: pageBlocks.flatMap((block) => block.units.map((unit) => unit.id)),
+    processedCommentMessage: buildMessageFromPageBlocks(processedPageBlocks),
+    processedMessage: buildMessageFromPageBlocks(processedPageBlocks),
   };
 }
 
