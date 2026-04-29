@@ -1,4 +1,5 @@
 x-proxy-env: &proxy-env
+  NODE_USE_ENV_PROXY: "1"
   HTTP_PROXY: ${DOCKER_HTTP_PROXY:-http://host.docker.internal:7897}
   HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-http://host.docker.internal:7897}
   ALL_PROXY: ${DOCKER_ALL_PROXY:-socks5://host.docker.internal:7897}
