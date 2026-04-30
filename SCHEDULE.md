@@ -84,7 +84,7 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 
 `npm run schedule` 启动后，会注册这 5 个定时任务：
 
-- 每小时整点：
+- 每小时 `00` 分和 `30` 分：
   扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，但这里的流水线会以 `publish=false` 运行，只负责生成 / 更新摘要与发布状态。
 - 每小时 `05` 分：
   扫描数据库里的待发布视频，串行执行 publish sweep；除了真正待发布的视频，也会顺带检查最近 24 小时内已发布视频的评论线程是否仍然健康。
@@ -99,7 +99,8 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 
 - “每 30 天刷新一次”是通过“每天检查 + 超过阈值才执行”实现的，比直接写成“每月某一天”更接近真实的 30 天周期。
 - 扫描用户最近投稿时，命中的视频会复用现有 `run-video-pipeline` 流程，所以已经做过总结的分 P 会自动跳过。
-- summary 阶段不会直接发布；发布统一交给 `05` 分的 publish sweep，避免多条视频并发写评论。
+- summary 阶段不会在单条视频流水线里直接发布；但如果这一轮扫到了 recent uploads，summary sweep 结束后会立即请求一次 publish sweep，尽快发布新完成的摘要。
+- `05` 分的 publish sweep 仍然保留为兜底与线程健康检查入口，避免因为进程重启、手工导入 summary 或临时失败而遗漏发布。
 - publish sweep 会优先处理真正待发布的视频；如果这些任务里某一条失败，会主动中断后续队列，避免持续给 B 站评论接口施压。
 - publish sweep 还会顺带对最近 24 小时内已经发布过的命中视频做一次线程健康检查；如果根评论失效，后续会自动重建整条线程。
 - 同一 UP、同一场录播的不同标题变体会串行排队，并优先处理更早上传的版本，便于后续版本复用总结和评论线程。

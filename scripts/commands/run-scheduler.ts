@@ -333,6 +333,32 @@ await runCli({
     };
 
     const refreshRunner = runExclusive("refresh", runRefreshTask);
+    const publishRunner = createCoalescedRunner({
+      name: "publish",
+      runningTasks,
+      task: runPublishTask,
+      onLog(message) {
+        log(message);
+      },
+      onFailure(error) {
+        const message = getErrorMessage(error);
+        log(`publish failed: ${message}`, {
+          level: "error",
+          details: {
+            task: "publish",
+            error,
+          },
+        });
+        return {
+          action: "publish-failed",
+          queued: 0,
+          runs: 0,
+          failures: 1,
+          aborted: true,
+          message,
+        };
+      },
+    });
     const summaryRunner = createCoalescedRunner({
       name: "summary",
       runningTasks,
@@ -358,31 +384,13 @@ await runCli({
           message,
         };
       },
-    });
-    const publishRunner = createCoalescedRunner({
-      name: "publish",
-      runningTasks,
-      task: runPublishTask,
-      onLog(message) {
-        log(message);
-      },
-      onFailure(error) {
-        const message = getErrorMessage(error);
-        log(`publish failed: ${message}`, {
-          level: "error",
-          details: {
-            task: "publish",
-            error,
-          },
-        });
-        return {
-          action: "publish-failed",
-          queued: 0,
-          runs: 0,
-          failures: 1,
-          aborted: true,
-          message,
-        };
+      onAfterSuccess(result) {
+        if ((result?.uploads ?? 0) <= 0) {
+          return;
+        }
+
+        log("Summary sweep finished with recent uploads; requesting immediate publish sweep");
+        void publishRunner();
       },
     });
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
@@ -413,7 +421,7 @@ await runCli({
     }
 
     const scheduledTasks = [
-      cron.schedule("0 * * * *", summaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
       cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
@@ -421,7 +429,7 @@ await runCli({
     ];
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
+    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
 
     attachSignalHandlers(scheduledTasks, log);
 

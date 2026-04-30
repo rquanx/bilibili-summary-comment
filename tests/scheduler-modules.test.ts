@@ -885,6 +885,41 @@ test("createCoalescedRunner can queue another rerun while the queued rerun is ru
   assert.equal(runCount, 3);
 });
 
+test("createCoalescedRunner runs the success hook after each successful run", async () => {
+  const runningTasks = new Set<string>();
+  const successResults: number[] = [];
+  const waiters: Array<() => void> = [];
+  let runCount = 0;
+
+  const runner = createCoalescedRunner({
+    name: "summary",
+    runningTasks,
+    onAfterSuccess(result) {
+      successResults.push(result);
+    },
+    async task() {
+      runCount += 1;
+      const currentRun = runCount;
+      if (currentRun === 1) {
+        await new Promise<void>((resolve) => {
+          waiters.push(resolve);
+        });
+      }
+
+      return currentRun;
+    },
+  });
+
+  const firstRun = runner();
+  const queuedRun = runner();
+  waiters.shift()?.();
+
+  assert.equal(await queuedRun, null);
+  assert.equal(await firstRun, 2);
+  assert.equal(runCount, 2);
+  assert.deepEqual(successResults, [1, 2]);
+});
+
 test("cleanupOldWorkDirectories removes only safe candidate directories", async () => {
   const removed = [];
   const result = await cleanupOldWorkDirectories({

@@ -4,6 +4,7 @@ interface CoalescedRunnerOptions<TResult> {
   task: () => Promise<TResult> | TResult;
   onLog?: (message: string) => void;
   onFailure?: (error: unknown) => TResult;
+  onAfterSuccess?: (result: TResult) => void;
 }
 
 export function createCoalescedRunner<TResult>({
@@ -12,8 +13,13 @@ export function createCoalescedRunner<TResult>({
   task,
   onLog = () => {},
   onFailure,
+  onAfterSuccess,
 }: CoalescedRunnerOptions<TResult>) {
   let rerunRequested = false;
+
+  function formatHookError(error: unknown) {
+    return error instanceof Error ? error.message : "Unknown error";
+  }
 
   return async () => {
     if (runningTasks.has(name)) {
@@ -37,6 +43,13 @@ export function createCoalescedRunner<TResult>({
 
         try {
           lastResult = await task();
+          if (onAfterSuccess) {
+            try {
+              onAfterSuccess(lastResult);
+            } catch (error) {
+              onLog(`Post-success hook for ${name} failed: ${formatHookError(error)}`);
+            }
+          }
         } catch (error) {
           if (!onFailure) {
             throw error;
