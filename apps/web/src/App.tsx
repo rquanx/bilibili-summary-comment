@@ -171,6 +171,8 @@ export default function App() {
         <RefreshBridge />
         <Routes>
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/failures" element={<FailuresPage />} />
+          <Route path="/health" element={<HealthPage />} />
           <Route path="/pipeline/:bvid" element={<PipelineDetailPage />} />
         </Routes>
       </div>
@@ -187,18 +189,34 @@ function Header() {
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">video pipeline</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">Operations Console</h1>
           </div>
-          <Link
-            to="/"
-            className="rounded-full border border-[var(--line)] bg-white/70 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
-          >
-            Dashboard
-          </Link>
+          <nav className="flex flex-wrap gap-2">
+            <HeaderLink to="/" label="Dashboard" />
+            <HeaderLink to="/failures" label="Failures" />
+            <HeaderLink to="/health" label="Health" />
+          </nav>
         </div>
         <p className="max-w-3xl text-sm leading-6 text-[var(--muted)] sm:text-base">
           Read live pipeline state, inspect failures, trigger recovery actions, and verify scheduler health from one place.
         </p>
       </div>
     </header>
+  );
+}
+
+function HeaderLink({
+  to,
+  label,
+}: {
+  to: string;
+  label: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className="rounded-full border border-[var(--line)] bg-white/70 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
+    >
+      {label}
+    </Link>
   );
 }
 
@@ -479,6 +497,198 @@ function DashboardPage() {
   );
 }
 
+function FailuresPage() {
+  const [filter, setFilter] = useState("");
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const deferredFilter = useDeferredValue(filter.trim().toLowerCase());
+  const queryClient = useQueryClient();
+  const failureQueueQuery = useQuery({
+    queryKey: ["dashboard", "failure-queue", "page"],
+    queryFn: async () => fetchJson<{ ok: true; items: FailureQueueItem[] }>("/api/dashboard/failure-queue?limit=100"),
+  });
+  const failureGroupsQuery = useQuery({
+    queryKey: ["dashboard", "failure-groups", "page"],
+    queryFn: async () => fetchJson<{ ok: true; items: FailureGroupItem[] }>("/api/dashboard/failure-groups?limit=24"),
+  });
+  const auditsQuery = useQuery({
+    queryKey: ["audits", "failures-page"],
+    queryFn: async () => fetchJson<{ ok: true; items: ActionAudit[] }>("/api/actions/audits?limit=30"),
+    refetchInterval: 5000,
+  });
+  const failureQueueItems = (failureQueueQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
+  const failureGroupItems = failureGroupsQuery.data?.items ?? [];
+  const auditItems = auditsQuery.data?.items ?? [];
+
+  async function runAction(actionKey: string, targetPath: string, body: Record<string, unknown>) {
+    setPendingAction(actionKey);
+    setActionMessage(null);
+
+    const response = await postJson<ActionResponse>(targetPath, body);
+    if (!response.ok) {
+      setActionMessage(`Action failed: ${response.errorMessage || "unknown error"}`);
+      setPendingAction(null);
+      await refreshQueries(queryClient);
+      return;
+    }
+
+    setActionMessage(`Action accepted with audit #${response.auditId}`);
+    setPendingAction(null);
+    await refreshQueries(queryClient);
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">phase 3</p>
+            <h2 className="mt-1 text-2xl font-semibold">Failure Queue</h2>
+          </div>
+          <label className="flex w-full max-w-sm flex-col gap-2 text-sm text-[var(--muted)]">
+            Filter by `bvid` or title
+            <input
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+              placeholder="for example BV1xxxx"
+            />
+          </label>
+        </div>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <ActionButton
+            label="Retry retryable failures"
+            busy={pendingAction === "retry-failures"}
+            onClick={() => {
+              if (!window.confirm("Retry the latest retryable failed pipelines now?")) {
+                return;
+              }
+
+              void runAction("retry-failures", "/api/actions/retry-failures", {
+                confirm: true,
+                limit: 5,
+                maxRecentRetries: 1,
+                retryWindowHours: 6,
+              });
+            }}
+          />
+        </div>
+        {actionMessage ? (
+          <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm text-[var(--muted)]">
+            {actionMessage}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">clusters</p>
+              <h3 className="text-xl font-semibold">Failure Groups</h3>
+            </div>
+            <span className="text-sm text-[var(--muted)]">{failureGroupItems.length} groups</span>
+          </div>
+          <FailureGroupList items={failureGroupItems} />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">items</p>
+              <h3 className="text-xl font-semibold">Failure Queue</h3>
+            </div>
+            <span className="text-sm text-[var(--muted)]">{failureQueueItems.length} items</span>
+          </div>
+          <FailureQueueList
+            items={failureQueueItems}
+            pendingAction={pendingAction}
+            onRetry={(item) => {
+              if (!item.bvid) {
+                return;
+              }
+
+              void runAction(`retry-${item.bvid}`, `/api/actions/pipeline/${encodeURIComponent(item.bvid)}/retry`, {});
+            }}
+          />
+        </div>
+      </section>
+
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">audits</p>
+            <h3 className="text-xl font-semibold">Recent Recovery Actions</h3>
+          </div>
+          <span className="text-sm text-[var(--muted)]">{auditItems.length} rows</span>
+        </div>
+        <AuditList items={auditItems} emptyText="No recovery actions recorded yet." />
+      </section>
+    </div>
+  );
+}
+
+function HealthPage() {
+  const healthQuery = useQuery({
+    queryKey: ["dashboard", "health", "page"],
+    queryFn: async () => fetchJson<{ ok: true; snapshot: DashboardHealthSnapshot; items: AttentionItem[] }>("/api/dashboard/health?attentionLimit=20"),
+  });
+  const schedulerQuery = useQuery({
+    queryKey: ["scheduler", "status", "page"],
+    queryFn: async () => fetchJson<{ ok: true; status: SchedulerStatus }>("/api/scheduler/status"),
+    refetchInterval: 5000,
+  });
+  const activeQuery = useQuery({
+    queryKey: ["dashboard", "active-pipelines", "health-page"],
+    queryFn: async () => fetchJson<{ ok: true; items: DashboardRunItem[] }>("/api/dashboard/active-pipelines?limit=100"),
+  });
+
+  const snapshot = healthQuery.data?.snapshot ?? null;
+  const attentionItems = healthQuery.data?.items ?? [];
+  const scheduler = schedulerQuery.data?.status ?? null;
+  const activeItems = activeQuery.data?.items ?? [];
+
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard title="Attention" value={snapshot?.attentionCount ?? 0} tone={(snapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral"} />
+        <MetricCard title="Critical" value={snapshot?.criticalCount ?? 0} tone="danger" />
+        <MetricCard title="Warnings" value={snapshot?.warningCount ?? 0} tone="neutral" />
+        <MetricCard title="Stalled Runs" value={snapshot?.staleRunningCount ?? 0} tone="accent" />
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">scheduler</p>
+            <h2 className="text-2xl font-semibold">Daemon Health</h2>
+          </div>
+          <SchedulerStatusCard status={scheduler} />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">attention</p>
+            <h2 className="text-2xl font-semibold">Attention Queue</h2>
+          </div>
+          <HealthWatchCard snapshot={snapshot} items={attentionItems} />
+        </div>
+      </section>
+
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">running</p>
+            <h3 className="text-xl font-semibold">Active Pipelines</h3>
+          </div>
+          <span className="text-sm text-[var(--muted)]">{activeItems.length} rows</span>
+        </div>
+        <RunTable items={activeItems} emptyText="No active pipelines right now." />
+      </section>
+    </div>
+  );
+}
+
 function PipelineDetailPage() {
   const params = useParams();
   const queryClient = useQueryClient();
@@ -549,6 +759,21 @@ function PipelineDetailPage() {
               void runAction("retry", `/api/actions/pipeline/${encodeURIComponent(bvid)}/retry`, {});
             }}
           />
+          {detail?.latestRun?.runStatus === "running" ? (
+            <ActionButton
+              label="Cancel run"
+              busy={pendingAction === "cancel"}
+              onClick={() => {
+                if (!window.confirm("Cancel the running pipeline now?")) {
+                  return;
+                }
+
+                void runAction("cancel", `/api/actions/pipeline/${encodeURIComponent(bvid)}/cancel`, {
+                  reason: "manual-cancel",
+                });
+              }}
+            />
+          ) : null}
           <ActionButton
             label="Publish now"
             busy={pendingAction === "publish"}
@@ -989,6 +1214,8 @@ function renderStatus(status: string) {
       ? "status-succeeded"
       : normalized === "failed"
         ? "status-failed"
+        : normalized === "cancelled"
+          ? "status-skipped"
         : normalized === "waiting"
           ? "status-waiting"
           : "status-skipped";
@@ -1116,6 +1343,8 @@ function describeAuditResult(result: unknown): string {
     triggered?: unknown;
     skipped?: unknown;
     failed?: unknown;
+    signalSent?: unknown;
+    ownerPid?: unknown;
   };
 
   if (payload.marked === true) {
@@ -1132,6 +1361,10 @@ function describeAuditResult(result: unknown): string {
 
   if (typeof payload.triggered === "number" || typeof payload.skipped === "number" || typeof payload.failed === "number") {
     return `triggered=${String(payload.triggered ?? "-")}, skipped=${String(payload.skipped ?? "-")}, failed=${String(payload.failed ?? "-")}`;
+  }
+
+  if (payload.signalSent === true) {
+    return `cancel signal sent${typeof payload.ownerPid === "number" ? ` to pid ${payload.ownerPid}` : ""}`;
   }
 
   if (Array.isArray(payload.generatedPages)) {

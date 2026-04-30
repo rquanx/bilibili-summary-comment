@@ -14,6 +14,13 @@ interface VideoPipelineLockOwner {
   updatedAt: string;
 }
 
+export interface VideoPipelineLockSnapshot {
+  lockPath: string;
+  exists: boolean;
+  owner: VideoPipelineLockOwner | null;
+  stale: boolean;
+}
+
 interface WithVideoPipelineLockOptions {
   workRoot: string;
   bvid: string;
@@ -220,4 +227,72 @@ function delay(timeoutMs: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, timeoutMs);
   });
+}
+
+export function getVideoPipelineLockSnapshot({
+  workRoot,
+  bvid,
+  repoRoot = getRepoRoot(),
+  staleMs = VIDEO_PIPELINE_LOCK_STALE_MS,
+}: {
+  workRoot: string;
+  bvid: string;
+  repoRoot?: string;
+  staleMs?: number;
+}): VideoPipelineLockSnapshot {
+  const lockRoot = path.join(repoRoot, workRoot, ".locks");
+  const lockPath = path.join(lockRoot, `video-pipeline-${String(bvid).trim() || "unknown"}.lock`);
+  const exists = fs.existsSync(lockPath);
+  const owner = exists ? readVideoPipelineLockOwner(lockPath) : null;
+  const stale = exists ? isStaleVideoPipelineLock(lockPath, staleMs) : false;
+
+  return {
+    lockPath,
+    exists,
+    owner,
+    stale,
+  };
+}
+
+export function terminateVideoPipelineLockOwner({
+  workRoot,
+  bvid,
+  repoRoot = getRepoRoot(),
+  signal = "SIGTERM",
+}: {
+  workRoot: string;
+  bvid: string;
+  repoRoot?: string;
+  signal?: NodeJS.Signals | number;
+}) {
+  const snapshot = getVideoPipelineLockSnapshot({
+    workRoot,
+    bvid,
+    repoRoot,
+  });
+  const ownerPid = Number(snapshot.owner?.pid ?? 0);
+
+  if (!snapshot.exists || !Number.isInteger(ownerPid) || ownerPid <= 0) {
+    return {
+      ...snapshot,
+      signalSent: false,
+    };
+  }
+
+  try {
+    process.kill(ownerPid, signal);
+    return {
+      ...snapshot,
+      signalSent: true,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ESRCH") {
+      return {
+        ...snapshot,
+        signalSent: false,
+      };
+    }
+
+    throw error;
+  }
 }

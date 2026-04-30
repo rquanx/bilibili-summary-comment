@@ -256,6 +256,18 @@ export function getPipelineRunStateById(db: Db, runId: string): PipelineRunState
   return (db.prepare("SELECT * FROM pipeline_run_state WHERE run_id = ?").get(runId) as unknown as PipelineRunStateRecord | undefined) ?? null;
 }
 
+export function getActivePipelineRunStateByBvid(db: Db, bvid: string): PipelineRunStateRecord | null {
+  return (db.prepare(`
+    SELECT state.*
+    FROM pipeline_run_state state
+    JOIN pipeline_runs runs ON runs.run_id = state.run_id
+    WHERE runs.status = 'running'
+      AND state.bvid = ?
+    ORDER BY state.updated_at DESC, state.latest_event_id DESC
+    LIMIT 1
+  `).get(normalizeText(bvid)) as unknown as PipelineRunStateRecord | undefined) ?? null;
+}
+
 export function listActivePipelineRunStates(db: Db, limit = 50): PipelineRunStateRecord[] {
   return db.prepare(`
     SELECT state.*
@@ -315,6 +327,10 @@ function deriveRunStatus(previousStatus: string | null | undefined, eventRecord:
     return "failed";
   }
 
+  if (isRunCancelledEvent(eventRecord)) {
+    return "cancelled";
+  }
+
   return previousStatus ?? "running";
 }
 
@@ -330,8 +346,12 @@ function isRunFailedEvent(eventRecord: Pick<PipelineEventRecord, "scope" | "acti
   return eventRecord.scope === "pipeline" && eventRecord.action === "run" && eventRecord.status === "failed";
 }
 
+function isRunCancelledEvent(eventRecord: Pick<PipelineEventRecord, "scope" | "action" | "status">): boolean {
+  return eventRecord.scope === "pipeline" && eventRecord.action === "run" && eventRecord.status === "cancelled";
+}
+
 function isTerminalRunEvent(eventRecord: Pick<PipelineEventRecord, "scope" | "action" | "status">): boolean {
-  return isRunSucceededEvent(eventRecord) || isRunFailedEvent(eventRecord);
+  return isRunSucceededEvent(eventRecord) || isRunFailedEvent(eventRecord) || isRunCancelledEvent(eventRecord);
 }
 
 function deriveStageLabel(eventRecord: Pick<PipelineEventRecord, "scope" | "action" | "status">): string {
@@ -346,6 +366,10 @@ function deriveStageLabel(eventRecord: Pick<PipelineEventRecord, "scope" | "acti
 
     if (eventRecord.status === "failed") {
       return "pipeline-failed";
+    }
+
+    if (eventRecord.status === "cancelled") {
+      return "pipeline-cancelled";
     }
   }
 

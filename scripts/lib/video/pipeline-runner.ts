@@ -87,6 +87,12 @@ export async function runVideoPipeline(
     publishRequested: Boolean(args.publish),
   });
   progress.info(`Detailed log: ${logger.filePath}`);
+  const releaseSignalHandlers = installPipelineSignalHandlers({
+    eventLogger,
+    logger,
+    logPath: logger.filePath,
+    triggerSource,
+  });
 
   eventLogger.log({
     scope: "pipeline",
@@ -296,6 +302,8 @@ export async function runVideoPipeline(
       stdout: trimCommandOutput((error as CommandError | undefined)?.stdout, 20_000),
     });
     throw error;
+  } finally {
+    releaseSignalHandlers();
   }
 }
 
@@ -410,4 +418,58 @@ function buildPipelineLogLabel(video: { work_dir_name?: string | null; title?: s
   }
 
   return title || bvid || "pipeline";
+}
+
+function installPipelineSignalHandlers({
+  eventLogger,
+  logger,
+  logPath,
+  triggerSource,
+}: {
+  eventLogger: PipelineEventLogger;
+  logger: { warn?: (message: string, details?: Record<string, unknown>) => void } | null;
+  logPath: string;
+  triggerSource: string;
+}) {
+  let cancelled = false;
+
+  const handleSignal = (signal: NodeJS.Signals) => {
+    if (cancelled) {
+      return;
+    }
+
+    cancelled = true;
+    const message = `Pipeline cancelled by ${signal}`;
+    try {
+      eventLogger.log({
+        scope: "pipeline",
+        action: "run",
+        status: "cancelled",
+        message,
+        details: {
+          signal,
+          logPath,
+          triggerSource,
+          cancelled: true,
+        },
+      });
+    } catch {
+      // Best-effort cancellation logging.
+    }
+    logger?.warn?.("Pipeline cancelled by signal", {
+      signal,
+      logPath,
+    });
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+
+  const onSigint = () => handleSignal("SIGINT");
+  const onSigterm = () => handleSignal("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  return () => {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+  };
 }

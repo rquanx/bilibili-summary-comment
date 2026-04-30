@@ -72,6 +72,7 @@ export {
   listPipelineEvents,
 } from "./pipeline-event-storage";
 export {
+  getActivePipelineRunStateByBvid,
   getPipelineRunById,
   getPipelineRunStateById,
   listActivePipelineRunStates,

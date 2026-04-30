@@ -55,6 +55,7 @@ const eventStreamQuerySchema = z.object({
 const actionBodySchema = z.object({
   summaryUsers: z.string().trim().optional(),
   authFile: z.string().trim().optional(),
+  reason: z.string().trim().optional(),
   confirm: z.boolean().optional(),
   forceSummary: z.boolean().optional(),
 });
@@ -228,7 +229,22 @@ export async function buildApiServer({
     });
 
     if (!result.ok) {
-      reply.code(500);
+      reply.code(String(result.errorMessage ?? "").includes("already running") ? 409 : 500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/cancel", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.cancelPipeline({
+      bvid: params.bvid,
+      reason: body.reason ?? "manual-cancel",
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("No running pipeline") ? 409 : 500);
     }
 
     return result;
@@ -265,7 +281,8 @@ export async function buildApiServer({
     });
 
     if (!result.ok) {
-      reply.code(String(result.errorMessage ?? "").includes("Confirmation required") ? 400 : 500);
+      const errorMessage = String(result.errorMessage ?? "");
+      reply.code(errorMessage.includes("Confirmation required") ? 400 : errorMessage.includes("already running") ? 409 : 500);
     }
 
     return result;

@@ -447,6 +447,197 @@ test("operations service records audits and enforces confirmation for risky acti
   }
 });
 
+test("operations service can cancel a running pipeline and records audits", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-cancel-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1CANCEL",
+      aid: 30002,
+      title: "Cancelable Video",
+      ownerMid: 790,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 10003,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+
+    insertPipelineEvent(db, {
+      runId: "run-cancel",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "Pipeline started",
+    });
+
+    const terminateCalls: Array<{ workRoot: string; bvid: string }> = [];
+    const service = createOperationsService({
+      dbPath,
+      workRoot: "work",
+      runtime: {
+        terminateVideoPipelineLockOwner(args) {
+          terminateCalls.push({
+            workRoot: args.workRoot,
+            bvid: args.bvid,
+          });
+          return {
+            lockPath: path.join(tempRoot, "work", ".locks", "video-pipeline-BV1CANCEL.lock"),
+            exists: true,
+            stale: false,
+            signalSent: true,
+            owner: {
+              pid: 123,
+              bvid: args.bvid,
+              videoTitle: "Cancelable Video",
+              publishRequested: false,
+              updatedAt: new Date().toISOString(),
+            },
+          };
+        },
+      },
+    });
+
+    try {
+      const result = await service.cancelPipeline({
+        bvid: "BV1CANCEL",
+        reason: "manual-cancel",
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.runId, "run-cancel");
+      assert.deepEqual(terminateCalls, [{
+        workRoot: "work",
+        bvid: "BV1CANCEL",
+      }]);
+      assert.equal((result.result as { signalSent?: boolean }).signalSent, true);
+      assert.equal((result.result as { ownerPid?: number | null }).ownerPid, 123);
+
+      const audits = service.listAudits({
+        bvid: "BV1CANCEL",
+        limit: 10,
+      });
+      assert.equal(audits.length, 1);
+      assert.equal(audits[0].action, "pipeline-cancel");
+      assert.equal(audits[0].status, "succeeded");
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("operations service blocks duplicate retry and publish actions while a pipeline is active", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-idempotency-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1ACTIVE",
+      aid: 30003,
+      title: "Active Video",
+      ownerMid: 791,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 10004,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+
+    insertPipelineEvent(db, {
+      runId: "run-active-ops",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "Pipeline started",
+    });
+    insertPipelineEvent(db, {
+      runId: "run-active-ops",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "subtitle",
+      action: "asr",
+      status: "started",
+      message: "ASR started",
+    });
+
+    let pipelineRuns = 0;
+    const service = createOperationsService({
+      dbPath,
+      services: {
+        pipelineService: {
+          runPipeline() {
+            pipelineRuns += 1;
+            return {
+              ok: true,
+              runId: "should-not-run",
+            };
+          },
+        } as any,
+      },
+    });
+
+    try {
+      const retryResult = await service.retryPipeline({
+        bvid: "BV1ACTIVE",
+      });
+      const publishResult = await service.publishPipeline({
+        bvid: "BV1ACTIVE",
+        confirm: true,
+      });
+
+      assert.equal(retryResult.ok, false);
+      assert.match(String(retryResult.errorMessage), /already running/u);
+      assert.equal(publishResult.ok, false);
+      assert.match(String(publishResult.errorMessage), /already running/u);
+      assert.equal(pipelineRuns, 0);
+
+      const audits = service.listAudits({
+        bvid: "BV1ACTIVE",
+        limit: 10,
+      });
+      assert.equal(audits.length, 2);
+      assert.equal(audits.every((item) => item.status === "failed"), true);
+      assert.equal(
+        audits.some((item) => item.action === "pipeline-retry" && String(item.errorMessage).includes("already running")),
+        true,
+      );
+      assert.equal(
+        audits.some((item) => item.action === "pipeline-publish" && String(item.errorMessage).includes("already running")),
+        true,
+      );
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("operations service retries only eligible retryable failures in batch mode", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-retry-batch-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -653,6 +844,78 @@ test("operations service retries only eligible retryable failures in batch mode"
         }).some((item) => item.action === "pipeline-retry"),
         true,
       );
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("dashboard service surfaces cancelled runs in recent and detail views", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-dashboard-cancelled-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1CANCELLED",
+      aid: 50010,
+      title: "Cancelled Video",
+      ownerMid: 1004,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 18001,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+
+    insertPipelineEvent(db, {
+      runId: "run-cancelled",
+      triggerSource: "web",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "Pipeline started",
+    });
+    insertPipelineEvent(db, {
+      runId: "run-cancelled",
+      triggerSource: "web",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "cancelled",
+      message: "Pipeline cancelled by SIGTERM",
+    });
+
+    const service = createDashboardService({
+      dbPath,
+    });
+
+    try {
+      const recent = service.listRecentRuns({
+        statuses: ["cancelled"],
+      });
+      const detail = service.getPipelineDetail("BV1CANCELLED");
+
+      assert.equal(recent.length, 1);
+      assert.equal(recent[0].runId, "run-cancelled");
+      assert.equal(recent[0].runStatus, "cancelled");
+      assert.equal(recent[0].currentStage, "pipeline-cancelled");
+
+      assert.equal(detail.latestRun?.runId, "run-cancelled");
+      assert.equal(detail.latestRun?.runStatus, "cancelled");
+      assert.equal(detail.latestRun?.currentStage, "pipeline-cancelled");
     } finally {
       service.close();
     }
@@ -903,6 +1166,180 @@ test("api exposes retry-failure batch action route", async () => {
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().ok, true);
     assert.equal(response.json().result.triggered, 2);
+  } finally {
+    await app.close();
+  }
+});
+
+test("api exposes cancel action and maps running-pipeline conflicts to 409", async () => {
+  const app = await buildApiServer({
+    logger: false,
+    webDistDir: path.join(os.tmpdir(), "missing-web-dist"),
+    services: {
+      dashboardService: {
+        close() {},
+        getSummary() {
+          return {
+            activeCount: 0,
+            failedCount24h: 0,
+            succeededCount24h: 0,
+            latestUpdatedAt: null,
+          };
+        },
+        listActivePipelines() {
+          return [];
+        },
+        listRecentRuns() {
+          return [];
+        },
+        listFailureQueue() {
+          return [];
+        },
+        listFailureGroups() {
+          return [];
+        },
+        getOperationalHealth() {
+          return {
+            snapshot: {
+              attentionCount: 0,
+              criticalCount: 0,
+              warningCount: 0,
+              staleRunningCount: 0,
+              schedulerHealthy: true,
+              schedulerStatus: "running",
+              schedulerLastHeartbeatAt: null,
+              schedulerHeartbeatAgeMs: null,
+            },
+            items: [],
+          };
+        },
+        getRunState() {
+          return null;
+        },
+        getPipelineDetail() {
+          return {
+            video: null,
+            parts: [],
+            latestRun: null,
+            recentRuns: [],
+            recentEvents: [],
+          };
+        },
+        listEventsAfterId() {
+          return [];
+        },
+      } as any,
+      operationsService: {
+        close() {},
+        listAudits() {
+          return [];
+        },
+        runSummarySweep() {
+          return Promise.resolve({ ok: true, auditId: 1, action: "summary-sweep", scope: "scheduler" });
+        },
+        runPublishSweep() {
+          return Promise.resolve({ ok: true, auditId: 2, action: "publish-sweep", scope: "scheduler" });
+        },
+        retryPipeline() {
+          return Promise.resolve({
+            ok: false,
+            auditId: 3,
+            action: "pipeline-retry",
+            scope: "pipeline",
+            errorMessage: "Cannot retry pipeline while it is already running: BV1CONFLICT",
+          });
+        },
+        cancelPipeline() {
+          return Promise.resolve({
+            ok: true,
+            auditId: 4,
+            action: "pipeline-cancel",
+            scope: "pipeline",
+            result: {
+              signalSent: true,
+              ownerPid: 321,
+            },
+          });
+        },
+        retryRetryableFailures() {
+          return Promise.resolve({
+            ok: true,
+            auditId: 5,
+            action: "retry-failure-queue",
+            scope: "pipeline",
+            result: {
+              triggered: 1,
+              skipped: 0,
+              failed: 0,
+            },
+          });
+        },
+        publishPipeline() {
+          return Promise.resolve({
+            ok: false,
+            auditId: 6,
+            action: "pipeline-publish",
+            scope: "pipeline",
+            errorMessage: "Cannot publish pipeline while it is already running: BV1CONFLICT",
+          });
+        },
+        rebuildPublishThread() {
+          return Promise.resolve({ ok: true, auditId: 7, action: "rebuild-publish-thread", scope: "publish" });
+        },
+      } as any,
+      schedulerStatusService: {
+        close() {},
+        getStatus() {
+          return {
+            schedulerKey: "main",
+            status: "running",
+            healthy: true,
+            mode: "daemon",
+            timezone: "Asia/Shanghai",
+            pid: 1,
+            hostname: "test",
+            summaryUsers: null,
+            summaryConcurrency: 1,
+            currentTasks: [],
+            taskTimes: {},
+            lastError: null,
+            startedAt: null,
+            lastHeartbeatAt: null,
+            heartbeatAgeMs: null,
+            updatedAt: null,
+          };
+        },
+      } as any,
+    },
+  });
+
+  try {
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: "/api/actions/pipeline/BV1CONFLICT/cancel",
+      payload: {
+        reason: "manual-cancel",
+      },
+    });
+    assert.equal(cancelResponse.statusCode, 200);
+    assert.equal(cancelResponse.json().ok, true);
+    assert.equal(cancelResponse.json().result.ownerPid, 321);
+
+    const retryResponse = await app.inject({
+      method: "POST",
+      url: "/api/actions/pipeline/BV1CONFLICT/retry",
+      payload: {},
+    });
+    assert.equal(retryResponse.statusCode, 409);
+
+    const publishResponse = await app.inject({
+      method: "POST",
+      url: "/api/actions/pipeline/BV1CONFLICT/publish",
+      payload: {
+        confirm: true,
+      },
+    });
+    assert.equal(publishResponse.statusCode, 409);
   } finally {
     await app.close();
   }

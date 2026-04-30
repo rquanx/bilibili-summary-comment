@@ -1,4 +1,5 @@
 import {
+  getActivePipelineRunStateByBvid,
   getVideoByIdentity,
   insertOperationAudit,
   listOperationAudits,
@@ -6,6 +7,7 @@ import {
   openDatabase,
   updateOperationAudit,
 } from "../../../../scripts/lib/db/index";
+import { terminateVideoPipelineLockOwner } from "../../../../scripts/lib/video/pipeline-lock";
 import { createDashboardService } from "./dashboard-service";
 import { createPipelineService } from "./pipeline-service";
 import { createPublishService } from "./publish-service";
@@ -16,6 +18,7 @@ export function createOperationsService({
   workRoot = "work",
   triggerSource = "web",
   services = {},
+  runtime = {},
 }: {
   dbPath?: string;
   workRoot?: string;
@@ -25,6 +28,9 @@ export function createOperationsService({
     pipelineService?: ReturnType<typeof createPipelineService>;
     publishService?: ReturnType<typeof createPublishService>;
     schedulerControlService?: ReturnType<typeof createSchedulerControlService>;
+  };
+  runtime?: {
+    terminateVideoPipelineLockOwner?: typeof terminateVideoPipelineLockOwner;
   };
 } = {}) {
   const db = openDatabase(dbPath);
@@ -43,6 +49,7 @@ export function createOperationsService({
     dbPath,
     workRoot,
   });
+  const terminatePipelineOwner = runtime?.terminateVideoPipelineLockOwner ?? terminateVideoPipelineLockOwner;
 
   return {
     close() {
@@ -125,6 +132,9 @@ export function createOperationsService({
         publish,
         forceSummary,
         triggerSource,
+        beforeRun() {
+          ensurePipelineNotActive(db, bvid, "retry");
+        },
       });
     },
     async retryRetryableFailures({
@@ -292,11 +302,53 @@ export function createOperationsService({
         },
         run() {
           ensureConfirmed(confirm, "single pipeline publish");
+          ensurePipelineNotActive(db, bvid, "publish");
           return pipelineService.runPipeline({
             bvid,
             publish: true,
             triggerSource,
           });
+        },
+      });
+    },
+    async cancelPipeline({
+      bvid,
+      reason = "manual-cancel",
+    }: {
+      bvid: string;
+      reason?: string;
+    }) {
+      return executeAuditedOperation(db, {
+        action: "pipeline-cancel",
+        scope: "pipeline",
+        bvid,
+        triggerSource,
+        request: {
+          bvid,
+          reason: normalizeText(reason) ?? "manual-cancel",
+        },
+        run() {
+          const activeRun = getActivePipelineRunStateByBvid(db, bvid);
+          if (!activeRun) {
+            throw new Error(`No running pipeline for ${bvid}`);
+          }
+
+          const termination = terminatePipelineOwner({
+            workRoot,
+            bvid,
+          });
+          if (!termination.signalSent) {
+            throw new Error(`Failed to signal running pipeline for ${bvid}`);
+          }
+
+          return {
+            ok: true,
+            bvid,
+            runId: activeRun.run_id,
+            reason: normalizeText(reason) ?? "manual-cancel",
+            signalSent: true,
+            ownerPid: termination.owner?.pid ?? null,
+          };
         },
       });
     },
@@ -347,11 +399,13 @@ function executePipelineRetryOperation(
     publish,
     forceSummary,
     triggerSource,
+    beforeRun = null,
   }: {
     bvid: string;
     publish: boolean;
     forceSummary: boolean;
     triggerSource: string;
+    beforeRun?: (() => void) | null;
   },
 ) {
   return executeAuditedOperation(db, {
@@ -365,6 +419,7 @@ function executePipelineRetryOperation(
       forceSummary: Boolean(forceSummary),
     },
     run() {
+      beforeRun?.();
       return pipelineService.runPipeline({
         bvid,
         publish,
@@ -550,4 +605,12 @@ function isWithinRecentHours(value: string, hours: number): boolean {
   const threshold = Date.now() - Math.max(1, Number(hours) || 1) * 3600 * 1000;
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) && timestamp >= threshold;
+}
+
+function ensurePipelineNotActive(db: ReturnType<typeof openDatabase>, bvid: string, actionLabel: string) {
+  if (!getActivePipelineRunStateByBvid(db, bvid)) {
+    return;
+  }
+
+  throw new Error(`Cannot ${actionLabel} pipeline while it is already running: ${bvid}`);
 }
