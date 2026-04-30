@@ -1208,7 +1208,7 @@ test("runPendingVideoPublishSweep healthchecks recently uploaded published video
   }
 });
 
-test("runPendingVideoPublishSweep only cools down after a task that actually created comments", async () => {
+test("runPendingVideoPublishSweep only cools down after tasks that actually created comments", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-cooldown-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -1311,7 +1311,104 @@ test("runPendingVideoPublishSweep only cools down after a task that actually cre
       "BVWITHCOOLDOWN",
       "BVAFTERCOOLDOWN",
     ]);
-    assert.deepEqual(sleepCalls, [1234]);
+    assert.deepEqual(sleepCalls, [1234, 1234]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep runs at most two publish tasks concurrently", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const started: string[] = [];
+  const finished: string[] = [];
+  const running = new Set<string>();
+  const waiters = new Map<string, () => void>();
+
+  try {
+    for (const [index, bvid] of ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4"].entries()) {
+      const video = upsertVideo(db, {
+        bvid,
+        aid: index + 1,
+        title: bvid,
+        ownerMid: 123,
+        pageCount: 1,
+      });
+      upsertVideoPart(db, {
+        videoId: video.id,
+        pageNo: 1,
+        cid: 100 + index,
+        partTitle: "P1",
+        durationSec: 10,
+        summaryText: `<1P>\n${bvid}`,
+        published: false,
+        isDeleted: false,
+      });
+    }
+
+    const sweepPromise = runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth-1.json");
+      },
+      runPipelineForBvidImpl: async (options) => {
+        const bvid = String(options.bvid);
+        started.push(bvid);
+        running.add(bvid);
+        await new Promise<void>((resolve) => {
+          waiters.set(bvid, resolve);
+        });
+        running.delete(bvid);
+        finished.push(bvid);
+        return {
+          ok: true,
+          publishResult: {
+            action: "append-replies",
+            createdComments: [{ rpid: started.length }],
+          },
+        };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    while (started.length < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.deepEqual(started, ["BVCONC1", "BVCONC2"]);
+    assert.equal(running.size, 2);
+
+    waiters.get("BVCONC1")?.();
+    while (started.length < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.deepEqual(started, ["BVCONC1", "BVCONC2", "BVCONC3"]);
+    assert.equal(running.size, 2);
+
+    waiters.get("BVCONC2")?.();
+    while (started.length < 4) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.deepEqual(started, ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4"]);
+    assert.equal(running.size, 2);
+
+    for (const bvid of ["BVCONC3", "BVCONC4"]) {
+      waiters.get(bvid)?.();
+    }
+
+    const result = await sweepPromise;
+    assert.equal(result.aborted, false);
+    assert.deepEqual(result.failures, []);
+    assert.deepEqual(finished.sort(), ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4"]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

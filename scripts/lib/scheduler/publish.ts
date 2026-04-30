@@ -13,6 +13,7 @@ const PUBLISH_APPEND_COOLDOWN_MAX_MS = 30_000;
 const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 15_000;
 const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 30_000;
 const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
+const PUBLISH_SWEEP_MAX_CONCURRENCY = 2;
 
 export interface PendingPublishTask {
   video: VideoRecord;
@@ -151,65 +152,22 @@ export async function runPendingVideoPublishSweep({
   const failures: PendingPublishFailure[] = [];
   let aborted = false;
 
-  await withCommentPublishQueueLock({
+  await runPendingPublishTasksWithConcurrency({
+    tasks,
     workRoot,
-    queueName: "Bilibili comment publish",
+    dbPath,
+    logDay,
+    logGroup,
+    logger,
     onLog,
-    ownerDetails: {
-      task: "publish-sweep",
-      dbPath,
+    runs,
+    failures,
+    runPipelineForBvidImpl,
+    computePublishCooldownMsImpl,
+    sleepImpl,
+    onAbort() {
+      aborted = true;
     },
-  }, async () => {
-    onLog(`Publishing ${tasks.length} queued video(s) serially`);
-
-    for (const [index, task] of tasks.entries()) {
-      const scopedLogger = logger?.child({
-        task: "publish",
-        bvid: task.video.bvid,
-        publishMode: task.publishMode,
-      }) ?? null;
-
-      onLog(
-        `Publishing ${task.video.bvid} (${task.video.title || "untitled"}) [${task.publishMode}] ${index + 1}/${tasks.length}`,
-      );
-
-      try {
-        const result = await runPipelineForBvidImpl({
-          authFile: task.authFile,
-          cookieFile: null,
-          dbPath,
-          workRoot,
-          bvid: task.video.bvid,
-          logDay,
-          logGroup,
-          publish: true,
-          logger: scopedLogger,
-        });
-
-        runs.push({
-          bvid: task.video.bvid,
-          title: task.video.title,
-          publishMode: task.publishMode,
-          result,
-        });
-
-        if (index < tasks.length - 1 && didPublishCreateComments(result)) {
-          const cooldownMs = computePublishCooldownMsImpl(task.publishMode);
-          onLog(`Cooling down ${Math.round(cooldownMs / 1000)}s before the next publish task`);
-          await sleepImpl(cooldownMs);
-        }
-      } catch (error) {
-        failures.push({
-          bvid: task.video.bvid,
-          title: task.video.title,
-          message: error instanceof Error ? error.message : "Unknown error",
-          publishMode: task.publishMode,
-        });
-        aborted = true;
-        onLog(`Publish failed for ${task.video.bvid}; stopping the remaining queue to avoid repeated write pressure`);
-        break;
-      }
-    }
   });
 
   return {
@@ -268,4 +226,115 @@ function delay(timeoutMs: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, timeoutMs);
   });
+}
+
+async function runPendingPublishTasksWithConcurrency({
+  tasks,
+  workRoot,
+  dbPath,
+  logDay,
+  logGroup,
+  logger,
+  onLog,
+  runs,
+  failures,
+  runPipelineForBvidImpl,
+  computePublishCooldownMsImpl,
+  sleepImpl,
+  onAbort,
+}: {
+  tasks: PendingPublishTask[];
+  workRoot: string;
+  dbPath: string;
+  logDay: string | null;
+  logGroup: string | null;
+  logger: FileLogger | null;
+  onLog: (message: string) => void;
+  runs: Array<Record<string, unknown>>;
+  failures: PendingPublishFailure[];
+  runPipelineForBvidImpl: typeof runPipelineForBvid;
+  computePublishCooldownMsImpl: (publishMode: "append" | "rebuild") => number;
+  sleepImpl: (timeoutMs: number) => Promise<void>;
+  onAbort: () => void;
+}) {
+  const maxConcurrent = Math.min(PUBLISH_SWEEP_MAX_CONCURRENCY, tasks.length);
+  let nextTaskIndex = 0;
+  let stopScheduling = false;
+
+  onLog(`Publishing ${tasks.length} queued video(s) with up to ${maxConcurrent} concurrent task(s)`);
+
+  const worker = async () => {
+    while (true) {
+      if (stopScheduling) {
+        return;
+      }
+
+      const index = nextTaskIndex;
+      if (index >= tasks.length) {
+        return;
+      }
+      nextTaskIndex += 1;
+
+      const task = tasks[index];
+      const scopedLogger = logger?.child({
+        task: "publish",
+        bvid: task.video.bvid,
+        publishMode: task.publishMode,
+      }) ?? null;
+
+      onLog(
+        `Publishing ${task.video.bvid} (${task.video.title || "untitled"}) [${task.publishMode}] ${index + 1}/${tasks.length}`,
+      );
+
+      try {
+        const result = await withCommentPublishQueueLock({
+          workRoot,
+          queueName: "Bilibili comment publish",
+          onLog,
+          ownerDetails: {
+            task: "publish",
+            dbPath,
+            bvid: task.video.bvid,
+            publishMode: task.publishMode,
+          },
+        }, async () => runPipelineForBvidImpl({
+          authFile: task.authFile,
+          cookieFile: null,
+          dbPath,
+          workRoot,
+          bvid: task.video.bvid,
+          logDay,
+          logGroup,
+          publish: true,
+          logger: scopedLogger,
+        }));
+
+        runs.push({
+          bvid: task.video.bvid,
+          title: task.video.title,
+          publishMode: task.publishMode,
+          result,
+        });
+
+        if (didPublishCreateComments(result) && !stopScheduling) {
+          const cooldownMs = computePublishCooldownMsImpl(task.publishMode);
+          onLog(`Cooling down ${Math.round(cooldownMs / 1000)}s before the next publish task for ${task.video.bvid}`);
+          await sleepImpl(cooldownMs);
+        }
+      } catch (error) {
+        failures.push({
+          bvid: task.video.bvid,
+          title: task.video.title,
+          message: error instanceof Error ? error.message : "Unknown error",
+          publishMode: task.publishMode,
+        });
+        stopScheduling = true;
+        onAbort();
+        onLog(`Publish failed for ${task.video.bvid}; stopping the remaining queue to avoid repeated write pressure`);
+        return;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: maxConcurrent }, () => worker()));
 }
