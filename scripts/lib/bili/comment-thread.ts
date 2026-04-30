@@ -1,19 +1,24 @@
+import fs from "node:fs";
+import path from "node:path";
 import { utils } from "@renmu/bili-api";
 import { createCliError, extractErrorDetails } from "../cli/errors";
 import {
   getActiveVideoPartByPageNo,
   getPreferredSummaryTextForPart,
+  getVideoById,
   markPartsPublished,
   normalizeStoredSummaryText,
   savePartProcessedSummary,
   updateVideoCommentThread,
 } from "../db/index";
+import { ensureVideoWorkDir } from "../shared/work-paths";
 import {
   extractCoveredPages,
   normalizeSummaryMarkers,
   parseSummaryBlocks,
   splitSummaryForComments,
 } from "../summary/format";
+import { getRepoRoot } from "../shared/runtime-tools";
 
 const sleep = (timeout) =>
   new Promise((resolve) => {
@@ -30,6 +35,9 @@ const BILIBILI_COMMENT_MAX_LENGTH = 700;
 const TIMESTAMP_UNIT_PATTERN = /^(?<label>\d+#\d{1,2}:\d{2}(?::\d{2})?)\s+(?<rest>.+)$/u;
 const GUEST_COMMENT_WEB_LOCATION = 1315875;
 const GUEST_COMMENT_MODE = 3;
+const PASTE_RS_MIN_INTERVAL_MS = Math.max(0, Number(process.env.PASTE_RS_MIN_INTERVAL_MS) || 5_000);
+const PASTE_RS_RATE_LIMIT_WAIT_MS = 250;
+const PASTE_RS_RATE_LIMIT_STALE_MS = 60_000;
 
 interface CommentUnit {
   id: string;
@@ -43,6 +51,12 @@ interface CommentPageBlock {
   page: number;
   marker: string;
   units: CommentUnit[];
+}
+
+interface PasteRateLimitState {
+  pid: number | null;
+  nextAllowedAt: number;
+  updatedAt: string;
 }
 
 interface GuestReplyListParams {
@@ -562,6 +576,299 @@ async function uploadTextToPasteRs(text, fetchImpl = fetch) {
   }
 
   return pasteUrl;
+}
+
+export async function waitForGlobalPasteUploadTurn({
+  workRoot = "work",
+  repoRoot = getRepoRoot(),
+  minIntervalMs = PASTE_RS_MIN_INTERVAL_MS,
+  waitMs = PASTE_RS_RATE_LIMIT_WAIT_MS,
+  staleMs = PASTE_RS_RATE_LIMIT_STALE_MS,
+  sleepImpl = sleep,
+  nowImpl = () => Date.now(),
+}: {
+  workRoot?: string;
+  repoRoot?: string;
+  minIntervalMs?: number;
+  waitMs?: number;
+  staleMs?: number;
+  sleepImpl?: (timeout: number) => Promise<unknown>;
+  nowImpl?: () => number;
+} = {}) {
+  if (!Number.isFinite(minIntervalMs) || minIntervalMs <= 0) {
+    return;
+  }
+
+  const lockRoot = path.join(repoRoot, workRoot, ".locks");
+  const lockPath = path.join(lockRoot, "paste-rs-rate-limit.lock");
+  const ownerPath = path.join(lockPath, "owner.json");
+  const statePath = path.join(lockRoot, "paste-rs-rate-limit.json");
+  fs.mkdirSync(lockRoot, { recursive: true });
+
+  const release = await acquirePasteRateLimitLock({
+    lockPath,
+    ownerPath,
+    staleMs,
+    waitMs,
+    sleepImpl,
+    nowImpl,
+  });
+
+  try {
+    const state = readPasteRateLimitState(statePath);
+    const now = nowImpl();
+    const nextAllowedAt = Math.max(0, Number(state?.nextAllowedAt ?? 0) || 0);
+    const waitForMs = Math.max(0, nextAllowedAt - now);
+    if (waitForMs > 0) {
+      await sleepImpl(waitForMs);
+    }
+
+    const reservedAt = nowImpl() + minIntervalMs;
+    const payload: PasteRateLimitState = {
+      pid: Number.isInteger(process.pid) && process.pid > 0 ? process.pid : null,
+      nextAllowedAt: reservedAt,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(statePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  } finally {
+    release();
+  }
+}
+
+async function acquirePasteRateLimitLock({
+  lockPath,
+  ownerPath,
+  staleMs,
+  waitMs,
+  sleepImpl,
+  nowImpl,
+}: {
+  lockPath: string;
+  ownerPath: string;
+  staleMs: number;
+  waitMs: number;
+  sleepImpl: (timeout: number) => Promise<unknown>;
+  nowImpl: () => number;
+}) {
+  while (true) {
+    try {
+      fs.mkdirSync(lockPath);
+      fs.writeFileSync(ownerPath, `${JSON.stringify({
+        pid: Number.isInteger(process.pid) && process.pid > 0 ? process.pid : null,
+        updatedAt: new Date(nowImpl()).toISOString(),
+      }, null, 2)}\n`, "utf8");
+      return () => {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
+        throw error;
+      }
+
+      if (isStalePasteRateLimitLock(lockPath, ownerPath, staleMs, nowImpl)) {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+        continue;
+      }
+
+      await sleepImpl(waitMs);
+    }
+  }
+}
+
+function isStalePasteRateLimitLock(
+  lockPath: string,
+  ownerPath: string,
+  staleMs: number,
+  nowImpl: () => number,
+) {
+  const owner = readPasteRateLimitLockOwner(ownerPath);
+  const ownerPid = Number(owner?.pid ?? 0);
+  if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
+    return true;
+  }
+
+  try {
+    const stats = fs.statSync(ownerPath);
+    return nowImpl() - stats.mtimeMs > staleMs;
+  } catch {
+    try {
+      const stats = fs.statSync(lockPath);
+      return nowImpl() - stats.mtimeMs > staleMs;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function readPasteRateLimitLockOwner(ownerPath: string): { pid?: number | null } | null {
+  if (!fs.existsSync(ownerPath)) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+    return payload && typeof payload === "object" ? payload as { pid?: number | null } : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPasteRateLimitState(statePath: string): PasteRateLimitState | null {
+  if (!fs.existsSync(statePath)) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(fs.readFileSync(statePath, "utf8")) as Partial<PasteRateLimitState>;
+    const nextAllowedAt = Number(payload?.nextAllowedAt ?? 0);
+    return {
+      pid: Number.isInteger(Number(payload?.pid)) && Number(payload?.pid) > 0 ? Number(payload?.pid) : null,
+      nextAllowedAt: Number.isFinite(nextAllowedAt) && nextAllowedAt > 0 ? nextAllowedAt : 0,
+      updatedAt: String(payload?.updatedAt ?? "").trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EPERM") {
+      return true;
+    }
+
+    return false;
+  }
+}
+
+function buildPasteArtifactPageLabel(message) {
+  const coveredPages = extractCoveredPages(normalizeSummaryMarkers(message));
+  if (coveredPages.length === 0) {
+    return "all";
+  }
+
+  if (coveredPages.length === 1) {
+    return `p${String(coveredPages[0]).padStart(2, "0")}`;
+  }
+
+  const firstPage = coveredPages[0];
+  const lastPage = coveredPages[coveredPages.length - 1];
+  const isConsecutive = coveredPages.every((page, index) => index === 0 || page === coveredPages[index - 1] + 1);
+  if (isConsecutive) {
+    return `p${String(firstPage).padStart(2, "0")}-p${String(lastPage).padStart(2, "0")}`;
+  }
+
+  return `p${String(firstPage).padStart(2, "0")}-mixed`;
+}
+
+function quoteShellDouble(value) {
+  return `"${String(value ?? "").replace(/(["\\$`])/gu, "\\$1")}"`;
+}
+
+function writePasteUploadAttemptArtifacts({
+  db,
+  videoId,
+  workRoot = "work",
+  message,
+}: {
+  db: Parameters<typeof getVideoById>[0];
+  videoId: number;
+  workRoot?: string;
+  message: string;
+}) {
+  const video = getVideoById(db, videoId);
+  if (!video) {
+    return null;
+  }
+
+  const workDir = ensureVideoWorkDir({
+    db,
+    video,
+    workRoot,
+  });
+  const pageLabel = buildPasteArtifactPageLabel(message);
+  const payloadFileName = `paste-${pageLabel}.txt`;
+  const recordFileName = `paste-${pageLabel}.md`;
+  const payloadPath = path.join(workDir, payloadFileName);
+  const recordPath = path.join(workDir, recordFileName);
+  const normalizedMessage = String(message ?? "");
+  const createdAt = new Date().toISOString();
+  const curlCommand = [
+    `cd ${quoteShellDouble(workDir)}`,
+    [
+      "curl --request POST https://paste.rs",
+      '--header "content-type: text/plain; charset=utf-8"',
+      `--data-binary @${quoteShellDouble(payloadFileName)}`,
+    ].join(" \\\n  "),
+  ].join("\n");
+
+  fs.writeFileSync(payloadPath, normalizedMessage ? `${normalizedMessage}\n` : "", "utf8");
+  fs.writeFileSync(recordPath, [
+    `# paste.rs Upload ${pageLabel}`,
+    "",
+    `- createdAt: ${createdAt}`,
+    `- pageLabel: ${pageLabel}`,
+    `- payloadFile: ${payloadFileName}`,
+    `- chars: ${normalizedMessage.length}`,
+    `- bytesUtf8: ${Buffer.byteLength(normalizedMessage, "utf8")}`,
+    "",
+    "## Curl",
+    "",
+    "```bash",
+    curlCommand,
+    "```",
+    "",
+    "## Result",
+    "",
+    "- status: pending",
+    "",
+  ].join("\n"), "utf8");
+
+  return {
+    recordPath,
+    payloadPath,
+    pageLabel,
+  };
+}
+
+function finalizePasteUploadAttemptArtifact(
+  artifact: {
+    recordPath: string;
+    payloadPath: string;
+    pageLabel: string;
+  } | null,
+  {
+    pasteUrl = null,
+    error = null,
+  }: {
+    pasteUrl?: string | null;
+    error?: unknown;
+  } = {},
+) {
+  if (!artifact) {
+    return;
+  }
+
+  const normalizedPasteUrl = String(pasteUrl ?? "").trim();
+  const status = normalizedPasteUrl ? "succeeded" : "failed";
+  const details = normalizedPasteUrl
+    ? [`- status: ${status}`, `- pasteUrl: ${normalizedPasteUrl}`]
+    : [
+      `- status: ${status}`,
+      `- error: ${String((error as { message?: unknown })?.message ?? error ?? "Unknown error").trim() || "Unknown error"}`,
+      ...(Number((error as { status?: unknown })?.status) > 0
+        ? [`- httpStatus: ${Number((error as { status?: unknown })?.status)}`]
+        : []),
+    ];
+
+  fs.appendFileSync(artifact.recordPath, [
+    `- finishedAt: ${new Date().toISOString()}`,
+    ...details,
+    "",
+  ].join("\n"), "utf8");
 }
 
 function parseCommentPageBlocks(message) {
@@ -1113,6 +1420,7 @@ export async function postSummaryThread({
   topCommentState,
   existingRootRpid = null,
   forcedRootRpid = null,
+  workRoot = "work",
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
@@ -1136,6 +1444,30 @@ export async function postSummaryThread({
   let recoveredFromDeletedRoot = false;
   let replacedRootCommentRpid = null;
   let reusedExistingRootComment = false;
+  const uploadToPasteWithArtifacts = async (text, activeFetchImpl = fetchImpl) => {
+    const artifact = writePasteUploadAttemptArtifacts({
+      db,
+      videoId,
+      workRoot,
+      message: text,
+    });
+
+    try {
+      await waitForGlobalPasteUploadTurn({
+        workRoot,
+      });
+      const pasteUrl = await uploadToPasteImpl(text, activeFetchImpl);
+      finalizePasteUploadAttemptArtifact(artifact, {
+        pasteUrl,
+      });
+      return pasteUrl;
+    } catch (error) {
+      finalizePasteUploadAttemptArtifact(artifact, {
+        error,
+      });
+      throw error;
+    }
+  };
 
   if (rootRpid && (!topCommentState.hasTopComment || topCommentState.topComment?.rpid !== rootRpid)) {
     await client.reply.top({
@@ -1177,7 +1509,7 @@ export async function postSummaryThread({
         sleepImpl,
         guestReplyListImpl,
         fetchImpl,
-        uploadToPasteImpl,
+        uploadToPasteImpl: uploadToPasteWithArtifacts,
       });
 
       rootRpid = published.rootRpid;
@@ -1212,7 +1544,7 @@ export async function postSummaryThread({
           sleepImpl,
           guestReplyListImpl,
           fetchImpl,
-          uploadToPasteImpl,
+          uploadToPasteImpl: uploadToPasteWithArtifacts,
         });
         rootRpid = retried.rootRpid;
         warnings.push(...retried.warnings);

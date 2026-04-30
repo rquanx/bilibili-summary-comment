@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
 import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
-import { postSummaryThread } from "../scripts/lib/bili/comment-thread";
+import { postSummaryThread, waitForGlobalPasteUploadTurn } from "../scripts/lib/bili/comment-thread";
 
 function createJsonFetchResponse(data) {
   return {
@@ -23,6 +23,57 @@ function createJsonFetchResponse(data) {
 function expectedPasteUrlForText(text) {
   return `https://paste.rs/${Buffer.from(String(text ?? "")).toString("hex").slice(0, 8)}`;
 }
+
+function createTestWorkRoot(tempRoot: string) {
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  return {
+    workRoot,
+    repoWorkRoot: path.join(process.cwd(), workRoot),
+  };
+}
+
+test("waitForGlobalPasteUploadTurn enforces a shared minimum interval across calls", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paste-rate-limit-"));
+  const workRoot = "work";
+  const lockRoot = path.join(tempRoot, workRoot, ".locks");
+  const statePath = path.join(lockRoot, "paste-rs-rate-limit.json");
+  let now = 1_000;
+  const sleeps: number[] = [];
+
+  try {
+    await waitForGlobalPasteUploadTurn({
+      repoRoot: tempRoot,
+      workRoot,
+      minIntervalMs: 5_000,
+      waitMs: 1,
+      staleMs: 10_000,
+      nowImpl: () => now,
+      sleepImpl: async (timeout) => {
+        sleeps.push(timeout);
+        now += timeout;
+      },
+    });
+
+    await waitForGlobalPasteUploadTurn({
+      repoRoot: tempRoot,
+      workRoot,
+      minIntervalMs: 5_000,
+      waitMs: 1,
+      staleMs: 10_000,
+      nowImpl: () => now,
+      sleepImpl: async (timeout) => {
+        sleeps.push(timeout);
+        now += timeout;
+      },
+    });
+
+    assert.deepEqual(sleeps, [5_000]);
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(state.nextAllowedAt, 11_000);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 
 function createGuestCommentHarness({
   startRpid,
@@ -467,6 +518,7 @@ test.skip("postSummaryThread replaces invisible timepoint lines with paste links
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
 
   try {
     const video = upsertVideo(db, {
@@ -510,6 +562,7 @@ test.skip("postSummaryThread replaces invisible timepoint lines with paste links
       message: rawSummary,
       db,
       videoId: video.id,
+      workRoot,
       topCommentState: {
         hasTopComment: false,
         topComment: null,
@@ -541,6 +594,7 @@ test.skip("postSummaryThread replaces invisible timepoint lines with paste links
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
 
@@ -712,6 +766,7 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const rawSummary = [
     "<1P>",
     "1#10:53 invisible summary line A",
@@ -753,6 +808,7 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
       message: rawSummary,
       db,
       videoId: video.id,
+      workRoot,
       topCommentState: {
         hasTopComment: false,
         topComment: null,
@@ -772,9 +828,18 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
     assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://paste.rs/3c31503e");
     assert.equal(parts[0].published, 1);
     assert.equal(parts[0].published_comment_rpid, 990102);
+
+    const pasteDir = path.join(repoWorkRoot, "unknown-user", "Invisible-Comment-Whole-Paste-Test__BVcommentInvisibleWholePaste");
+    assert.equal(fs.readFileSync(path.join(pasteDir, "paste-p01.txt"), "utf8").trim(), rawSummary);
+    const pasteRecord = fs.readFileSync(path.join(pasteDir, "paste-p01.md"), "utf8");
+    assert.match(pasteRecord, /curl --request POST https:\/\/paste\.rs/u);
+    assert.match(pasteRecord, /--data-binary @"paste-p01\.txt"/u);
+    assert.match(pasteRecord, /- status: succeeded/u);
+    assert.match(pasteRecord, /- pasteUrl: https:\/\/paste\.rs\/3c31503e/u);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
 
@@ -782,6 +847,7 @@ test("postSummaryThread retries once with a paste link instead of probe comments
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
   try {
@@ -824,6 +890,7 @@ test("postSummaryThread retries once with a paste link instead of probe comments
       message: fullMessage,
       db,
       videoId: video.id,
+      workRoot,
       topCommentState: {
         hasTopComment: false,
         topComment: null,
@@ -850,6 +917,7 @@ test("postSummaryThread retries once with a paste link instead of probe comments
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
 
@@ -857,6 +925,7 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = [
     "<1P>",
     "1#00:00 first page summary",
@@ -916,6 +985,7 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
       message: fullMessage,
       db,
       videoId: video.id,
+      workRoot,
       topCommentState: {
         hasTopComment: false,
         topComment: null,
@@ -962,6 +1032,7 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
 
@@ -969,6 +1040,7 @@ test("postSummaryThread keeps existing per-page paste links when retrying an inv
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-mixed-paste-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = [
     "<1P>",
     "1#00:00 first page summary",
@@ -1029,6 +1101,7 @@ test("postSummaryThread keeps existing per-page paste links when retrying an inv
       message: fullMessage,
       db,
       videoId: video.id,
+      workRoot,
       topCommentState: {
         hasTopComment: false,
         topComment: null,
@@ -1062,6 +1135,7 @@ test("postSummaryThread keeps existing per-page paste links when retrying an inv
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
 
@@ -1141,6 +1215,7 @@ test("postSummaryThread fails when the paste-link retry is still not guest-visib
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
   try {
@@ -1184,6 +1259,7 @@ test("postSummaryThread fails when the paste-link retry is still not guest-visib
         message: fullMessage,
         db,
         videoId: video.id,
+        workRoot,
         topCommentState: {
           hasTopComment: false,
           topComment: null,
@@ -1207,6 +1283,7 @@ test("postSummaryThread fails when the paste-link retry is still not guest-visib
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
 
