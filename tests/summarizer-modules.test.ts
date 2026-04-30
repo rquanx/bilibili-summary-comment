@@ -192,6 +192,37 @@ test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_t
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
 });
 
+test("requestSummaryWithFallback records the rate-limit fallback reason when a 429 retry succeeds", async () => {
+  const calls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "kimi-k2.5") {
+        throw new Error("Summary request failed: 429 Too Many Requests");
+      }
+      return "<2P> 2#00:00 fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "kimi-rate-limit");
+  assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
+});
+
 test("requestSummaryWithFallback retries 429 responses once before surfacing the failure", async () => {
   const calls = [];
 
@@ -635,7 +666,7 @@ test("inspectSummaryPageMarkers reports duplicate and invalid page markers", () 
   assert.deepEqual(inspection.invalidPages, [5]);
 });
 
-test("summarizePartFromSubtitle records fallback success metadata when glm-5 retry succeeds", async () => {
+test("summarizePartFromSubtitle records rate-limit fallback success metadata when glm-5 retry succeeds", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const subtitlePath = path.join(tempRoot, "p2.srt");
@@ -691,7 +722,7 @@ test("summarizePartFromSubtitle records fallback success metadata when glm-5 ret
       requestSummaryImpl: async (args) => {
         requestModels.push(args.model);
         if (args.model === "kimi-k2.5") {
-          throw new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"Cannot read properties of undefined (reading 'prompt_tokens')\"}");
+          throw new Error("Summary request failed: 429 Too Many Requests");
         }
         return "<2P> 2#00:00 fallback summary";
       },
@@ -709,12 +740,18 @@ test("summarizePartFromSubtitle records fallback success metadata when glm-5 ret
     assert.ok(fallbackStarted);
     assert.equal(fallbackStarted.details.failedModel, "kimi-k2.5");
     assert.equal(fallbackStarted.details.fallbackModel, "glm-5");
+    assert.equal(fallbackStarted.details.fallbackReason, "kimi-rate-limit");
 
     const llmSucceeded = events.find((event) => event.action === "llm" && event.status === "succeeded");
     assert.ok(llmSucceeded);
     assert.equal(llmSucceeded.details.model, "glm-5");
     assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
     assert.equal(llmSucceeded.details.fallbackUsed, true);
+    assert.equal(llmSucceeded.details.fallbackReason, "kimi-rate-limit");
+
+    const fallbackSucceeded = events.find((event) => event.action === "llm-fallback" && event.status === "succeeded");
+    assert.ok(fallbackSucceeded);
+    assert.equal(fallbackSucceeded.details.fallbackReason, "kimi-rate-limit");
 
     const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 2);
     assert.equal(savedPart.summary_text, "<2P> 2#00:00 fallback summary");

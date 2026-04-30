@@ -295,9 +295,11 @@ function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
     const message = error instanceof Error ? error.message : String(error ?? "");
     return {
       model: GLM_FALLBACK_MODEL,
-      reason: SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
-        ? "kimi-empty-text-response"
-        : "kimi-prompt_tokens-error",
+      reason: SUMMARY_TOO_MANY_REQUEST.test(message)
+        ? "kimi-rate-limit"
+        : SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
+          ? "kimi-empty-text-response"
+          : "kimi-prompt_tokens-error",
       requestOverrides: {
         model: GLM_FALLBACK_MODEL,
       },
