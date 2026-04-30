@@ -30,6 +30,7 @@ interface RunPipelineForBvidOptions {
   bvid: string;
   logDay?: string | null;
   logGroup?: string | null;
+  triggerSource?: string | null;
   publish?: boolean;
   logger?: FileLogger | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
@@ -44,6 +45,7 @@ export async function runPipelineForBvid({
   bvid,
   logDay = null,
   logGroup = null,
+  triggerSource = "scheduler",
   publish = true,
   logger = null,
   runCommandImpl = runCommand,
@@ -56,6 +58,9 @@ export async function runPipelineForBvid({
   }
   if (cookieFile) {
     args.push("--cookie-file", path.resolve(repoRoot, cookieFile));
+  }
+  if (triggerSource) {
+    args.push("--trigger-source", triggerSource);
   }
   args.push("--bvid", bvid, "--db", path.resolve(repoRoot, dbPath), "--work-root", workRoot);
   if (publish) {

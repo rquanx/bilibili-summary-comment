@@ -127,6 +127,7 @@ export interface PipelineEventInput {
   videoId?: number | null;
   bvid?: string | null;
   videoTitle?: string | null;
+  triggerSource?: string | null;
   pageNo?: number | null;
   cid?: number | null;
   partTitle?: string | null;
@@ -152,6 +153,47 @@ export interface PipelineEventRecord {
   message: string | null;
   details_json: string | null;
   created_at: string;
+}
+
+export interface PipelineRunRecord {
+  run_id: string;
+  video_id: number | null;
+  bvid: string | null;
+  video_title: string | null;
+  trigger_source: string | null;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PipelineRunStateRecord {
+  run_id: string;
+  latest_event_id: number;
+  video_id: number | null;
+  bvid: string | null;
+  video_title: string | null;
+  trigger_source: string | null;
+  run_status: string;
+  current_scope: string | null;
+  current_action: string | null;
+  current_status: string | null;
+  current_stage: string | null;
+  current_page_no: number | null;
+  current_cid: number | null;
+  current_part_title: string | null;
+  last_message: string | null;
+  last_error_message: string | null;
+  failed_scope: string | null;
+  failed_action: string | null;
+  failed_step: string | null;
+  log_path: string | null;
+  summary_path: string | null;
+  pending_summary_path: string | null;
+  started_at: string;
+  finished_at: string | null;
+  updated_at: string;
 }
 
 export interface GapNotificationRecord {

@@ -8,6 +8,9 @@
   },
   "scripts": {
     "build": "node --disable-warning=ExperimentalWarning --import tsx scripts/maintenance/build-dist.ts",
+    "dev:api": "node --disable-warning=ExperimentalWarning --import tsx apps/api/src/server.ts",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "build:web": "vite build --config apps/web/vite.config.ts",
     "pipeline": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/run-video-pipeline.ts",
     "test:prompt": "node --disable-warning=ExperimentalWarning --import tsx scripts/maintenance/test-summary-prompt.ts",
     "login:bili": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/login-bili-tv.ts",
@@ -38,19 +41,33 @@
   },
   "homepage": "https://github.com/rquanx/video-pipeline#readme",
   "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@fastify/static": "^8.3.0",
     "@google/genai": "^1.50.1",
     "@renmu/bili-api": "^2.12.5",
+    "@tanstack/react-query": "^5.90.5",
+    "@tanstack/react-table": "^8.21.3",
     "@types/qrcode-terminal": "^0.12.2",
     "commander": "^14.0.3",
     "dotenv": "^17.4.1",
+    "fastify": "^5.6.1",
     "node-cron": "^4.2.1",
     "qrcode-terminal": "^0.12.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.5",
     "undici": "^8.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
     "@types/node": "^25.5.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vite": "^7.1.12"
   }
 }

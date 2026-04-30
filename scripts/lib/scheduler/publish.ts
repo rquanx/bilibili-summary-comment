@@ -305,6 +305,7 @@ async function runPendingPublishTasksWithConcurrency({
           bvid: task.video.bvid,
           logDay,
           logGroup,
+          triggerSource: "scheduler",
           publish: true,
           logger: scopedLogger,
         }));

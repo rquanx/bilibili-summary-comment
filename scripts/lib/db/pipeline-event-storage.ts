@@ -1,4 +1,5 @@
 import { withDatabaseWriteLock } from "./database";
+import { upsertPipelineRunStateFromEvent } from "./pipeline-run-storage";
 import type { Db, PipelineEventInput, PipelineEventRecord } from "./types";
 
 export function insertPipelineEvent(db: Db, event: PipelineEventInput): PipelineEventRecord | null {
@@ -37,7 +38,11 @@ export function insertPipelineEvent(db: Db, event: PipelineEventInput): Pipeline
       createdAt,
     );
 
-    return ((db.prepare("SELECT * FROM pipeline_events WHERE id = last_insert_rowid()").get()) as unknown as PipelineEventRecord | undefined) ?? null;
+    const insertedRecord = ((db.prepare("SELECT * FROM pipeline_events WHERE id = last_insert_rowid()").get()) as unknown as PipelineEventRecord | undefined) ?? null;
+    if (insertedRecord) {
+      upsertPipelineRunStateFromEvent(db, insertedRecord, event);
+    }
+    return insertedRecord;
   });
 }
 

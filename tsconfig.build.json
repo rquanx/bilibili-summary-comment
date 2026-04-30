@@ -6,7 +6,9 @@
     "rootDir": "."
   },
   "include": [
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "packages/**/*.ts",
+    "apps/api/**/*.ts"
   ],
   "exclude": [
     "tests/**/*.ts",

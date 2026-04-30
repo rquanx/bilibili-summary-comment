@@ -3,6 +3,10 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,6 +18,8 @@
   },
   "include": [
     "scripts/**/*.ts",
+    "packages/**/*.ts",
+    "apps/api/**/*.ts",
     "tests/**/*.ts"
   ]
 }

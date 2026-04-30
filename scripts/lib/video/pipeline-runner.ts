@@ -26,6 +26,7 @@ interface VideoPipelineArgs extends Record<string, unknown> {
   ["log-day"]?: string;
   ["log-group"]?: string;
   ["venv-path"]?: string;
+  ["trigger-source"]?: string;
   asr?: string;
   ["cookie-file"]?: string;
   publish?: boolean;
@@ -45,6 +46,7 @@ export async function runVideoPipeline(
   const logGroup = args["log-group"] ?? process.env.PIPELINE_LOG_GROUP ?? null;
   const venvPath = args["venv-path"] ?? ".3.11";
   const asr = args.asr ?? "faster-whisper";
+  const triggerSource = String(args["trigger-source"] ?? "cli").trim() || "cli";
   const db = openDatabase(dbPath);
 
   const snapshot = await fetchVideoSnapshot(client, args);
@@ -65,6 +67,7 @@ export async function runVideoPipeline(
   const eventLogger = createPipelineEventLogger({
     db,
     video: state.video,
+    triggerSource,
     logger,
   });
   onEventLogger?.(eventLogger);
@@ -96,9 +99,10 @@ export async function runVideoPipeline(
         pendingParts: state.pendingSummaryParts.length,
         forceSummary,
         publishRequested: Boolean(args.publish),
-      changeSet: state.changeSet,
-    },
-  });
+        triggerSource,
+        changeSet: state.changeSet,
+      },
+    });
 
   progress.info(`Video synced: (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
   if (!args.publish) {

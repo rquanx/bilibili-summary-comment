@@ -218,6 +218,7 @@ export async function syncSummaryUsersRecentVideos({
         bvid: upload.bvid,
         logDay,
         logGroup,
+        triggerSource: "scheduler",
         publish,
         logger: logger?.child({
           bvid: upload.bvid,

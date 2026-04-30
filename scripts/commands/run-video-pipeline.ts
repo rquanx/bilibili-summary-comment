@@ -22,6 +22,7 @@ const command = addSummaryApiOptions(
           })
             .option("--venv-path <path>", "Optional. Python virtual environment path. Default: .3.11")
             .option("--asr <engine>", "Optional. VideoCaptioner ASR engine. Default: faster-whisper")
+            .option("--trigger-source <source>", "Optional. Trigger source label. Default: cli")
             .option("--publish", "Optional. Publish pending summaries after generation.")
             .option("--force-summary", "Optional. Regenerate summaries even if already present."),
           { required: true },

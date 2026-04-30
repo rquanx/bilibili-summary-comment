@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --bg: #f4efe7;
+  --panel: rgba(255, 252, 247, 0.82);
+  --panel-strong: #fffaf2;
+  --ink: #17212b;
+  --muted: #5f6b79;
+  --line: rgba(23, 33, 43, 0.12);
+  --accent: #bf4f24;
+  --accent-soft: #f3c9b7;
+  --danger: #b82d2d;
+  --success: #187a59;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(191, 79, 36, 0.18), transparent 30%),
+    radial-gradient(circle at top right, rgba(31, 111, 235, 0.12), transparent 30%),
+    linear-gradient(180deg, #f8f2ea 0%, #f0e4d5 100%);
+  color: var(--ink);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.glass-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 80px rgba(66, 46, 23, 0.08);
+  backdrop-filter: blur(24px);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.status-running {
+  background: rgba(31, 111, 235, 0.12);
+  color: #2357b9;
+}
+
+.status-succeeded {
+  background: rgba(24, 122, 89, 0.14);
+  color: var(--success);
+}
+
+.status-failed {
+  background: rgba(184, 45, 45, 0.12);
+  color: var(--danger);
+}
+
+.status-waiting,
+.status-skipped {
+  background: rgba(95, 107, 121, 0.12);
+  color: var(--muted);
+}
+
+.table-shell {
+  overflow: hidden;
+  border-radius: 1.2rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.table-shell table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-shell th,
+.table-shell td {
+  padding: 0.95rem 1rem;
+  border-bottom: 1px solid rgba(23, 33, 43, 0.08);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table-shell th {
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.table-shell tr:last-child td {
+  border-bottom: 0;
+}
+
+.timeline {
+  position: relative;
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 0.75rem;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  width: 1px;
+  background: rgba(23, 33, 43, 0.12);
+}
+
+.timeline-item {
+  position: relative;
+  padding-left: 2.5rem;
+}
+
+.timeline-item::before {
+  content: "";
+  position: absolute;
+  left: 0.42rem;
+  top: 0.75rem;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 6px rgba(191, 79, 36, 0.12);
+}

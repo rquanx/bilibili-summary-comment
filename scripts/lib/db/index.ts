@@ -8,6 +8,8 @@ export type {
   PipelineEventInput,
   PipelineEventLogger,
   PipelineEventRecord,
+  PipelineRunRecord,
+  PipelineRunStateRecord,
   SnapshotChangeSet,
   SummaryArtifacts,
   VideoIdentity,
@@ -60,3 +62,11 @@ export {
   insertPipelineEvent,
   listPipelineEvents,
 } from "./pipeline-event-storage";
+export {
+  getPipelineRunById,
+  getPipelineRunStateById,
+  listActivePipelineRunStates,
+  listRecentPipelineRunStates,
+  syncPipelineRunReadModels,
+  upsertPipelineRunStateFromEvent,
+} from "./pipeline-run-storage";

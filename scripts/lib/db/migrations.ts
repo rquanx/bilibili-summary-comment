@@ -30,6 +30,8 @@ export function migrateDatabase(db) {
   migrateVideoPartsTable(db);
   ensureVideoPartColumn(db, "summary_text_processed", "TEXT");
   createPipelineEventsTable(db);
+  createPipelineRunsTable(db);
+  createPipelineRunStateTable(db);
   createGapNotificationsTable(db);
 
   db.exec(`
@@ -39,6 +41,10 @@ export function migrateDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_created_at ON pipeline_events(created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_bvid_created_at ON pipeline_events(bvid, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_run_id ON pipeline_events(run_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status_updated_at ON pipeline_runs(status, updated_at DESC, run_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_bvid_updated_at ON pipeline_runs(bvid, updated_at DESC, run_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_run_state_bvid_updated_at ON pipeline_run_state(bvid, updated_at DESC, latest_event_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_run_state_run_status_updated_at ON pipeline_run_state(run_status, updated_at DESC, latest_event_id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_gap_notifications_gap_key ON gap_notifications(gap_key);
     CREATE INDEX IF NOT EXISTS idx_gap_notifications_bvid_notified_at ON gap_notifications(bvid, notified_at DESC, id DESC);
   `);
@@ -193,6 +199,59 @@ function createPipelineEventsTable(db) {
       details_json TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+function createPipelineRunsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      run_id TEXT PRIMARY KEY,
+      video_id INTEGER,
+      bvid TEXT,
+      video_title TEXT,
+      trigger_source TEXT,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE SET NULL
+    )
+  `);
+}
+
+function createPipelineRunStateTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pipeline_run_state (
+      run_id TEXT PRIMARY KEY,
+      latest_event_id INTEGER NOT NULL,
+      video_id INTEGER,
+      bvid TEXT,
+      video_title TEXT,
+      trigger_source TEXT,
+      run_status TEXT NOT NULL,
+      current_scope TEXT,
+      current_action TEXT,
+      current_status TEXT,
+      current_stage TEXT,
+      current_page_no INTEGER,
+      current_cid INTEGER,
+      current_part_title TEXT,
+      last_message TEXT,
+      last_error_message TEXT,
+      failed_scope TEXT,
+      failed_action TEXT,
+      failed_step TEXT,
+      log_path TEXT,
+      summary_path TEXT,
+      pending_summary_path TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+      FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE SET NULL,
+      FOREIGN KEY(latest_event_id) REFERENCES pipeline_events(id) ON DELETE CASCADE
     )
   `);
 }

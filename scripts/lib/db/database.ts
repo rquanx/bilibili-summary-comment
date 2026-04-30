@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDatabase } from "./migrations";
+import { syncPipelineRunReadModels } from "./pipeline-run-storage";
 
 const DB_PATH_SYMBOL = Symbol.for("video-pipeline.dbPath");
 const DB_WRITE_LOCK_RETRY_MS = 100;
@@ -31,6 +32,7 @@ export function openDatabase(databasePath: string): DatabaseSync {
     db.exec("PRAGMA busy_timeout = 5000;");
     db.exec("PRAGMA foreign_keys = ON;");
     migrateDatabase(db);
+    syncPipelineRunReadModels(db);
   });
   return db;
 }

@@ -9,11 +9,13 @@ export function createPipelineEventLogger({
   db,
   video,
   runId = randomUUID(),
+  triggerSource = "cli",
   logger = null,
 }: {
   db: Db;
   video: VideoRecord | null | undefined;
   runId?: string;
+  triggerSource?: string;
   logger?: FileLogger | null;
 }): PipelineEventLogger {
   const sharedContext = {
@@ -21,6 +23,7 @@ export function createPipelineEventLogger({
     videoId: video?.id ?? null,
     bvid: video?.bvid ?? null,
     videoTitle: video?.title ?? null,
+    triggerSource,
   };
 
   function log(event: PipelineEventInput) {
