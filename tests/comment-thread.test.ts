@@ -762,6 +762,339 @@ test.skip("postSummaryThread rejects duplicate-probe recovery when the initial c
   }
 });
 
+test("postSummaryThread adopts a visible duplicate root comment reported by reply.add", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = "<1P>\n1#20:36 single chunk summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentDuplicateProbeVisible",
+      aid: 123450205,
+      title: "Duplicate Probe Visible Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: fullMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 970101,
+      visibilityRule() {
+        return false;
+      },
+    });
+    const originalAdd = harness.client.reply.add;
+    const existingRoot = await originalAdd({
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      plat: 1,
+    } as never);
+    harness.client.reply.add = async (payload) => {
+      if (payload.message === fullMessage) {
+        harness.setCommentVisible(existingRoot.rpid, true);
+        throw Object.assign(new Error("duplicate comment"), {
+          rawResponse: {
+            data: {
+              message: "閲嶅璇勮",
+            },
+          },
+        });
+      }
+      return originalAdd(payload as never);
+    };
+
+    const result = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, existingRoot.rpid);
+    assert.equal(result.action, "adopt-existing-root-comment-thread");
+    assert.equal(result.reusedExistingRootComment, true);
+    assert.deepEqual(result.createdComments, []);
+    assert.equal(
+      result.warnings.some((item) => item.step === "duplicate-probe-confirmed-visible-root-comment"),
+      true,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentDuplicateProbeVisible" });
+    assert.equal(persistedVideo?.root_comment_rpid, existingRoot.rpid);
+    assert.equal(persistedVideo?.top_comment_rpid, existingRoot.rpid);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [existingRoot.rpid]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread rejects duplicate recovery when the duplicate root comment is still not guest-visible", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = "<1P>\n1#20:36 single chunk summary";
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentDuplicateProbeInvisible2",
+      aid: 123450206,
+      title: "Duplicate Probe Invisible Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: fullMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 980101,
+      visibilityRule() {
+        return false;
+      },
+    });
+    const originalAdd = harness.client.reply.add;
+    await originalAdd({
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      plat: 1,
+    } as never);
+    harness.client.reply.add = async (payload) => {
+      if (payload.message === fullMessage) {
+        throw Object.assign(new Error("duplicate comment"), {
+          rawResponse: {
+            data: {
+              message: "閲嶅璇勮",
+            },
+          },
+        });
+      }
+      return originalAdd(payload as never);
+    };
+
+    await assert.rejects(
+      postSummaryThread({
+        client: harness.client,
+        oid: video.aid,
+        type: 1,
+        message: fullMessage,
+        db,
+        videoId: video.id,
+        topCommentState: {
+          hasTopComment: false,
+          topComment: null,
+        },
+        sleepImpl: async () => {},
+        guestReplyListImpl: harness.guestReplyListImpl as never,
+        fetchImpl: harness.fetchImpl as typeof fetch,
+      }),
+      /Published comment is not visible to guests/u,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentDuplicateProbeInvisible2" });
+    assert.equal(persistedVideo?.root_comment_rpid, null);
+    assert.equal(persistedVideo?.top_comment_rpid, null);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [0]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("postSummaryThread reuses visible root and reply chunks after a partial failure instead of reposting them", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-partial-retry-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const firstPageText = `first page ${"A".repeat(640)}`;
+  const secondPageText = `second page ${"B".repeat(640)}`;
+  const thirdPageText = `third page ${"C".repeat(640)}`;
+  const firstChunkMessage = `<1P>\n${firstPageText}`;
+  const secondChunkMessage = `<2P>\n${secondPageText}`;
+  const thirdChunkMessage = `<3P>\n${thirdPageText}`;
+  const fullMessage = [
+    "<1P>",
+    firstPageText,
+    "",
+    "<2P>",
+    secondPageText,
+    "",
+    "<3P>",
+    thirdPageText,
+  ].join("\n");
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentPartialRetry",
+      aid: 123450109,
+      title: "Partial Publish Retry Test",
+      pageCount: 3,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: firstChunkMessage,
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 102,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: secondChunkMessage,
+      summaryHash: "hash-2",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 3,
+      cid: 103,
+      partTitle: "P3",
+      durationSec: 10,
+      summaryText: thirdChunkMessage,
+      summaryHash: "hash-3",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 991001,
+    });
+    const originalAdd = harness.client.reply.add;
+    let phase = 1;
+    let phaseOneAddCount = 0;
+    harness.client.reply.add = async (payload) => {
+      if (phase === 1) {
+        phaseOneAddCount += 1;
+        if (phaseOneAddCount === 3) {
+          throw new Error("simulated third comment failure");
+        }
+      }
+      return originalAdd(payload as never);
+    };
+    const topError = Object.assign(new Error("top failed"), {
+      rawResponse: {
+        data: {
+          message: "鍟ラ兘鏈ㄦ湁",
+        },
+      },
+    });
+    harness.client.reply.top = async () => {
+      throw topError;
+    };
+
+    await assert.rejects(
+      postSummaryThread({
+        client: harness.client,
+        oid: video.aid,
+        type: 1,
+        message: fullMessage,
+        db,
+        videoId: video.id,
+        topCommentState: {
+          hasTopComment: false,
+          topComment: null,
+        },
+        sleepImpl: async () => {},
+        guestReplyListImpl: harness.guestReplyListImpl as never,
+        fetchImpl: harness.fetchImpl as typeof fetch,
+      }),
+      /simulated third comment failure/u,
+    );
+
+    const afterFailureVideo = getVideoByIdentity(db, { bvid: "BVcommentPartialRetry" });
+    assert.equal(afterFailureVideo?.root_comment_rpid, null);
+    assert.equal(afterFailureVideo?.top_comment_rpid, null);
+    assert.deepEqual(listVideoParts(db, video.id).map((part) => part.published), [0, 0, 0]);
+
+    phase = 2;
+    const rerunResult = await postSummaryThread({
+      client: harness.client,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: false,
+        topComment: null,
+      },
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(rerunResult.reusedExistingRootComment, true);
+    assert.deepEqual(rerunResult.createdComments.map((item) => item.pages), [[3]]);
+    assert.equal(
+      [...harness.comments.values()].filter((comment) => comment.message === firstChunkMessage).length,
+      1,
+    );
+    assert.equal(
+      [...harness.comments.values()].filter((comment) => comment.message === secondChunkMessage).length,
+      1,
+    );
+    assert.equal(
+      [...harness.comments.values()].filter((comment) => comment.message === thirdChunkMessage).length,
+      1,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentPartialRetry" });
+    assert.equal(persistedVideo?.root_comment_rpid, 991001);
+    assert.equal(persistedVideo?.top_comment_rpid, 991001);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1, 1, 1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [991001, 991001, 991001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("postSummaryThread replaces an invisible comment chunk with a paste link and stores processed summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

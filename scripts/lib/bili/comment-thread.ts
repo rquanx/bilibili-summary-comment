@@ -37,7 +37,7 @@ const GUEST_COMMENT_WEB_LOCATION = 1315875;
 const GUEST_COMMENT_MODE = 3;
 const PASTE_RS_MIN_INTERVAL_MS = Math.max(0, Number(process.env.PASTE_RS_MIN_INTERVAL_MS) || 5_000);
 const PASTE_RS_RATE_LIMIT_WAIT_MS = 250;
-const PASTE_RS_RATE_LIMIT_STALE_MS = 60_000;
+const PASTE_RS_RATE_LIMIT_STALE_MS = Math.max(1_000, Number(process.env.PASTE_RS_RATE_LIMIT_STALE_MS) || 10_000);
 
 interface CommentUnit {
   id: string;
@@ -287,7 +287,7 @@ function findReplyNode(response, { targetRpid = null, expectedMessage = null }) 
         return reply;
       }
 
-      if (normalizedExpectedMessage && extractReplyMessage(reply) === normalizedExpectedMessage) {
+      if (normalizedExpectedMessage && commentMessageMatches(extractReplyMessage(reply), normalizedExpectedMessage)) {
         return reply;
       }
     }
@@ -1159,6 +1159,42 @@ function buildCreatedCommentRecord({ replyRes, rootRpid, chunk, isRoot, sanitize
   };
 }
 
+async function findAdoptableVisibleComment({
+  oid,
+  type,
+  message,
+  isRoot,
+  rootRpid = null,
+  guestReplyListImpl = defaultGuestReplyListImpl,
+  fetchImpl = fetch,
+}) {
+  const visibleComment = await findVisibleCommentAsGuest({
+    oid,
+    type,
+    rootRpid,
+    targetRpid: null,
+    expectedMessage: message,
+    isRoot,
+    guestReplyListImpl,
+    fetchImpl,
+  });
+  if (!visibleComment) {
+    return null;
+  }
+
+  const visibleRpid = normalizeCommentRpid(visibleComment?.rpid ?? visibleComment?.rpid_str);
+  if (!visibleRpid) {
+    return null;
+  }
+
+  return {
+    rpid: visibleRpid,
+    rootRpid: isRoot
+      ? visibleRpid
+      : normalizeCommentRpid(visibleComment?.root ?? rootRpid) ?? normalizeCommentRpid(rootRpid),
+  };
+}
+
 async function createRootComment({ client, oid, type, message, sleepImpl = sleep }) {
   const rootRes = await client.reply.add({
     oid,
@@ -1217,6 +1253,73 @@ async function createReplyComment({ client, oid, type, rootRpid, message }) {
   };
 }
 
+async function createCommentWithDuplicateRecovery({
+  createComment,
+  oid,
+  type,
+  message,
+  isRoot,
+  rootRpid = null,
+  sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
+  fetchImpl = fetch,
+}) {
+  try {
+    const created = await createComment(message);
+    return {
+      ...created,
+      adoptedExistingComment: false,
+    };
+  } catch (error) {
+    const duplicateDetected = isDuplicateCommentError(error)
+      || String((error as { message?: unknown })?.message ?? "").toLowerCase().includes("duplicate comment");
+    if (!duplicateDetected) {
+      throw error;
+    }
+
+    await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
+    const visibleComment = await findAdoptableVisibleComment({
+      oid,
+      type,
+      message,
+      isRoot,
+      rootRpid,
+      guestReplyListImpl,
+      fetchImpl,
+    });
+    if (!visibleComment) {
+      throw createCliError("Published comment is not visible to guests", {
+        oid,
+        type,
+        rootRpid: normalizeCommentRpid(rootRpid),
+        isRoot,
+        expectedMessage: normalizeMessageForMatch(message),
+        duplicateDetected: true,
+      });
+    }
+
+    return {
+      replyRes: {
+        rpid: visibleComment.rpid,
+      },
+      warnings: [
+        buildCommentWarning({
+          step: isRoot
+            ? "duplicate-probe-confirmed-visible-root-comment"
+            : "duplicate-probe-confirmed-visible-reply-comment",
+          rpid: visibleComment.rpid,
+          error,
+          details: {
+            confirmedVisibleAfterDuplicateProbe: true,
+            visibleRpid: visibleComment.rpid,
+          },
+        }),
+      ],
+      adoptedExistingComment: true,
+    };
+  }
+}
+
 async function deleteCommentSilently({ client, oid, type, rpid }) {
   const normalizedRpid = normalizeCommentRpid(rpid);
   if (!normalizedRpid) {
@@ -1246,7 +1349,7 @@ async function publishCommentChunk({
 }) {
   const createComment = isRoot
     ? async (message) => createRootComment({
-      client,
+        client,
       oid,
       type,
       message,
@@ -1256,13 +1359,35 @@ async function publishCommentChunk({
       client,
       oid,
       type,
-      rootRpid,
-      message,
-    });
+        rootRpid,
+        message,
+      });
 
-  const initialPublish = await createComment(chunk.message);
+  const initialPublish = await createCommentWithDuplicateRecovery({
+    createComment,
+    oid,
+    type,
+    message: chunk.message,
+    isRoot,
+    rootRpid,
+    sleepImpl,
+    guestReplyListImpl,
+    fetchImpl,
+  });
   const initialRpid = normalizeCommentRpid(initialPublish.replyRes?.rpid);
   const visibilityRootRpid = isRoot ? initialRpid : rootRpid;
+
+  if (initialPublish.adoptedExistingComment) {
+    return {
+      replyRes: initialPublish.replyRes,
+      rootRpid: isRoot ? initialRpid : rootRpid,
+      finalMessage: chunk.message,
+      warnings: initialPublish.warnings,
+      recoveredByProcessing: false,
+      replacedInvisibleRpid: null,
+      adoptedExistingComment: true,
+    };
+  }
 
   try {
     await assertCommentVisibleAsGuest({
@@ -1284,6 +1409,7 @@ async function publishCommentChunk({
       warnings: initialPublish.warnings,
       recoveredByProcessing: false,
       replacedInvisibleRpid: null,
+      adoptedExistingComment: false,
     };
   } catch (error) {
     let diagnosis;
@@ -1334,6 +1460,7 @@ async function publishCommentChunk({
           ],
           recoveredByProcessing: false,
           replacedInvisibleRpid: null,
+          adoptedExistingComment: true,
         };
       }
 
@@ -1360,21 +1487,33 @@ async function publishCommentChunk({
       rpid: initialRpid,
     });
 
-    const retryPublish = await createComment(processedCommentMessage);
-    const retryRpid = normalizeCommentRpid(retryPublish.replyRes?.rpid);
-    const retryVisibilityRootRpid = isRoot ? retryRpid : rootRpid;
-
-    await assertCommentVisibleAsGuest({
+    const retryPublish = await createCommentWithDuplicateRecovery({
+      createComment,
       oid,
       type,
-      targetRpid: retryRpid,
-      expectedMessage: processedCommentMessage,
+      message: processedCommentMessage,
       isRoot,
-      rootRpid: retryVisibilityRootRpid,
+      rootRpid,
       sleepImpl,
       guestReplyListImpl,
       fetchImpl,
     });
+    const retryRpid = normalizeCommentRpid(retryPublish.replyRes?.rpid);
+    const retryVisibilityRootRpid = isRoot ? retryRpid : rootRpid;
+
+    if (!retryPublish.adoptedExistingComment) {
+      await assertCommentVisibleAsGuest({
+        oid,
+        type,
+        targetRpid: retryRpid,
+        expectedMessage: processedCommentMessage,
+        isRoot,
+        rootRpid: retryVisibilityRootRpid,
+        sleepImpl,
+        guestReplyListImpl,
+        fetchImpl,
+      });
+    }
 
     persistProcessedChunk({
       db,
@@ -1402,6 +1541,7 @@ async function publishCommentChunk({
       ],
       recoveredByProcessing: true,
       replacedInvisibleRpid: initialRpid,
+      adoptedExistingComment: retryPublish.adoptedExistingComment,
     };
   }
 }
@@ -1492,9 +1632,43 @@ export async function postSummaryThread({
       reusedExistingRootComment = true;
     }
   }
+  if (!rootRpid && !forcedRootRpid && !existingRootRpid && pendingChunks[0]) {
+    const visibleRootComment = await findAdoptableVisibleComment({
+      oid,
+      type,
+      message: pendingChunks[0].message,
+      isRoot: true,
+      guestReplyListImpl,
+      fetchImpl,
+    });
+    if (visibleRootComment) {
+      const adoptedRootChunk = pendingChunks.shift();
+      rootRpid = visibleRootComment.rpid;
+      reusedExistingRootComment = true;
+      if (adoptedRootChunk) {
+        adoptedPages.push(...adoptedRootChunk.pages);
+      }
+    }
+  }
 
   for (const [index, chunk] of pendingChunks.entries()) {
     const shouldCreateRoot = !rootRpid;
+
+    if (!shouldCreateRoot) {
+      const visibleReplyComment = await findAdoptableVisibleComment({
+        oid,
+        type,
+        message: chunk.message,
+        isRoot: false,
+        rootRpid,
+        guestReplyListImpl,
+        fetchImpl,
+      });
+      if (visibleReplyComment) {
+        adoptedPages.push(...chunk.pages);
+        continue;
+      }
+    }
 
     try {
       const published = await publishCommentChunk({
@@ -1514,15 +1688,22 @@ export async function postSummaryThread({
 
       rootRpid = published.rootRpid;
       warnings.push(...published.warnings);
-      createdComments.push(
-        buildCreatedCommentRecord({
-          replyRes: published.replyRes,
-          rootRpid,
-          chunk,
-          isRoot: shouldCreateRoot,
-          sanitizedMessage: published.finalMessage,
-        }),
-      );
+      if (published.adoptedExistingComment) {
+        adoptedPages.push(...chunk.pages);
+        if (shouldCreateRoot) {
+          reusedExistingRootComment = true;
+        }
+      } else {
+        createdComments.push(
+          buildCreatedCommentRecord({
+            replyRes: published.replyRes,
+            rootRpid,
+            chunk,
+            isRoot: shouldCreateRoot,
+            sanitizedMessage: published.finalMessage,
+          }),
+        );
+      }
 
       if (index < pendingChunks.length - 1) {
         await sleepImpl(REPLY_POST_DELAY_MS);
@@ -1547,18 +1728,23 @@ export async function postSummaryThread({
           uploadToPasteImpl: uploadToPasteWithArtifacts,
         });
         rootRpid = retried.rootRpid;
-        warnings.push(...retried.warnings);
-        createdComments.push(
-          buildCreatedCommentRecord({
-            replyRes: retried.replyRes,
-            rootRpid,
-            chunk,
-            isRoot: true,
-            sanitizedMessage: retried.finalMessage,
-          }),
-        );
-        continue;
-      }
+          warnings.push(...retried.warnings);
+          if (retried.adoptedExistingComment) {
+            adoptedPages.push(...chunk.pages);
+            reusedExistingRootComment = true;
+          } else {
+            createdComments.push(
+              buildCreatedCommentRecord({
+                replyRes: retried.replyRes,
+                rootRpid,
+                chunk,
+                isRoot: true,
+                sanitizedMessage: retried.finalMessage,
+              }),
+            );
+          }
+          continue;
+        }
 
       throw error;
     }
