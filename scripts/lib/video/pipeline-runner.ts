@@ -16,6 +16,7 @@ import { resolveSummaryConfig } from "../summary/index";
 import { markVideoPublishRebuildNeeded, openDatabase } from "../db/index";
 import { createWorkFileLogger } from "../shared/logger";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index";
+import { withVideoPipelineLock } from "./pipeline-lock";
 import type { PipelineEventLogger } from "../db/index";
 import type { CommandError } from "../shared/runtime-tools";
 
@@ -126,146 +127,155 @@ export async function runVideoPipeline(
   }
 
   try {
-    let generation;
-    try {
-      generation = await runGenerationStage({
-        client,
-        db,
-        video: state.video,
-        summaryOwnerMid: snapshot.ownerMid ?? null,
-        summaryOwnerName: snapshot.ownerName ?? null,
-        cookie,
-        cookieFile: args["cookie-file"] ?? null,
-        workRoot,
-        venvPath,
-        asr,
-        summaryConfig,
-        forceSummary,
-        eventLogger,
-        progress,
-      });
-    } catch (error) {
-      attachErrorDetails(error, {
-        bvid: state.video.bvid,
-        aid: state.video.aid,
-        failedStep: "generation",
-        failedScope: "pipeline",
-        failedAction: "generation",
-      });
-      throw error;
-    }
-    let publishResult = null;
-
-    if (args.publish) {
+    return await withVideoPipelineLock({
+      workRoot,
+      bvid: state.video.bvid,
+      videoTitle: state.video.title ?? null,
+      publishRequested: Boolean(args.publish),
+      progress,
+      eventLogger,
+    }, async () => {
+      let generation;
       try {
-        publishResult = await runPublishStage({
+        generation = await runGenerationStage({
           client,
           db,
           video: state.video,
-          artifacts: generation.artifacts,
-          oid: state.video.aid,
-          type: commentType,
+          summaryOwnerMid: snapshot.ownerMid ?? null,
+          summaryOwnerName: snapshot.ownerName ?? null,
+          cookie,
+          cookieFile: args["cookie-file"] ?? null,
           workRoot,
-          forcedRootRpid: null,
+          venvPath,
+          asr,
+          summaryConfig,
+          forceSummary,
           eventLogger,
           progress,
         });
       } catch (error) {
-        progress.error(`Publish blocked: ${formatBlockingErrorDetail(error)}`);
-        attachVideoContextToError(error, {
-          bvid: state.video.bvid,
-          aid: state.video.aid,
-        });
         attachErrorDetails(error, {
           bvid: state.video.bvid,
           aid: state.video.aid,
-          failedStep: "publish",
-          failedScope: "publish",
-          failedAction: "comment-thread",
-        });
-        eventLogger.log({
-          scope: "publish",
-          action: "comment-thread",
-          status: "failed",
-          message: error?.message ?? "Unknown publish error",
-          details: {
-            publishMode: needsRebuildPublish ? "rebuild" : "append",
-            ...extractErrorDetails(error),
-          },
+          failedStep: "generation",
+          failedScope: "pipeline",
+          failedAction: "generation",
         });
         throw error;
       }
-    } else {
-      eventLogger.log({
-        scope: "publish",
-        action: "comment-thread",
-        status: "skipped",
-        message: "Publish step was not requested",
-      });
-    }
+      let publishResult = null;
 
-    const reusedSummaryFrom = generation.reusedSummarySource
-      ? {
-          bvid: generation.reusedSummarySource.video.bvid,
-          title: generation.reusedSummarySource.video.title,
-          reusedPages: generation.reusedSummarySource.reusedPages,
+      if (args.publish) {
+        try {
+          publishResult = await runPublishStage({
+            client,
+            db,
+            video: state.video,
+            artifacts: generation.artifacts,
+            oid: state.video.aid,
+            type: commentType,
+            workRoot,
+            forcedRootRpid: null,
+            eventLogger,
+            progress,
+          });
+        } catch (error) {
+          progress.error(`Publish blocked: ${formatBlockingErrorDetail(error)}`);
+          attachVideoContextToError(error, {
+            bvid: state.video.bvid,
+            aid: state.video.aid,
+          });
+          attachErrorDetails(error, {
+            bvid: state.video.bvid,
+            aid: state.video.aid,
+            failedStep: "publish",
+            failedScope: "publish",
+            failedAction: "comment-thread",
+          });
+          eventLogger.log({
+            scope: "publish",
+            action: "comment-thread",
+            status: "failed",
+            message: error?.message ?? "Unknown publish error",
+            details: {
+              publishMode: needsRebuildPublish ? "rebuild" : "append",
+              ...extractErrorDetails(error),
+            },
+          });
+          throw error;
         }
-      : null;
-    if (reusedSummaryFrom) {
-      progress.success(
-        `Same-session reuse source: ${reusedSummaryFrom.bvid} (${reusedSummaryFrom.title}), pages=${reusedSummaryFrom.reusedPages.join(",")}`,
-      );
-    }
+      } else {
+        eventLogger.log({
+          scope: "publish",
+          action: "comment-thread",
+          status: "skipped",
+          message: "Publish step was not requested",
+        });
+      }
 
-    if (generation.skippedSummaryResults.length > 0) {
-      progress.warn(
-        `Skipped summary pages: ${generation.skippedSummaryResults.map((item) => `P${item.pageNo}`).join(", ")}`,
+      const reusedSummaryFrom = generation.reusedSummarySource
+        ? {
+            bvid: generation.reusedSummarySource.video.bvid,
+            title: generation.reusedSummarySource.video.title,
+            reusedPages: generation.reusedSummarySource.reusedPages,
+          }
+        : null;
+      if (reusedSummaryFrom) {
+        progress.success(
+          `Same-session reuse source: ${reusedSummaryFrom.bvid} (${reusedSummaryFrom.title}), pages=${reusedSummaryFrom.reusedPages.join(",")}`,
+        );
+      }
+
+      if (generation.skippedSummaryResults.length > 0) {
+        progress.warn(
+          `Skipped summary pages: ${generation.skippedSummaryResults.map((item) => `P${item.pageNo}`).join(", ")}`,
+        );
+      }
+      progress.success(
+        `Pipeline complete, generated ${generation.summaryResults.length} summaries`
+        + (generation.skippedSummaryResults.length > 0
+          ? `, skipped ${generation.skippedSummaryResults.length} content-filtered part${generation.skippedSummaryResults.length > 1 ? "s" : ""}`
+          : ""),
       );
-    }
-    progress.success(
-      `Pipeline complete, generated ${generation.summaryResults.length} summaries`
-      + (generation.skippedSummaryResults.length > 0
-        ? `, skipped ${generation.skippedSummaryResults.length} content-filtered part${generation.skippedSummaryResults.length > 1 ? "s" : ""}`
-        : ""),
-    );
-    const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
-    eventLogger.log({
-      scope: "pipeline",
-      action: "run",
-      status: "succeeded",
-      message: `Pipeline completed for ${state.video.bvid}`,
-      details: {
+      const finalPublishNeedsRebuild = needsRebuildPublish && !publishResult?.rebuild ? true : false;
+      eventLogger.log({
+        scope: "pipeline",
+        action: "run",
+        status: "succeeded",
+        message: `Pipeline completed for ${state.video.bvid}`,
+        details: {
+          generatedPages: generation.summaryResults.map((item) => item.pageNo),
+          skippedSummaryPages: generation.skippedSummaryResults.map((item) => item.pageNo),
+          reusedSummaryFrom,
+          publishRequested: Boolean(args.publish),
+          publishNeedsRebuild: finalPublishNeedsRebuild,
+        },
+      });
+
+      return {
+        ok: true,
+        logPath: logger.filePath,
+        dbPath,
+        video: {
+          id: state.video.id,
+          bvid: state.video.bvid,
+          aid: state.video.aid,
+          title: state.video.title,
+          pageCount: state.video.page_count,
+        },
         generatedPages: generation.summaryResults.map((item) => item.pageNo),
         skippedSummaryPages: generation.skippedSummaryResults.map((item) => item.pageNo),
-        reusedSummaryFrom,
-        publishRequested: Boolean(args.publish),
+        skippedSummaryResults: generation.skippedSummaryResults,
+        changeSet: state.changeSet,
         publishNeedsRebuild: finalPublishNeedsRebuild,
-      },
+        publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,
+        subtitleResults: generation.subtitleResults,
+        summaryResults: generation.summaryResults,
+        reusedSummaryFrom,
+        artifacts: generation.artifacts,
+        publishResult,
+      };
     });
-
-    return {
-      ok: true,
-      logPath: logger.filePath,
-      dbPath,
-      video: {
-        id: state.video.id,
-        bvid: state.video.bvid,
-        aid: state.video.aid,
-        title: state.video.title,
-        pageCount: state.video.page_count,
-      },
-      generatedPages: generation.summaryResults.map((item) => item.pageNo),
-      skippedSummaryPages: generation.skippedSummaryResults.map((item) => item.pageNo),
-      skippedSummaryResults: generation.skippedSummaryResults,
-      changeSet: state.changeSet,
-      publishNeedsRebuild: finalPublishNeedsRebuild,
-      publishRebuildReason: finalPublishNeedsRebuild ? state.video.publish_rebuild_reason ?? null : null,
-      subtitleResults: generation.subtitleResults,
-      summaryResults: generation.summaryResults,
-      reusedSummaryFrom,
-      artifacts: generation.artifacts,
-      publishResult,
-    };
   } catch (error) {
     attachVideoContextToError(error, {
       bvid: state.video.bvid,

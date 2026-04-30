@@ -6,6 +6,7 @@ import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
 import { getVideoByIdentity, upsertVideo } from "../scripts/lib/db/video-storage";
 import { probePublishedCommentThreadHealth } from "../scripts/lib/video/pipeline-runner";
+import { withVideoPipelineLock } from "../scripts/lib/video/pipeline-lock";
 
 test("probePublishedCommentThreadHealth marks a missing stored root thread for rebuild", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-healthcheck-"));
@@ -109,6 +110,105 @@ test("probePublishedCommentThreadHealth skips videos without a stored root threa
     assert.equal(called, false);
   } finally {
     db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("withVideoPipelineLock serializes concurrent runs for the same bvid", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-lock-"));
+  const progressMessages: string[] = [];
+  const queueEvents: Array<Record<string, unknown>> = [];
+  let releaseFirstRun: (() => void) | null = null;
+  let secondEntered = false;
+
+  try {
+    const firstRun = withVideoPipelineLock({
+      repoRoot: tempRoot,
+      workRoot: "work",
+      bvid: "BVLOCKED",
+      videoTitle: "Locked Video",
+      publishRequested: false,
+      waitMs: 10,
+      heartbeatMs: 10,
+      staleMs: 5_000,
+    }, async () => new Promise<void>((resolve) => {
+      releaseFirstRun = resolve;
+    }));
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+
+    const secondRun = withVideoPipelineLock({
+      repoRoot: tempRoot,
+      workRoot: "work",
+      bvid: "BVLOCKED",
+      videoTitle: "Locked Video",
+      publishRequested: true,
+      waitMs: 10,
+      heartbeatMs: 10,
+      staleMs: 5_000,
+      progress: {
+        warn(message: string) {
+          progressMessages.push(message);
+        },
+      },
+      eventLogger: {
+        log(event: Record<string, unknown>) {
+          queueEvents.push(event);
+        },
+      },
+    }, async () => {
+      secondEntered = true;
+      return "done";
+    });
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+
+    assert.equal(secondEntered, false);
+    assert.equal(progressMessages.length, 1);
+    assert.match(progressMessages[0], /Another pipeline run is in progress for BVLOCKED/u);
+    assert.equal(queueEvents.length, 1);
+    assert.equal(queueEvents[0].action, "queue");
+    assert.equal(queueEvents[0].status, "waiting");
+
+    releaseFirstRun?.();
+    await firstRun;
+    assert.equal(await secondRun, "done");
+    assert.equal(secondEntered, true);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("withVideoPipelineLock clears stale locks left by dead processes", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-stale-lock-"));
+  const lockPath = path.join(tempRoot, "work", ".locks", "video-pipeline-BVSTALE.lock");
+
+  try {
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify({
+      pid: 999999,
+      bvid: "BVSTALE",
+      videoTitle: "Stale Video",
+      publishRequested: false,
+      updatedAt: new Date(Date.now() - 60_000).toISOString(),
+    }), "utf8");
+
+    const result = await withVideoPipelineLock({
+      repoRoot: tempRoot,
+      workRoot: "work",
+      bvid: "BVSTALE",
+      videoTitle: "Fresh Video",
+      waitMs: 10,
+      heartbeatMs: 10,
+      staleMs: 10,
+    }, async () => "acquired");
+
+    assert.equal(result, "acquired");
+  } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
