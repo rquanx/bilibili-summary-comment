@@ -5,6 +5,7 @@ interface CoalescedRunnerOptions<TResult> {
   onLog?: (message: string) => void;
   onFailure?: (error: unknown) => TResult;
   onAfterSuccess?: (result: TResult) => void;
+  onStateChange?: () => void;
 }
 
 export function createCoalescedRunner<TResult>({
@@ -14,6 +15,7 @@ export function createCoalescedRunner<TResult>({
   onLog = () => {},
   onFailure,
   onAfterSuccess,
+  onStateChange,
 }: CoalescedRunnerOptions<TResult>) {
   let rerunRequested = false;
 
@@ -29,6 +31,7 @@ export function createCoalescedRunner<TResult>({
     }
 
     runningTasks.add(name);
+    onStateChange?.();
     let completedRuns = 0;
     let lastResult: TResult | null = null;
 
@@ -64,6 +67,7 @@ export function createCoalescedRunner<TResult>({
       return lastResult;
     } finally {
       runningTasks.delete(name);
+      onStateChange?.();
     }
   };
 }

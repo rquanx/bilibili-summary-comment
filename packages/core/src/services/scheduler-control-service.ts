@@ -13,6 +13,7 @@ export function createSchedulerControlService({
     runSummarySweep(options: Record<string, unknown> = {}) {
       return syncSummaryUsersRecentVideos({
         ...options,
+        triggerSource: String(options.triggerSource ?? "web").trim() || "web",
         dbPath,
         workRoot,
       });

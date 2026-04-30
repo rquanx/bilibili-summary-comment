@@ -4,7 +4,11 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { z } from "zod";
-import { createDashboardService } from "../../../packages/core/src/index";
+import {
+  createDashboardService,
+  createOperationsService,
+  createSchedulerStatusService,
+} from "../../../packages/core/src/index";
 import { getRepoRoot } from "../../../scripts/lib/shared/runtime-tools";
 
 const activePipelinesQuerySchema = z.object({
@@ -31,6 +35,18 @@ const eventStreamQuerySchema = z.object({
   pollMs: z.coerce.number().int().min(1000).max(10000).optional(),
 });
 
+const actionBodySchema = z.object({
+  summaryUsers: z.string().trim().optional(),
+  authFile: z.string().trim().optional(),
+  confirm: z.boolean().optional(),
+  forceSummary: z.boolean().optional(),
+});
+
+const auditsQuerySchema = z.object({
+  bvid: z.string().trim().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
 export async function buildApiServer({
   dbPath = process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
   webDistDir = path.join(getRepoRoot(), "apps", "web", "dist"),
@@ -46,9 +62,17 @@ export async function buildApiServer({
   const dashboardService = createDashboardService({
     dbPath,
   });
+  const operationsService = createOperationsService({
+    dbPath,
+  });
+  const schedulerStatusService = createSchedulerStatusService({
+    dbPath,
+  });
 
   app.addHook("onClose", async () => {
     dashboardService.close();
+    operationsService.close();
+    schedulerStatusService.close();
   });
 
   await app.register(cors, {
@@ -89,6 +113,97 @@ export async function buildApiServer({
       }),
     };
   });
+
+  app.get("/api/actions/audits", async (request) => {
+    const query = auditsQuerySchema.parse(request.query ?? {});
+    return {
+      ok: true,
+      items: operationsService.listAudits({
+        bvid: query.bvid ?? null,
+        limit: query.limit ?? 50,
+      }),
+    };
+  });
+
+  app.post("/api/actions/summary-sweep", async (request, reply) => {
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.runSummarySweep({
+      summaryUsers: body.summaryUsers,
+      authFile: body.authFile,
+    });
+
+    if (!result.ok) {
+      reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/publish-sweep", async (request, reply) => {
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.runPublishSweep({
+      summaryUsers: body.summaryUsers,
+      authFile: body.authFile,
+      confirm: Boolean(body.confirm),
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("Confirmation required") ? 400 : 500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/retry", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.retryPipeline({
+      bvid: params.bvid,
+      publish: true,
+      forceSummary: Boolean(body.forceSummary),
+    });
+
+    if (!result.ok) {
+      reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/publish", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.publishPipeline({
+      bvid: params.bvid,
+      confirm: Boolean(body.confirm),
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("Confirmation required") ? 400 : 500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/rebuild-publish-thread", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.rebuildPublishThread({
+      bvid: params.bvid,
+      confirm: Boolean(body.confirm),
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("Confirmation required") ? 400 : 500);
+    }
+
+    return result;
+  });
+
+  app.get("/api/scheduler/status", async () => ({
+    ok: true,
+    status: schedulerStatusService.getStatus(),
+  }));
 
   app.get("/api/dashboard/pipeline/:bvid", async (request, reply) => {
     const params = pipelineDetailParamsSchema.parse(request.params ?? {});

@@ -32,6 +32,8 @@ export function migrateDatabase(db) {
   createPipelineEventsTable(db);
   createPipelineRunsTable(db);
   createPipelineRunStateTable(db);
+  createOperationAuditsTable(db);
+  createSchedulerStatusTable(db);
   createGapNotificationsTable(db);
 
   db.exec(`
@@ -45,6 +47,9 @@ export function migrateDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_pipeline_runs_bvid_updated_at ON pipeline_runs(bvid, updated_at DESC, run_id DESC);
     CREATE INDEX IF NOT EXISTS idx_pipeline_run_state_bvid_updated_at ON pipeline_run_state(bvid, updated_at DESC, latest_event_id DESC);
     CREATE INDEX IF NOT EXISTS idx_pipeline_run_state_run_status_updated_at ON pipeline_run_state(run_status, updated_at DESC, latest_event_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_operation_audits_created_at ON operation_audits(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_operation_audits_bvid_created_at ON operation_audits(bvid, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_operation_audits_status_created_at ON operation_audits(status, created_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_gap_notifications_gap_key ON gap_notifications(gap_key);
     CREATE INDEX IF NOT EXISTS idx_gap_notifications_bvid_notified_at ON gap_notifications(bvid, notified_at DESC, id DESC);
   `);
@@ -252,6 +257,51 @@ function createPipelineRunStateTable(db) {
       FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
       FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE SET NULL,
       FOREIGN KEY(latest_event_id) REFERENCES pipeline_events(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+function createOperationAuditsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS operation_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      trigger_source TEXT NOT NULL,
+      bvid TEXT,
+      run_id TEXT,
+      request_json TEXT,
+      status TEXT NOT NULL,
+      result_json TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+}
+
+function createSchedulerStatusTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduler_status (
+      scheduler_key TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      mode TEXT,
+      timezone TEXT,
+      pid INTEGER,
+      hostname TEXT,
+      summary_users TEXT,
+      summary_concurrency INTEGER,
+      current_tasks_json TEXT,
+      last_summary_at TEXT,
+      last_publish_at TEXT,
+      last_gap_check_at TEXT,
+      last_refresh_at TEXT,
+      last_cleanup_at TEXT,
+      last_error TEXT,
+      started_at TEXT,
+      last_heartbeat_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )
   `);
 }

@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "build": "node --disable-warning=ExperimentalWarning --import tsx scripts/maintenance/build-dist.ts",
+    "build": "npm run build:web && node --disable-warning=ExperimentalWarning --import tsx scripts/maintenance/build-dist.ts",
     "dev:api": "node --disable-warning=ExperimentalWarning --import tsx apps/api/src/server.ts",
     "dev:web": "vite --config apps/web/vite.config.ts",
     "build:web": "vite build --config apps/web/vite.config.ts",

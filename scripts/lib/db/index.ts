@@ -5,11 +5,14 @@ export type {
   Db,
   GapNotificationInsert,
   GapNotificationRecord,
+  OperationAuditInsert,
+  OperationAuditRecord,
   PipelineEventInput,
   PipelineEventLogger,
   PipelineEventRecord,
   PipelineRunRecord,
   PipelineRunStateRecord,
+  SchedulerStatusRecord,
   SnapshotChangeSet,
   SummaryArtifacts,
   VideoIdentity,
@@ -59,6 +62,12 @@ export {
   upsertVideoPart,
 } from "./video-storage";
 export {
+  getOperationAuditById,
+  insertOperationAudit,
+  listOperationAudits,
+  updateOperationAudit,
+} from "./operation-audit-storage";
+export {
   insertPipelineEvent,
   listPipelineEvents,
 } from "./pipeline-event-storage";
@@ -70,3 +79,7 @@ export {
   syncPipelineRunReadModels,
   upsertPipelineRunStateFromEvent,
 } from "./pipeline-run-storage";
+export {
+  getSchedulerStatus,
+  upsertSchedulerStatus,
+} from "./scheduler-status-storage";

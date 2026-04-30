@@ -196,6 +196,53 @@ export interface PipelineRunStateRecord {
   updated_at: string;
 }
 
+export interface OperationAuditRecord {
+  id: number;
+  action: string;
+  scope: string;
+  trigger_source: string;
+  bvid: string | null;
+  run_id: string | null;
+  request_json: string | null;
+  status: string;
+  result_json: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationAuditInsert {
+  action: string;
+  scope: string;
+  triggerSource?: string | null;
+  bvid?: string | null;
+  runId?: string | null;
+  request?: unknown;
+  status?: string;
+}
+
+export interface SchedulerStatusRecord {
+  scheduler_key: string;
+  status: string;
+  mode: string | null;
+  timezone: string | null;
+  pid: number | null;
+  hostname: string | null;
+  summary_users: string | null;
+  summary_concurrency: number | null;
+  current_tasks_json: string | null;
+  last_summary_at: string | null;
+  last_publish_at: string | null;
+  last_gap_check_at: string | null;
+  last_refresh_at: string | null;
+  last_cleanup_at: string | null;
+  last_error: string | null;
+  started_at: string | null;
+  last_heartbeat_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface GapNotificationRecord {
   id: number;
   gap_key: string;

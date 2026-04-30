@@ -3,8 +3,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase, insertPipelineEvent, upsertVideo, upsertVideoPart } from "../scripts/lib/db/index";
-import { createDashboardService } from "../packages/core/src/index";
+import {
+  insertPipelineEvent,
+  openDatabase,
+  upsertSchedulerStatus,
+  upsertVideo,
+  upsertVideoPart,
+} from "../scripts/lib/db/index";
+import {
+  createDashboardService,
+  createOperationsService,
+  createSchedulerStatusService,
+} from "../packages/core/src/index";
 import { buildApiServer } from "../apps/api/src/app";
 
 test("dashboard service derives active and failed run snapshots from pipeline events", () => {
@@ -203,6 +213,171 @@ test("api exposes dashboard and pipeline detail endpoints from the shared servic
       assert.equal(detailResponse.statusCode, 200);
       assert.equal(detailResponse.json().detail.video.bvid, "BV1API");
       assert.equal(detailResponse.json().detail.parts.length, 1);
+    } finally {
+      await app.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("operations service records audits and enforces confirmation for risky actions", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-service-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1OPS",
+      aid: 30001,
+      title: "Operations Video",
+      ownerMid: 789,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 10002,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+
+    const service = createOperationsService({
+      dbPath,
+    });
+
+    try {
+      const rebuildWithoutConfirm = await service.rebuildPublishThread({
+        bvid: "BV1OPS",
+        confirm: false,
+      });
+      assert.equal(rebuildWithoutConfirm.ok, false);
+      assert.match(String(rebuildWithoutConfirm.errorMessage), /Confirmation required/u);
+
+      const rebuildWithConfirm = await service.rebuildPublishThread({
+        bvid: "BV1OPS",
+        confirm: true,
+      });
+      assert.equal(rebuildWithConfirm.ok, true);
+
+      const audits = service.listAudits({
+        bvid: "BV1OPS",
+        limit: 10,
+      });
+      assert.equal(audits.length, 2);
+      assert.equal(audits[0].action, "rebuild-publish-thread");
+      assert.equal(audits[0].status, "succeeded");
+      assert.equal(audits[1].status, "failed");
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler status service parses heartbeat health and current tasks", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-scheduler-status-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    upsertSchedulerStatus(db, {
+      schedulerKey: "main",
+      status: "running",
+      mode: "daemon",
+      timezone: "Asia/Shanghai",
+      pid: 1234,
+      hostname: "host",
+      summaryUsers: "123,456",
+      summaryConcurrency: 3,
+      currentTasks: ["summary", "publish"],
+      startedAt: new Date(Date.now() - 10_000).toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+    });
+
+    const service = createSchedulerStatusService({
+      dbPath,
+      heartbeatStaleMs: 60_000,
+    });
+
+    try {
+      const status = service.getStatus();
+      assert.equal(status.status, "running");
+      assert.equal(status.healthy, true);
+      assert.deepEqual(status.currentTasks, ["summary", "publish"]);
+      assert.equal(status.summaryConcurrency, 3);
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("api exposes action routes and scheduler status", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-actions-api-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1ACTAPI",
+      aid: 40001,
+      title: "Action API Video",
+      ownerMid: 999,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 11001,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+    upsertSchedulerStatus(db, {
+      schedulerKey: "main",
+      status: "running",
+      mode: "daemon",
+      currentTasks: ["summary"],
+      lastHeartbeatAt: new Date().toISOString(),
+    });
+
+    const app = await buildApiServer({
+      dbPath,
+      logger: false,
+      webDistDir: path.join(tempRoot, "missing-web-dist"),
+    });
+
+    try {
+      const schedulerResponse = await app.inject({
+        method: "GET",
+        url: "/api/scheduler/status",
+      });
+      assert.equal(schedulerResponse.statusCode, 200);
+      assert.equal(schedulerResponse.json().status.healthy, true);
+
+      const rebuildResponse = await app.inject({
+        method: "POST",
+        url: "/api/actions/pipeline/BV1ACTAPI/rebuild-publish-thread",
+        payload: {
+          confirm: true,
+        },
+      });
+      assert.equal(rebuildResponse.statusCode, 200);
+      assert.equal(rebuildResponse.json().ok, true);
+
+      const auditsResponse = await app.inject({
+        method: "GET",
+        url: "/api/actions/audits?bvid=BV1ACTAPI",
+      });
+      assert.equal(auditsResponse.statusCode, 200);
+      assert.equal(auditsResponse.json().items.length >= 1, true);
     } finally {
       await app.close();
     }

@@ -47,6 +47,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
   workRoot?: string;
   logDay?: string | null;
   logGroup?: string | null;
+  triggerSource?: string;
   publish?: boolean;
   maxConcurrent?: number;
   logger?: FileLogger | null;
@@ -162,6 +163,7 @@ export async function syncSummaryUsersRecentVideos({
   workRoot = "work",
   logDay = null,
   logGroup = null,
+  triggerSource = "scheduler",
   sinceHours = 24,
   publish = true,
   maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
@@ -218,7 +220,7 @@ export async function syncSummaryUsersRecentVideos({
         bvid: upload.bvid,
         logDay,
         logGroup,
-        triggerSource: "scheduler",
+        triggerSource,
         publish,
         logger: logger?.child({
           bvid: upload.bvid,

@@ -1,3 +1,4 @@
+import os from "node:os";
 import cron from "node-cron";
 import { resolveSchedulerConfig } from "../lib/config/app-config";
 import {
@@ -21,6 +22,7 @@ import {
   runRecentVideoGapCheck,
   syncSummaryUsersRecentVideos,
 } from "../lib/scheduler/index";
+import { openDatabase, upsertSchedulerStatus } from "../lib/db/index";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { LogLevel } from "../lib/shared/logger";
 import { formatEast8Time } from "../lib/shared/time";
@@ -52,6 +54,9 @@ await runCli({
     config.authFile = resolveBiliAuthFile(config.authFile);
     const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
     const runningTasks = new Set<string>();
+    const schedulerStatusDb = openDatabase(config.dbPath);
+    const schedulerStartedAt = new Date().toISOString();
+    let schedulerHeartbeat: NodeJS.Timeout | null = null;
     const schedulerLogger = createWorkFileLogger({
       workRoot: config.workRoot,
       name: "scheduler",
@@ -85,7 +90,88 @@ await runCli({
       process.stderr.write(`[scheduler ${formatEast8Time()}] ${message}\n`);
     }
 
+    function updateSchedulerStatus({
+      status = "running",
+      currentTasks = [...runningTasks],
+      lastSummaryAt = null,
+      lastPublishAt = null,
+      lastGapCheckAt = null,
+      lastRefreshAt = null,
+      lastCleanupAt = null,
+      lastError = null,
+    }: {
+      status?: string;
+      currentTasks?: string[];
+      lastSummaryAt?: string | null;
+      lastPublishAt?: string | null;
+      lastGapCheckAt?: string | null;
+      lastRefreshAt?: string | null;
+      lastCleanupAt?: string | null;
+      lastError?: string | null;
+    } = {}) {
+      upsertSchedulerStatus(schedulerStatusDb, {
+        schedulerKey: "main",
+        status,
+        mode: args.once ? "once" : "daemon",
+        timezone: config.timezone ?? null,
+        pid: process.pid,
+        hostname: os.hostname(),
+        summaryUsers: config.summaryUsers,
+        summaryConcurrency: config.summaryConcurrency,
+        currentTasks,
+        lastSummaryAt,
+        lastPublishAt,
+        lastGapCheckAt,
+        lastRefreshAt,
+        lastCleanupAt,
+        lastError,
+        startedAt: schedulerStartedAt,
+        lastHeartbeatAt: new Date().toISOString(),
+      });
+    }
+
+    function markTaskHeartbeat() {
+      updateSchedulerStatus();
+    }
+
+    function markTaskResult(taskName: string, {
+      errorMessage = null,
+    }: {
+      errorMessage?: string | null;
+    } = {}) {
+      const now = new Date().toISOString();
+      updateSchedulerStatus({
+        ...(taskName === "summary" ? { lastSummaryAt: now } : {}),
+        ...(taskName === "publish" ? { lastPublishAt: now } : {}),
+        ...(taskName === "gap-check" ? { lastGapCheckAt: now } : {}),
+        ...(taskName === "refresh" ? { lastRefreshAt: now } : {}),
+        ...(taskName === "cleanup" ? { lastCleanupAt: now } : {}),
+        ...(errorMessage ? { lastError: `${taskName}: ${errorMessage}` } : {}),
+      });
+    }
+
     log(`Detailed log: ${schedulerLogger.filePath}`);
+    updateSchedulerStatus({
+      status: "running",
+    });
+    schedulerHeartbeat = setInterval(markTaskHeartbeat, 5_000);
+
+    async function runTrackedTask<T>(taskName: string, task: () => Promise<T>) {
+      updateSchedulerStatus({
+        status: "running",
+      });
+
+      try {
+        const result = await task();
+        markTaskResult(taskName);
+        return result;
+      } catch (error) {
+        markTaskResult(taskName, {
+          errorMessage: getErrorMessage(error),
+        });
+        throw error;
+      }
+    }
 
     async function runRefreshTask({ force = false } = {}) {
       const bundle = loadBiliAuthBundle(config.authFile);
@@ -313,8 +399,9 @@ await runCli({
       }
 
       runningTasks.add(name);
+      markTaskHeartbeat();
       try {
-        return await task();
+        return await runTrackedTask(name, task);
       } catch (error) {
         log(`${name} failed: ${getErrorMessage(error)}`, {
           level: "error",
@@ -329,6 +416,7 @@ await runCli({
         };
       } finally {
         runningTasks.delete(name);
+        markTaskHeartbeat();
       }
     };
 
@@ -336,9 +424,12 @@ await runCli({
     const publishRunner = createCoalescedRunner({
       name: "publish",
       runningTasks,
-      task: runPublishTask,
+      task: () => runTrackedTask("publish", runPublishTask),
       onLog(message) {
         log(message);
+      },
+      onStateChange() {
+        markTaskHeartbeat();
       },
       onFailure(error) {
         const message = getErrorMessage(error);
@@ -362,9 +453,12 @@ await runCli({
     const summaryRunner = createCoalescedRunner({
       name: "summary",
       runningTasks,
-      task: runSummaryTask,
+      task: () => runTrackedTask("summary", runSummaryTask),
       onLog(message) {
         log(message);
+      },
+      onStateChange() {
+        markTaskHeartbeat();
       },
       onFailure(error) {
         const message = getErrorMessage(error);
@@ -404,6 +498,15 @@ await runCli({
         gapCheckRunner,
         cleanupRunner,
       });
+      if (schedulerHeartbeat) {
+        clearInterval(schedulerHeartbeat);
+        schedulerHeartbeat = null;
+      }
+      updateSchedulerStatus({
+        status: "idle",
+        currentTasks: [],
+      });
+      schedulerStatusDb.close?.();
       return {
         ok: true,
         mode: "once",
@@ -431,7 +534,17 @@ await runCli({
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
     log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
 
-    attachSignalHandlers(scheduledTasks, log);
+    attachSignalHandlers(scheduledTasks, log, () => {
+      if (schedulerHeartbeat) {
+        clearInterval(schedulerHeartbeat);
+        schedulerHeartbeat = null;
+      }
+      updateSchedulerStatus({
+        status: "stopped",
+        currentTasks: [],
+      });
+      schedulerStatusDb.close?.();
+    });
 
     return {
       ok: true,
@@ -488,13 +601,14 @@ async function runOnce(target, runners) {
   }
 }
 
-function attachSignalHandlers(scheduledTasks, log) {
+function attachSignalHandlers(scheduledTasks, log, onShutdown = () => {}) {
   const shutdown = (signal) => {
     log(`Received ${signal}, stopping scheduler`);
     for (const task of scheduledTasks) {
       task.stop();
       task.destroy();
     }
+    onShutdown();
     process.exit(0);
   };
 

@@ -258,6 +258,7 @@ export async function runVideoPipeline(
 
       return {
         ok: true,
+        runId: eventLogger.runId,
         logPath: logger.filePath,
         dbPath,
         video: {

@@ -49,6 +49,7 @@ export async function runPendingVideoPublishSweep({
   workRoot = "work",
   logDay = null,
   logGroup = null,
+  triggerSource = "scheduler",
   logger = null,
   onLog = () => {},
   listVideosPendingPublishImpl = listVideosPendingPublish,
@@ -66,6 +67,7 @@ export async function runPendingVideoPublishSweep({
   workRoot?: string;
   logDay?: string | null;
   logGroup?: string | null;
+  triggerSource?: string;
   logger?: FileLogger | null;
   onLog?: (message: string) => void;
   listVideosPendingPublishImpl?: typeof listVideosPendingPublish;
@@ -158,6 +160,7 @@ export async function runPendingVideoPublishSweep({
     dbPath,
     logDay,
     logGroup,
+    triggerSource,
     logger,
     onLog,
     runs,
@@ -234,6 +237,7 @@ async function runPendingPublishTasksWithConcurrency({
   dbPath,
   logDay,
   logGroup,
+  triggerSource,
   logger,
   onLog,
   runs,
@@ -248,6 +252,7 @@ async function runPendingPublishTasksWithConcurrency({
   dbPath: string;
   logDay: string | null;
   logGroup: string | null;
+  triggerSource: string;
   logger: FileLogger | null;
   onLog: (message: string) => void;
   runs: Array<Record<string, unknown>>;
@@ -305,7 +310,7 @@ async function runPendingPublishTasksWithConcurrency({
           bvid: task.video.bvid,
           logDay,
           logGroup,
-          triggerSource: "scheduler",
+          triggerSource,
           publish: true,
           logger: scopedLogger,
         }));

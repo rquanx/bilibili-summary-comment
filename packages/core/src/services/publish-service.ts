@@ -13,6 +13,7 @@ export function createPublishService({
       authFile,
       logDay = null,
       logGroup = null,
+      triggerSource = "web",
       logger = null,
       onLog,
     }: {
@@ -20,6 +21,7 @@ export function createPublishService({
       authFile?: string;
       logDay?: string | null;
       logGroup?: string | null;
+      triggerSource?: string;
       logger?: any;
       onLog?: (message: string) => void;
     } = {}) {
@@ -30,6 +32,7 @@ export function createPublishService({
         workRoot,
         logDay,
         logGroup,
+        triggerSource,
         logger,
         onLog,
       });

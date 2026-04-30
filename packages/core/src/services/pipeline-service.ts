@@ -13,6 +13,7 @@ export function createPipelineService({
       authFile = null,
       cookieFile = null,
       publish = true,
+      forceSummary = false,
       logDay = null,
       logGroup = null,
       triggerSource = "web",
@@ -21,6 +22,7 @@ export function createPipelineService({
       authFile?: string | null;
       cookieFile?: string | null;
       publish?: boolean;
+      forceSummary?: boolean;
       logDay?: string | null;
       logGroup?: string | null;
       triggerSource?: string | null;
@@ -32,6 +34,7 @@ export function createPipelineService({
         workRoot,
         bvid,
         publish,
+        forceSummary,
         logDay,
         logGroup,
         triggerSource,

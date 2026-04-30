@@ -32,6 +32,7 @@ interface RunPipelineForBvidOptions {
   logGroup?: string | null;
   triggerSource?: string | null;
   publish?: boolean;
+  forceSummary?: boolean;
   logger?: FileLogger | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
   repoRoot?: string;
@@ -47,6 +48,7 @@ export async function runPipelineForBvid({
   logGroup = null,
   triggerSource = "scheduler",
   publish = true,
+  forceSummary = false,
   logger = null,
   runCommandImpl = runCommand,
   repoRoot = getRepoRoot(),
@@ -63,6 +65,9 @@ export async function runPipelineForBvid({
     args.push("--trigger-source", triggerSource);
   }
   args.push("--bvid", bvid, "--db", path.resolve(repoRoot, dbPath), "--work-root", workRoot);
+  if (forceSummary) {
+    args.push("--force-summary");
+  }
   if (publish) {
     args.push("--publish");
   }
