@@ -34,6 +34,7 @@ export function migrateDatabase(db) {
   createPipelineRunStateTable(db);
   createOperationAuditsTable(db);
   createSchedulerStatusTable(db);
+  ensureSchedulerStatusColumn(db, "last_retry_failures_at", "TEXT");
   createGapNotificationsTable(db);
 
   db.exec(`
@@ -295,6 +296,7 @@ function createSchedulerStatusTable(db) {
       last_summary_at TEXT,
       last_publish_at TEXT,
       last_gap_check_at TEXT,
+      last_retry_failures_at TEXT,
       last_refresh_at TEXT,
       last_cleanup_at TEXT,
       last_error TEXT,
@@ -304,6 +306,15 @@ function createSchedulerStatusTable(db) {
       updated_at TEXT NOT NULL
     )
   `);
+}
+
+function ensureSchedulerStatusColumn(db, columnName, definition) {
+  const columns = db.prepare("PRAGMA table_info(scheduler_status)").all();
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE scheduler_status ADD COLUMN ${columnName} ${definition}`);
 }
 
 function createGapNotificationsTable(db) {

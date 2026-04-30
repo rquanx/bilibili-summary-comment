@@ -1,4 +1,5 @@
 import {
+  getSchedulerStatus,
   getPipelineRunStateById,
   listActivePipelineRunStates,
   listPipelineEvents,
@@ -7,7 +8,7 @@ import {
   listVideos,
   openDatabase,
 } from "../../../../scripts/lib/db/index";
-import type { Db, PipelineRunStateRecord, VideoPartRecord, VideoRecord } from "../../../../scripts/lib/db/index";
+import type { Db, PipelineRunStateRecord, SchedulerStatusRecord, VideoPartRecord, VideoRecord } from "../../../../scripts/lib/db/index";
 
 export interface DashboardSummary {
   activeCount: number;
@@ -37,6 +38,51 @@ export interface DashboardRunItem {
   logPath: string | null;
   summaryPath: string | null;
   pendingSummaryPath: string | null;
+}
+
+export interface FailureQueueItem extends DashboardRunItem {
+  failureCategory: string;
+  resolution: "retryable" | "manual" | "inspect";
+  resolutionReason: string;
+  failureSignature: string;
+}
+
+export interface FailureGroupItem {
+  key: string;
+  failedStep: string | null;
+  failureCategory: string;
+  resolution: "retryable" | "manual" | "inspect";
+  resolutionReason: string;
+  count: number;
+  latestRunId: string;
+  latestBvid: string | null;
+  latestVideoTitle: string | null;
+  latestMessage: string | null;
+  latestUpdatedAt: string;
+}
+
+export interface AttentionItem {
+  kind: "scheduler-missing" | "scheduler-heartbeat" | "scheduler-status" | "stalled-run";
+  severity: "warning" | "critical";
+  title: string;
+  message: string;
+  runId: string | null;
+  bvid: string | null;
+  currentStage: string | null;
+  status: string | null;
+  updatedAt: string | null;
+  staleForMs: number | null;
+}
+
+export interface DashboardHealthSnapshot {
+  attentionCount: number;
+  criticalCount: number;
+  warningCount: number;
+  staleRunningCount: number;
+  schedulerHealthy: boolean;
+  schedulerStatus: string;
+  schedulerLastHeartbeatAt: string | null;
+  schedulerHeartbeatAgeMs: number | null;
 }
 
 export interface PipelineDetail {
@@ -124,6 +170,115 @@ export function createDashboardService({
         bvid,
         limit,
       });
+    },
+    listFailureQueue({
+      limit = 50,
+      resolutions = null,
+      sinceHours = 168,
+    }: {
+      limit?: number;
+      resolutions?: Array<FailureQueueItem["resolution"]> | null;
+      sinceHours?: number;
+    } = {}): FailureQueueItem[] {
+      const recentFailedRuns = listRecentPipelineRunStates(db, {
+        limit: Math.max(50, Math.max(1, Number(limit) || 50) * 4),
+        statuses: ["failed"],
+      })
+        .filter((item) => isWithinRecentHours(item.updated_at, sinceHours))
+        .map((item) => mapRunStateToFailureItem(mapRunStateToItem(item)));
+
+      if (!resolutions || resolutions.length === 0) {
+        return recentFailedRuns.slice(0, Math.max(1, Number(limit) || 50));
+      }
+
+      const allowedResolutions = new Set(resolutions);
+      return recentFailedRuns
+        .filter((item) => allowedResolutions.has(item.resolution))
+        .slice(0, Math.max(1, Number(limit) || 50));
+    },
+    listFailureGroups({
+      limit = 20,
+      sinceHours = 168,
+    }: {
+      limit?: number;
+      sinceHours?: number;
+    } = {}): FailureGroupItem[] {
+      const failedRuns = listRecentPipelineRunStates(db, {
+        limit: 500,
+        statuses: ["failed"],
+      })
+        .filter((item) => isWithinRecentHours(item.updated_at, sinceHours))
+        .map((item) => mapRunStateToFailureItem(mapRunStateToItem(item)));
+
+      const grouped = new Map<string, FailureGroupItem>();
+      for (const item of failedRuns) {
+        const existing = grouped.get(item.failureSignature);
+        if (existing) {
+          existing.count += 1;
+          continue;
+        }
+
+        grouped.set(item.failureSignature, {
+          key: item.failureSignature,
+          failedStep: item.failedStep,
+          failureCategory: item.failureCategory,
+          resolution: item.resolution,
+          resolutionReason: item.resolutionReason,
+          count: 1,
+          latestRunId: item.runId,
+          latestBvid: item.bvid,
+          latestVideoTitle: item.videoTitle,
+          latestMessage: item.lastErrorMessage || item.lastMessage,
+          latestUpdatedAt: item.updatedAt,
+        });
+      }
+
+      return Array.from(grouped.values())
+        .sort((left, right) => {
+          if (right.count !== left.count) {
+            return right.count - left.count;
+          }
+
+          return right.latestUpdatedAt.localeCompare(left.latestUpdatedAt);
+        })
+        .slice(0, Math.max(1, Number(limit) || 20));
+    },
+    getOperationalHealth({
+      schedulerKey = "main",
+      heartbeatStaleMs = 90_000,
+      runStaleMs = 15 * 60 * 1000,
+      attentionLimit = 20,
+    }: {
+      schedulerKey?: string;
+      heartbeatStaleMs?: number;
+      runStaleMs?: number;
+      attentionLimit?: number;
+    } = {}) {
+      const attentionItems = collectAttentionItems(db, {
+        schedulerKey,
+        heartbeatStaleMs,
+        runStaleMs,
+      }).slice(0, Math.max(1, Number(attentionLimit) || 20));
+      const schedulerStatus = getSchedulerStatus(db, schedulerKey);
+      const schedulerHeartbeatAgeMs = getAgeMs(schedulerStatus?.last_heartbeat_at ?? null);
+      const criticalCount = attentionItems.filter((item) => item.severity === "critical").length;
+      const warningCount = attentionItems.length - criticalCount;
+      const staleRunningCount = attentionItems.filter((item) => item.kind === "stalled-run").length;
+      const schedulerHealthy = isSchedulerHealthy(schedulerStatus, heartbeatStaleMs);
+
+      return {
+        snapshot: {
+          attentionCount: attentionItems.length,
+          criticalCount,
+          warningCount,
+          staleRunningCount,
+          schedulerHealthy,
+          schedulerStatus: schedulerStatus?.status ?? "unknown",
+          schedulerLastHeartbeatAt: schedulerStatus?.last_heartbeat_at ?? null,
+          schedulerHeartbeatAgeMs,
+        } satisfies DashboardHealthSnapshot,
+        items: attentionItems,
+      };
     },
     getRunState(runId: string): DashboardRunItem | null {
       const state = getPipelineRunStateById(db, runId);
@@ -274,6 +429,17 @@ function mapRunStateToItem(state: PipelineRunStateRecord): DashboardRunItem {
   };
 }
 
+function mapRunStateToFailureItem(item: DashboardRunItem): FailureQueueItem {
+  const failure = classifyFailure(item);
+  return {
+    ...item,
+    failureCategory: failure.failureCategory,
+    resolution: failure.resolution,
+    resolutionReason: failure.resolutionReason,
+    failureSignature: failure.failureSignature,
+  };
+}
+
 function parseDetails(detailsJson: string | null | undefined): Record<string, unknown> | null {
   const normalized = String(detailsJson ?? "").trim();
   if (!normalized) {
@@ -290,4 +456,214 @@ function parseDetails(detailsJson: string | null | undefined): Record<string, un
 
 function getRecentIsoHours(hours: number): string {
   return new Date(Date.now() - Math.max(1, Number(hours) || 24) * 3600 * 1000).toISOString();
+}
+
+function collectAttentionItems(
+  db: Db,
+  {
+    schedulerKey,
+    heartbeatStaleMs,
+    runStaleMs,
+  }: {
+    schedulerKey: string;
+    heartbeatStaleMs: number;
+    runStaleMs: number;
+  },
+): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  const scheduler = getSchedulerStatus(db, schedulerKey);
+  const activeRuns = listActivePipelineRunStates(db, 200).map(mapRunStateToItem);
+
+  if (!scheduler) {
+    items.push({
+      kind: "scheduler-missing",
+      severity: "critical",
+      title: "Scheduler status is missing",
+      message: "No scheduler heartbeat record exists yet.",
+      runId: null,
+      bvid: null,
+      currentStage: null,
+      status: "unknown",
+      updatedAt: null,
+      staleForMs: null,
+    });
+  } else {
+    const heartbeatAgeMs = getAgeMs(scheduler.last_heartbeat_at);
+    if (scheduler.status !== "running") {
+      items.push({
+        kind: "scheduler-status",
+        severity: "warning",
+        title: "Scheduler is not running",
+        message: `Scheduler status is ${scheduler.status}.`,
+        runId: null,
+        bvid: null,
+        currentStage: null,
+        status: scheduler.status,
+        updatedAt: scheduler.updated_at,
+        staleForMs: heartbeatAgeMs,
+      });
+    } else if (heartbeatAgeMs === null || heartbeatAgeMs > heartbeatStaleMs) {
+      items.push({
+        kind: "scheduler-heartbeat",
+        severity: "critical",
+        title: "Scheduler heartbeat is stale",
+        message: heartbeatAgeMs === null
+          ? "Scheduler heartbeat timestamp is missing."
+          : `Scheduler heartbeat is ${formatDurationText(heartbeatAgeMs)} old.`,
+        runId: null,
+        bvid: null,
+        currentStage: null,
+        status: scheduler.status,
+        updatedAt: scheduler.last_heartbeat_at ?? scheduler.updated_at,
+        staleForMs: heartbeatAgeMs,
+      });
+    }
+  }
+
+  for (const run of activeRuns) {
+    const staleForMs = getAgeMs(run.updatedAt);
+    if (staleForMs === null || staleForMs <= runStaleMs) {
+      continue;
+    }
+
+    items.push({
+      kind: "stalled-run",
+      severity: staleForMs > runStaleMs * 2 ? "critical" : "warning",
+      title: "Pipeline appears stalled",
+      message: `${run.videoTitle || run.bvid || run.runId} has not updated for ${formatDurationText(staleForMs)}.`,
+      runId: run.runId,
+      bvid: run.bvid,
+      currentStage: run.currentStage,
+      status: run.runStatus,
+      updatedAt: run.updatedAt,
+      staleForMs,
+    });
+  }
+
+  return items.sort((left, right) => {
+    const severityRank = left.severity === right.severity ? 0 : left.severity === "critical" ? -1 : 1;
+    if (severityRank !== 0) {
+      return severityRank;
+    }
+
+    return Number(right.staleForMs ?? 0) - Number(left.staleForMs ?? 0);
+  });
+}
+
+function isWithinRecentHours(updatedAt: string, hours: number): boolean {
+  return updatedAt >= getRecentIsoHours(hours);
+}
+
+function classifyFailure(item: DashboardRunItem): {
+  failureCategory: string;
+  resolution: FailureQueueItem["resolution"];
+  resolutionReason: string;
+  failureSignature: string;
+} {
+  const failedStep = normalizeText(item.failedStep) ?? "unknown";
+  const message = normalizeText(item.lastErrorMessage) ?? normalizeText(item.lastMessage) ?? "unknown";
+  const combined = `${failedStep}\n${message}`.toLowerCase();
+
+  if (/(auth|token|cookie|login|credential|permission|forbidden|denied|风控|blocked)/iu.test(combined)) {
+    return buildFailureClassification(item, "auth", "manual", "Authentication, permission, or platform risk-control issue.");
+  }
+
+  if (/(429|quota|rate limit|too many requests|timeout|timed out|network|socket|econn|reset by peer|temporar|503|502|504|fetch failed)/iu.test(combined)) {
+    return buildFailureClassification(item, "transient", "retryable", "Transient upstream or network failure; retry is usually safe.");
+  }
+
+  if (/(missing|not found|404|deleted|no subtitle|empty subtitle|artifact)/iu.test(combined)) {
+    return buildFailureClassification(item, "artifact", "inspect", "Required input or generated artifact is missing.");
+  }
+
+  if (failedStep.startsWith("summary")) {
+    return buildFailureClassification(item, "summary", "retryable", "Summary generation failed and is usually worth retrying.");
+  }
+
+  if (failedStep.startsWith("subtitle")) {
+    return buildFailureClassification(item, "subtitle", "retryable", "Subtitle acquisition or ASR failed and may recover on retry.");
+  }
+
+  if (failedStep.startsWith("publish")) {
+    return buildFailureClassification(item, "publish", "inspect", "Publishing failed; inspect thread state before retrying.");
+  }
+
+  return buildFailureClassification(item, "pipeline", "inspect", "Failure needs operator inspection before the next action.");
+}
+
+function buildFailureClassification(
+  item: DashboardRunItem,
+  failureCategory: string,
+  resolution: FailureQueueItem["resolution"],
+  resolutionReason: string,
+) {
+  const failedStep = normalizeText(item.failedStep) ?? "unknown";
+  const normalizedMessage = normalizeFailureMessage(item.lastErrorMessage || item.lastMessage);
+
+  return {
+    failureCategory,
+    resolution,
+    resolutionReason,
+    failureSignature: `${failureCategory}:${failedStep}:${normalizedMessage}`,
+  };
+}
+
+function normalizeFailureMessage(value: string | null | undefined): string {
+  const normalized = String(value ?? "")
+    .toLowerCase()
+    .replace(/bv[0-9a-z]+/giu, "<bvid>")
+    .replace(/https?:\/\/\S+/giu, "<url>")
+    .replace(/[0-9]{3,}/gu, "<n>")
+    .replace(/[\\/][^\\/\s]+/gu, "<path>")
+    .replace(/\s+/gu, " ")
+    .trim();
+
+  return normalized.slice(0, 80) || "unknown";
+}
+
+function normalizeText(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function getAgeMs(value: string | null | undefined): number | null {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const timestamp = new Date(normalized).getTime();
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  return Math.max(0, Date.now() - timestamp);
+}
+
+function isSchedulerHealthy(row: SchedulerStatusRecord | null, heartbeatStaleMs: number): boolean {
+  if (!row || row.status !== "running") {
+    return false;
+  }
+
+  const ageMs = getAgeMs(row.last_heartbeat_at);
+  return ageMs !== null && ageMs <= heartbeatStaleMs;
+}
+
+function formatDurationText(valueMs: number): string {
+  if (valueMs < 1000) {
+    return `${valueMs} ms`;
+  }
+
+  const seconds = valueMs / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)} s`;
+  }
+
+  const minutes = seconds / 60;
+  if (minutes < 60) {
+    return `${minutes.toFixed(1)} min`;
+  }
+
+  const hours = minutes / 60;
+  return `${hours.toFixed(1)} h`;
 }

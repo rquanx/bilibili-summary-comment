@@ -16,6 +16,7 @@ export function upsertSchedulerStatus(
     lastSummaryAt = null,
     lastPublishAt = null,
     lastGapCheckAt = null,
+    lastRetryFailuresAt = null,
     lastRefreshAt = null,
     lastCleanupAt = null,
     lastError = null,
@@ -34,6 +35,7 @@ export function upsertSchedulerStatus(
     lastSummaryAt?: string | null;
     lastPublishAt?: string | null;
     lastGapCheckAt?: string | null;
+    lastRetryFailuresAt?: string | null;
     lastRefreshAt?: string | null;
     lastCleanupAt?: string | null;
     lastError?: string | null;
@@ -58,6 +60,7 @@ export function upsertSchedulerStatus(
         last_summary_at,
         last_publish_at,
         last_gap_check_at,
+        last_retry_failures_at,
         last_refresh_at,
         last_cleanup_at,
         last_error,
@@ -66,7 +69,7 @@ export function upsertSchedulerStatus(
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(scheduler_key) DO UPDATE SET
         status = excluded.status,
         mode = COALESCE(excluded.mode, scheduler_status.mode),
@@ -79,6 +82,7 @@ export function upsertSchedulerStatus(
         last_summary_at = COALESCE(excluded.last_summary_at, scheduler_status.last_summary_at),
         last_publish_at = COALESCE(excluded.last_publish_at, scheduler_status.last_publish_at),
         last_gap_check_at = COALESCE(excluded.last_gap_check_at, scheduler_status.last_gap_check_at),
+        last_retry_failures_at = COALESCE(excluded.last_retry_failures_at, scheduler_status.last_retry_failures_at),
         last_refresh_at = COALESCE(excluded.last_refresh_at, scheduler_status.last_refresh_at),
         last_cleanup_at = COALESCE(excluded.last_cleanup_at, scheduler_status.last_cleanup_at),
         last_error = COALESCE(excluded.last_error, scheduler_status.last_error),
@@ -98,6 +102,7 @@ export function upsertSchedulerStatus(
       normalizeText(lastSummaryAt),
       normalizeText(lastPublishAt),
       normalizeText(lastGapCheckAt),
+      normalizeText(lastRetryFailuresAt),
       normalizeText(lastRefreshAt),
       normalizeText(lastCleanupAt),
       normalizeText(lastError),

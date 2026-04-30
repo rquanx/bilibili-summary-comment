@@ -33,6 +33,51 @@ type DashboardRunItem = {
   pendingSummaryPath: string | null;
 };
 
+type FailureQueueItem = DashboardRunItem & {
+  failureCategory: string;
+  resolution: "retryable" | "manual" | "inspect";
+  resolutionReason: string;
+  failureSignature: string;
+};
+
+type FailureGroupItem = {
+  key: string;
+  failedStep: string | null;
+  failureCategory: string;
+  resolution: "retryable" | "manual" | "inspect";
+  resolutionReason: string;
+  count: number;
+  latestRunId: string;
+  latestBvid: string | null;
+  latestVideoTitle: string | null;
+  latestMessage: string | null;
+  latestUpdatedAt: string;
+};
+
+type AttentionItem = {
+  kind: "scheduler-missing" | "scheduler-heartbeat" | "scheduler-status" | "stalled-run";
+  severity: "warning" | "critical";
+  title: string;
+  message: string;
+  runId: string | null;
+  bvid: string | null;
+  currentStage: string | null;
+  status: string | null;
+  updatedAt: string | null;
+  staleForMs: number | null;
+};
+
+type DashboardHealthSnapshot = {
+  attentionCount: number;
+  criticalCount: number;
+  warningCount: number;
+  staleRunningCount: number;
+  schedulerHealthy: boolean;
+  schedulerStatus: string;
+  schedulerLastHeartbeatAt: string | null;
+  schedulerHeartbeatAgeMs: number | null;
+};
+
 type VideoPart = {
   id: number;
   page_no: number;
@@ -218,6 +263,18 @@ function DashboardPage() {
     queryKey: ["dashboard", "recent-runs"],
     queryFn: async () => fetchJson<{ ok: true; items: DashboardRunItem[] }>("/api/dashboard/recent-runs?limit=60"),
   });
+  const failureQueueQuery = useQuery({
+    queryKey: ["dashboard", "failure-queue"],
+    queryFn: async () => fetchJson<{ ok: true; items: FailureQueueItem[] }>("/api/dashboard/failure-queue?limit=16"),
+  });
+  const failureGroupsQuery = useQuery({
+    queryKey: ["dashboard", "failure-groups"],
+    queryFn: async () => fetchJson<{ ok: true; items: FailureGroupItem[] }>("/api/dashboard/failure-groups?limit=8"),
+  });
+  const healthQuery = useQuery({
+    queryKey: ["dashboard", "health"],
+    queryFn: async () => fetchJson<{ ok: true; snapshot: DashboardHealthSnapshot; items: AttentionItem[] }>("/api/dashboard/health?attentionLimit=8"),
+  });
   const schedulerQuery = useQuery({
     queryKey: ["scheduler", "status"],
     queryFn: async () => fetchJson<{ ok: true; status: SchedulerStatus }>("/api/scheduler/status"),
@@ -234,7 +291,10 @@ function DashboardPage() {
   const auditItems = auditsQuery.data?.items ?? [];
   const activeItems = (activeQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
   const recentItems = (recentQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
-  const failedItems = recentItems.filter((item) => item.runStatus === "failed").slice(0, 12);
+  const failureQueueItems = (failureQueueQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
+  const failureGroupItems = failureGroupsQuery.data?.items ?? [];
+  const healthSnapshot = healthQuery.data?.snapshot;
+  const attentionItems = healthQuery.data?.items ?? [];
 
   async function runAction(actionKey: string, targetPath: string, body: Record<string, unknown>) {
     setPendingAction(actionKey);
@@ -255,14 +315,15 @@ function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <MetricCard title="Active Pipelines" value={summary?.activeCount ?? 0} tone="accent" />
         <MetricCard title="Succeeded 24h" value={summary?.succeededCount24h ?? 0} tone="success" />
         <MetricCard title="Failed 24h" value={summary?.failedCount24h ?? 0} tone="danger" />
+        <MetricCard title="Attention" value={healthSnapshot?.attentionCount ?? 0} tone={(healthSnapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral"} />
         <MetricCard title="Latest Update" value={formatDateTime(summary?.latestUpdatedAt)} tone="neutral" />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+      <section className="grid gap-6 xl:grid-cols-[1fr_0.8fr_0.9fr]">
         <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
@@ -303,6 +364,22 @@ function DashboardPage() {
                 });
               }}
             />
+            <ActionButton
+              label="Retry retryable failures"
+              busy={pendingAction === "retry-failures"}
+              onClick={() => {
+                if (!window.confirm("Retry the latest retryable failed pipelines now?")) {
+                  return;
+                }
+
+                void runAction("retry-failures", "/api/actions/retry-failures", {
+                  confirm: true,
+                  limit: 5,
+                  maxRecentRetries: 1,
+                  retryWindowHours: 6,
+                });
+              }}
+            />
           </div>
 
           {actionMessage ? (
@@ -318,6 +395,17 @@ function DashboardPage() {
             <h2 className="text-2xl font-semibold">Daemon Status</h2>
           </div>
           <SchedulerStatusCard status={scheduler ?? null} />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">attention</p>
+              <h2 className="text-2xl font-semibold">Health Watch</h2>
+            </div>
+            <span className="text-sm text-[var(--muted)]">{attentionItems.length} items</span>
+          </div>
+          <HealthWatchCard snapshot={healthSnapshot ?? null} items={attentionItems} />
         </div>
       </section>
 
@@ -336,34 +424,34 @@ function DashboardPage() {
         <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">failures</p>
-              <h3 className="text-xl font-semibold">Recent Failures</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">hotspots</p>
+              <h3 className="text-xl font-semibold">Failure Groups</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{failedItems.length} rows</span>
+            <span className="text-sm text-[var(--muted)]">{failureGroupItems.length} groups</span>
           </div>
-          <div className="flex flex-col gap-3">
-            {failedItems.length === 0 ? (
-              <EmptyState text="No recent failed runs." />
-            ) : (
-              failedItems.map((item) => (
-                <Link
-                  key={item.runId}
-                  to={`/pipeline/${encodeURIComponent(item.bvid ?? "")}`}
-                  className="rounded-[1.2rem] border border-[var(--line)] bg-white/70 px-4 py-4 transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold">{item.videoTitle || item.bvid || "Unknown video"}</p>
-                      <p className="mt-1 text-sm text-[var(--muted)]">{item.failedStep || item.currentStage || "failed"}</p>
-                    </div>
-                    {renderStatus(item.runStatus)}
-                  </div>
-                  <p className="mt-3 line-clamp-2 text-sm text-[var(--muted)]">{item.lastErrorMessage || item.lastMessage || "No error message"}</p>
-                </Link>
-              ))
-            )}
-          </div>
+          <FailureGroupList items={failureGroupItems} />
         </div>
+      </section>
+
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">queue</p>
+            <h3 className="text-xl font-semibold">Failure Queue</h3>
+          </div>
+          <span className="text-sm text-[var(--muted)]">{failureQueueItems.length} items</span>
+        </div>
+        <FailureQueueList
+          items={failureQueueItems}
+          pendingAction={pendingAction}
+          onRetry={(item) => {
+            if (!item.bvid) {
+              return;
+            }
+
+            void runAction(`retry-${item.bvid}`, `/api/actions/pipeline/${encodeURIComponent(item.bvid)}/retry`, {});
+          }}
+        />
       </section>
 
       <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
@@ -602,8 +690,50 @@ function SchedulerStatusCard({ status }: { status: SchedulerStatus | null }) {
       <KeyValueCard label="Current tasks" value={status.currentTasks.length > 0 ? status.currentTasks.join(", ") : "idle"} />
       <KeyValueCard label="Last heartbeat" value={formatDateTime(status.lastHeartbeatAt)} />
       <KeyValueCard label="Heartbeat age" value={formatDuration(status.heartbeatAgeMs)} />
+      <KeyValueCard label="Last retry sweep" value={formatDateTime(status.taskTimes["retry-failures"] ?? null)} />
       <KeyValueCard label="Concurrency" value={status.summaryConcurrency ? String(status.summaryConcurrency) : "-"} />
       <KeyValueCard label="Last error" value={status.lastError || "-"} />
+    </div>
+  );
+}
+
+function HealthWatchCard({
+  snapshot,
+  items,
+}: {
+  snapshot: DashboardHealthSnapshot | null;
+  items: AttentionItem[];
+}) {
+  if (!snapshot) {
+    return <EmptyState text="Operational health snapshot is not available yet." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <KeyValueCard label="Critical" value={String(snapshot.criticalCount)} />
+      <KeyValueCard label="Warnings" value={String(snapshot.warningCount)} />
+      <KeyValueCard label="Stalled runs" value={String(snapshot.staleRunningCount)} />
+      <KeyValueCard label="Heartbeat age" value={formatDuration(snapshot.schedulerHeartbeatAgeMs)} />
+      {items.length === 0 ? (
+        <EmptyState text="No attention items right now." />
+      ) : (
+        items.map((item) => (
+          <div key={`${item.kind}:${item.runId || item.updatedAt || item.title}`} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{item.title}</p>
+                <p className="mt-1 text-sm text-[var(--muted)]">
+                  {item.currentStage || item.status || item.kind}
+                  {item.bvid ? ` · ${item.bvid}` : ""}
+                </p>
+              </div>
+              {renderSeverity(item.severity)}
+            </div>
+            <p className="mt-3 text-sm text-[var(--muted)]">{item.message}</p>
+            <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.updatedAt)}</p>
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -636,6 +766,93 @@ function AuditList({
             {item.errorMessage || describeAuditResult(item.result) || "No result details"}
           </p>
           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.createdAt)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FailureGroupList({ items }: { items: FailureGroupItem[] }) {
+  if (items.length === 0) {
+    return <EmptyState text="No repeated failures detected in the recent window." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {items.map((item) => (
+        <div key={item.key} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{item.failedStep || item.failureCategory}</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">{item.failureCategory} · {item.count} runs</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {renderResolution(item.resolution)}
+              <span className="rounded-full bg-[var(--panel-soft)] px-3 py-1 text-xs font-semibold text-[var(--muted)]">
+                x{item.count}
+              </span>
+            </div>
+          </div>
+          <p className="mt-3 text-sm text-[var(--muted)]">{item.latestMessage || item.resolutionReason}</p>
+          <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.latestUpdatedAt)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FailureQueueList({
+  items,
+  pendingAction,
+  onRetry,
+}: {
+  items: FailureQueueItem[];
+  pendingAction: string | null;
+  onRetry: (item: FailureQueueItem) => void;
+}) {
+  if (items.length === 0) {
+    return <EmptyState text="No failed pipelines in the recent window." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {items.map((item) => (
+        <div key={item.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="font-semibold">{item.videoTitle || item.bvid || "Unknown video"}</p>
+                {renderStatus(item.runStatus)}
+                {renderResolution(item.resolution)}
+              </div>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                {item.failedStep || item.currentStage || "failed"} · {item.failureCategory} · {formatDateTime(item.updatedAt)}
+              </p>
+              <p className="mt-3 text-sm text-[var(--muted)]">{item.lastErrorMessage || item.lastMessage || item.resolutionReason}</p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {item.bvid ? (
+                <Link
+                  to={`/pipeline/${encodeURIComponent(item.bvid)}`}
+                  className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
+                >
+                  Inspect
+                </Link>
+              ) : null}
+              {item.bvid && item.resolution === "retryable" ? (
+                <button
+                  type="button"
+                  disabled={pendingAction === `retry-${item.bvid}`}
+                  onClick={() => {
+                    onRetry(item);
+                  }}
+                  className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-wait disabled:opacity-60"
+                >
+                  {pendingAction === `retry-${item.bvid}` ? "Retrying..." : "Retry"}
+                </button>
+              ) : null}
+            </div>
+          </div>
         </div>
       ))}
     </div>
@@ -779,6 +996,23 @@ function renderStatus(status: string) {
   return <span className={`status-pill ${className}`}>{normalized}</span>;
 }
 
+function renderResolution(resolution: FailureQueueItem["resolution"]) {
+  const normalized = String(resolution || "inspect").toLowerCase() as FailureQueueItem["resolution"];
+  const className = normalized === "retryable"
+    ? "status-running"
+    : normalized === "manual"
+      ? "status-failed"
+      : "status-waiting";
+
+  return <span className={`status-pill ${className}`}>{normalized}</span>;
+}
+
+function renderSeverity(severity: AttentionItem["severity"]) {
+  const normalized = String(severity || "warning").toLowerCase();
+  const className = normalized === "critical" ? "status-failed" : "status-waiting";
+  return <span className={`status-pill ${className}`}>{normalized}</span>;
+}
+
 function buildApiUrl(targetPath: string): string {
   return API_BASE_URL ? `${API_BASE_URL}${targetPath}` : targetPath;
 }
@@ -879,6 +1113,9 @@ function describeAuditResult(result: unknown): string {
     runs?: unknown;
     queued?: unknown;
     generatedPages?: unknown;
+    triggered?: unknown;
+    skipped?: unknown;
+    failed?: unknown;
   };
 
   if (payload.marked === true) {
@@ -891,6 +1128,10 @@ function describeAuditResult(result: unknown): string {
 
   if (typeof payload.queued === "number") {
     return `queued=${payload.queued}, failures=${String(payload.failures ?? "-")}`;
+  }
+
+  if (typeof payload.triggered === "number" || typeof payload.skipped === "number" || typeof payload.failed === "number") {
+    return `triggered=${String(payload.triggered ?? "-")}, skipped=${String(payload.skipped ?? "-")}, failed=${String(payload.failed ?? "-")}`;
   }
 
   if (Array.isArray(payload.generatedPages)) {

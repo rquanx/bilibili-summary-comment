@@ -35,6 +35,7 @@ export function createSchedulerStatusService({
           summary: row?.last_summary_at ?? null,
           publish: row?.last_publish_at ?? null,
           "gap-check": row?.last_gap_check_at ?? null,
+          "retry-failures": row?.last_retry_failures_at ?? null,
           refresh: row?.last_refresh_at ?? null,
           cleanup: row?.last_cleanup_at ?? null,
         },

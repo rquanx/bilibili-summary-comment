@@ -20,6 +20,23 @@ const recentRunsQuerySchema = z.object({
   status: z.string().trim().optional(),
 });
 
+const failureQueueQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  resolution: z.string().trim().optional(),
+  sinceHours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+});
+
+const failureGroupsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  sinceHours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+});
+
+const dashboardHealthQuerySchema = z.object({
+  attentionLimit: z.coerce.number().int().min(1).max(100).optional(),
+  heartbeatStaleMs: z.coerce.number().int().min(1_000).max(24 * 3600 * 1000).optional(),
+  runStaleMs: z.coerce.number().int().min(10_000).max(7 * 24 * 3600 * 1000).optional(),
+});
+
 const pipelineDetailParamsSchema = z.object({
   bvid: z.string().trim().min(1),
 });
@@ -51,28 +68,34 @@ export async function buildApiServer({
   dbPath = process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
   webDistDir = path.join(getRepoRoot(), "apps", "web", "dist"),
   logger = false,
+  services = {},
 }: {
   dbPath?: string;
   webDistDir?: string;
   logger?: boolean;
+  services?: {
+    dashboardService?: ReturnType<typeof createDashboardService>;
+    operationsService?: ReturnType<typeof createOperationsService>;
+    schedulerStatusService?: ReturnType<typeof createSchedulerStatusService>;
+  };
 } = {}) {
   const app = Fastify({
     logger,
   });
-  const dashboardService = createDashboardService({
+  const dashboardService = services.dashboardService ?? createDashboardService({
     dbPath,
   });
-  const operationsService = createOperationsService({
+  const operationsService = services.operationsService ?? createOperationsService({
     dbPath,
   });
-  const schedulerStatusService = createSchedulerStatusService({
+  const schedulerStatusService = services.schedulerStatusService ?? createSchedulerStatusService({
     dbPath,
   });
 
   app.addHook("onClose", async () => {
-    dashboardService.close();
-    operationsService.close();
-    schedulerStatusService.close();
+    dashboardService.close?.();
+    operationsService.close?.();
+    schedulerStatusService.close?.();
   });
 
   await app.register(cors, {
@@ -111,6 +134,47 @@ export async function buildApiServer({
         limit: query.limit ?? 50,
         statuses,
       }),
+    };
+  });
+
+  app.get("/api/dashboard/failure-queue", async (request) => {
+    const query = failureQueueQuerySchema.parse(request.query ?? {});
+    const resolutions = query.resolution
+      ? query.resolution.split(",").map((item) => item.trim()).filter(Boolean) as Array<"retryable" | "manual" | "inspect">
+      : null;
+
+    return {
+      ok: true,
+      items: dashboardService.listFailureQueue({
+        limit: query.limit ?? 50,
+        resolutions,
+        sinceHours: query.sinceHours ?? 24 * 7,
+      }),
+    };
+  });
+
+  app.get("/api/dashboard/failure-groups", async (request) => {
+    const query = failureGroupsQuerySchema.parse(request.query ?? {});
+    return {
+      ok: true,
+      items: dashboardService.listFailureGroups({
+        limit: query.limit ?? 12,
+        sinceHours: query.sinceHours ?? 24 * 7,
+      }),
+    };
+  });
+
+  app.get("/api/dashboard/health", async (request) => {
+    const query = dashboardHealthQuerySchema.parse(request.query ?? {});
+    const health = dashboardService.getOperationalHealth({
+      attentionLimit: query.attentionLimit ?? 20,
+      heartbeatStaleMs: query.heartbeatStaleMs ?? 90_000,
+      runStaleMs: query.runStaleMs ?? 15 * 60 * 1000,
+    });
+
+    return {
+      ok: true,
+      ...health,
     };
   });
 
@@ -165,6 +229,28 @@ export async function buildApiServer({
 
     if (!result.ok) {
       reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/retry-failures", async (request, reply) => {
+    const body = actionBodySchema.extend({
+      limit: z.coerce.number().int().min(1).max(50).optional(),
+      sinceHours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+      maxRecentRetries: z.coerce.number().int().min(0).max(20).optional(),
+      retryWindowHours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+    }).parse(request.body ?? {});
+    const result = await operationsService.retryRetryableFailures({
+      confirm: Boolean(body.confirm),
+      limit: body.limit ?? 5,
+      sinceHours: body.sinceHours ?? 24 * 7,
+      maxRecentRetries: body.maxRecentRetries ?? 1,
+      retryWindowHours: body.retryWindowHours ?? 6,
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("Confirmation required") ? 400 : 500);
     }
 
     return result;

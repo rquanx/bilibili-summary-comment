@@ -36,6 +36,10 @@ const schedulerConfigSchema = z.object({
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
   summaryConcurrency: positiveIntegerLikeSchema,
+  retryFailuresLimit: positiveIntegerLikeSchema,
+  retryFailuresSinceHours: positiveIntegerLikeSchema,
+  retryFailuresMaxRecent: z.coerce.number().int().min(0),
+  retryFailuresWindowHours: positiveIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
   dbPath: nonEmptyStringSchema,
@@ -56,6 +60,10 @@ interface AppConfigOptions extends Record<string, unknown> {
   ["summary-users"]?: unknown;
   ["cookie-file"]?: unknown;
   ["summary-since-hours"]?: unknown;
+  ["retry-failures-limit"]?: unknown;
+  ["retry-failures-since-hours"]?: unknown;
+  ["retry-failures-max-recent"]?: unknown;
+  ["retry-failures-window-hours"]?: unknown;
   ["auth-file"]?: unknown;
   ["refresh-days"]?: unknown;
 }
@@ -87,6 +95,10 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
     summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
+    retryFailuresLimit: options["retry-failures-limit"] ?? process.env.RETRY_FAILURES_LIMIT ?? 3,
+    retryFailuresSinceHours: options["retry-failures-since-hours"] ?? process.env.RETRY_FAILURES_SINCE_HOURS ?? 24 * 7,
+    retryFailuresMaxRecent: options["retry-failures-max-recent"] ?? process.env.RETRY_FAILURES_MAX_RECENT ?? 1,
+    retryFailuresWindowHours: options["retry-failures-window-hours"] ?? process.env.RETRY_FAILURES_WINDOW_HOURS ?? 6,
     refreshDays: options["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30,
     cleanupDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",

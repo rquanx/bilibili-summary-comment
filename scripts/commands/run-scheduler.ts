@@ -26,6 +26,7 @@ import { openDatabase, upsertSchedulerStatus } from "../lib/db/index";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { LogLevel } from "../lib/shared/logger";
 import { formatEast8Time } from "../lib/shared/time";
+import { createOperationsService } from "../../packages/core/src/index";
 
 const command = addWorkRootOption(
   addDatabaseOption(
@@ -38,11 +39,15 @@ const command = addWorkRootOption(
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
       .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg)
+      .option("--retry-failures-limit <count>", "Optional. Max retryable failures to retrigger per sweep. Default: 3", parsePositiveIntegerArg)
+      .option("--retry-failures-since-hours <hours>", "Optional. How far back the retry sweep scans failed runs.", parsePositiveIntegerArg)
+      .option("--retry-failures-max-recent <count>", "Optional. Max recent retries allowed per bvid in the retry window.", parsePositiveIntegerArg)
+      .option("--retry-failures-window-hours <hours>", "Optional. Recent retry window for duplicate suppression.", parsePositiveIntegerArg)
       .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
       .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
-      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | publish | gap-check | cleanup | all."),
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | publish | gap-check | retry-failures | cleanup | all."),
   ),
 );
 
@@ -55,6 +60,11 @@ await runCli({
     const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
     const runningTasks = new Set<string>();
     const schedulerStatusDb = openDatabase(config.dbPath);
+    const operationsService = createOperationsService({
+      dbPath: config.dbPath,
+      workRoot: config.workRoot,
+      triggerSource: "scheduler",
+    });
     const schedulerStartedAt = new Date().toISOString();
     let schedulerHeartbeat: NodeJS.Timeout | null = null;
     const schedulerLogger = createWorkFileLogger({
@@ -96,6 +106,7 @@ await runCli({
       lastSummaryAt = null,
       lastPublishAt = null,
       lastGapCheckAt = null,
+      lastRetryFailuresAt = null,
       lastRefreshAt = null,
       lastCleanupAt = null,
       lastError = null,
@@ -105,6 +116,7 @@ await runCli({
       lastSummaryAt?: string | null;
       lastPublishAt?: string | null;
       lastGapCheckAt?: string | null;
+      lastRetryFailuresAt?: string | null;
       lastRefreshAt?: string | null;
       lastCleanupAt?: string | null;
       lastError?: string | null;
@@ -122,6 +134,7 @@ await runCli({
         lastSummaryAt,
         lastPublishAt,
         lastGapCheckAt,
+        lastRetryFailuresAt,
         lastRefreshAt,
         lastCleanupAt,
         lastError,
@@ -144,6 +157,7 @@ await runCli({
         ...(taskName === "summary" ? { lastSummaryAt: now } : {}),
         ...(taskName === "publish" ? { lastPublishAt: now } : {}),
         ...(taskName === "gap-check" ? { lastGapCheckAt: now } : {}),
+        ...(taskName === "retry-failures" ? { lastRetryFailuresAt: now } : {}),
         ...(taskName === "refresh" ? { lastRefreshAt: now } : {}),
         ...(taskName === "cleanup" ? { lastCleanupAt: now } : {}),
         ...(errorMessage ? { lastError: `${taskName}: ${errorMessage}` } : {}),
@@ -392,6 +406,41 @@ await runCli({
       };
     }
 
+    async function runRetryFailuresTask() {
+      log("Scanning retryable failure queue");
+      const result = await operationsService.retryRetryableFailures({
+        confirm: true,
+        limit: config.retryFailuresLimit,
+        sinceHours: config.retryFailuresSinceHours,
+        maxRecentRetries: config.retryFailuresMaxRecent,
+        retryWindowHours: config.retryFailuresWindowHours,
+      });
+      const payload = result.result && typeof result.result === "object"
+        ? result.result as {
+          triggered?: number;
+          skipped?: number;
+          failed?: number;
+          scanned?: number;
+        }
+        : null;
+      log(
+        `Retry failure sweep finished: triggered=${String(payload?.triggered ?? 0)}, skipped=${String(payload?.skipped ?? 0)}, failed=${String(payload?.failed ?? 0)}`,
+        {
+          details: {
+            task: "retry-failures",
+            scanned: payload?.scanned ?? null,
+          },
+        },
+      );
+      return {
+        action: "retry-failures",
+        triggered: payload?.triggered ?? 0,
+        skipped: payload?.skipped ?? 0,
+        failed: payload?.failed ?? 0,
+        scanned: payload?.scanned ?? 0,
+      };
+    }
+
     const runExclusive = (name, task) => async () => {
       if (runningTasks.has(name)) {
         log(`Skip ${name}: previous run still in progress`);
@@ -489,6 +538,7 @@ await runCli({
     });
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
     const gapCheckRunner = runExclusive("gap-check", runGapCheckTask);
+    const retryFailuresRunner = runExclusive("retry-failures", runRetryFailuresTask);
 
     if (args.once) {
       const result = await runOnce(args.once, {
@@ -496,6 +546,7 @@ await runCli({
         summaryRunner,
         publishRunner,
         gapCheckRunner,
+        retryFailuresRunner,
         cleanupRunner,
       });
       if (schedulerHeartbeat) {
@@ -506,6 +557,7 @@ await runCli({
         status: "idle",
         currentTasks: [],
       });
+      operationsService.close();
       schedulerStatusDb.close?.();
       return {
         ok: true,
@@ -520,6 +572,7 @@ await runCli({
       await summaryRunner();
       await publishRunner();
       await gapCheckRunner();
+      await retryFailuresRunner();
       await cleanupRunner();
     }
 
@@ -527,12 +580,13 @@ await runCli({
       cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
       cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
+      cron.schedule("20 * * * *", retryFailuresRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
       cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
     ];
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
+    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, retry-failures=hourly@minute20, refresh=daily@03:15 when due, cleanup=daily@03:45");
 
     attachSignalHandlers(scheduledTasks, log, () => {
       if (schedulerHeartbeat) {
@@ -543,6 +597,7 @@ await runCli({
         status: "stopped",
         currentTasks: [],
       });
+      operationsService.close();
       schedulerStatusDb.close?.();
     });
 
@@ -553,6 +608,7 @@ await runCli({
       summaryUsers: config.summaryUsers,
       summaryConcurrency: config.summaryConcurrency,
       publishTask: "serial",
+      retryFailuresLimit: config.retryFailuresLimit,
       refreshDays: config.refreshDays,
       cleanupDays: config.cleanupDays,
     };
@@ -586,6 +642,8 @@ async function runOnce(target, runners) {
       return [await runners.publishRunner()];
     case "gap-check":
       return [await runners.gapCheckRunner()];
+    case "retry-failures":
+      return [await runners.retryFailuresRunner()];
     case "cleanup":
       return [await runners.cleanupRunner()];
     case "all":
@@ -594,6 +652,7 @@ async function runOnce(target, runners) {
         await runners.summaryRunner(),
         await runners.publishRunner(),
         await runners.gapCheckRunner(),
+        await runners.retryFailuresRunner(),
         await runners.cleanupRunner(),
       ];
     default:

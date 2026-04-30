@@ -6,6 +6,7 @@ import {
   openDatabase,
   updateOperationAudit,
 } from "../../../../scripts/lib/db/index";
+import { createDashboardService } from "./dashboard-service";
 import { createPipelineService } from "./pipeline-service";
 import { createPublishService } from "./publish-service";
 import { createSchedulerControlService } from "./scheduler-control-service";
@@ -13,26 +14,39 @@ import { createSchedulerControlService } from "./scheduler-control-service";
 export function createOperationsService({
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
+  triggerSource = "web",
+  services = {},
 }: {
   dbPath?: string;
   workRoot?: string;
+  triggerSource?: string;
+  services?: {
+    dashboardService?: ReturnType<typeof createDashboardService>;
+    pipelineService?: ReturnType<typeof createPipelineService>;
+    publishService?: ReturnType<typeof createPublishService>;
+    schedulerControlService?: ReturnType<typeof createSchedulerControlService>;
+  };
 } = {}) {
   const db = openDatabase(dbPath);
-  const pipelineService = createPipelineService({
+  const dashboardService = services.dashboardService ?? createDashboardService({
+    dbPath,
+  });
+  const pipelineService = services.pipelineService ?? createPipelineService({
     dbPath,
     workRoot,
   });
-  const publishService = createPublishService({
+  const publishService = services.publishService ?? createPublishService({
     dbPath,
     workRoot,
   });
-  const schedulerControlService = createSchedulerControlService({
+  const schedulerControlService = services.schedulerControlService ?? createSchedulerControlService({
     dbPath,
     workRoot,
   });
 
   return {
     close() {
+      dashboardService.close?.();
       db.close?.();
     },
     listAudits({
@@ -54,6 +68,7 @@ export function createOperationsService({
       return executeAuditedOperation(db, {
         action: "summary-sweep",
         scope: "scheduler",
+        triggerSource,
         request: {
           summaryUsers: normalizeText(summaryUsers),
           authFile: normalizeText(authFile),
@@ -62,7 +77,7 @@ export function createOperationsService({
           return schedulerControlService.runSummarySweep({
             summaryUsers,
             authFile,
-            triggerSource: "web",
+            triggerSource,
           });
         },
       });
@@ -80,6 +95,7 @@ export function createOperationsService({
       return executeAuditedOperation(db, {
         action: "publish-sweep",
         scope: "scheduler",
+        triggerSource,
         request: {
           summaryUsers: normalizeText(summaryUsers),
           authFile: normalizeText(authFile),
@@ -90,7 +106,7 @@ export function createOperationsService({
           return publishService.runPendingSweep({
             summaryUsers,
             authFile,
-            triggerSource: "web",
+            triggerSource,
           });
         },
       });
@@ -104,22 +120,157 @@ export function createOperationsService({
       publish?: boolean;
       forceSummary?: boolean;
     }) {
-      return executeAuditedOperation(db, {
-        action: "pipeline-retry",
-        scope: "pipeline",
+      return executePipelineRetryOperation(db, pipelineService, {
         bvid,
+        publish,
+        forceSummary,
+        triggerSource,
+      });
+    },
+    async retryRetryableFailures({
+      limit = 5,
+      sinceHours = 24 * 7,
+      maxRecentRetries = 1,
+      retryWindowHours = 6,
+      confirm = false,
+    }: {
+      limit?: number;
+      sinceHours?: number;
+      maxRecentRetries?: number;
+      retryWindowHours?: number;
+      confirm?: boolean;
+    } = {}) {
+      ensureConfirmed(confirm, "retryable failure sweep");
+      return executeAuditedOperation(db, {
+        action: "retry-failure-queue",
+        scope: "pipeline",
+        triggerSource,
         request: {
-          bvid,
-          publish: Boolean(publish),
-          forceSummary: Boolean(forceSummary),
+          confirm: true,
+          limit: Math.max(1, Number(limit) || 5),
+          sinceHours: Math.max(1, Number(sinceHours) || 24 * 7),
+          maxRecentRetries: Math.max(0, Number(maxRecentRetries) || 1),
+          retryWindowHours: Math.max(1, Number(retryWindowHours) || 6),
         },
-        run() {
-          return pipelineService.runPipeline({
-            bvid,
-            publish,
-            forceSummary,
-            triggerSource: "web",
+        async run() {
+          const safeLimit = Math.max(1, Number(limit) || 5);
+          const safeSinceHours = Math.max(1, Number(sinceHours) || 24 * 7);
+          const safeMaxRecentRetries = Math.max(0, Number(maxRecentRetries) || 1);
+          const safeRetryWindowHours = Math.max(1, Number(retryWindowHours) || 6);
+          const candidates = dashboardService.listFailureQueue({
+            limit: Math.max(20, safeLimit * 4),
+            sinceHours: safeSinceHours,
+            resolutions: ["retryable"],
           });
+          const activeBvids = new Set(
+            dashboardService.listActivePipelines(200)
+              .map((item) => normalizeText(item.bvid))
+              .filter(Boolean),
+          );
+          const recentRetries = listOperationAudits(db, {
+            limit: 500,
+          }).filter((audit) =>
+            audit.action === "pipeline-retry"
+            && isWithinRecentHours(audit.created_at, safeRetryWindowHours),
+          );
+          const selected = uniqueByBvid(candidates);
+          const items = [];
+          let triggered = 0;
+          let skipped = 0;
+          let failed = 0;
+
+          for (const candidate of selected) {
+            if (triggered >= safeLimit) {
+              break;
+            }
+
+            const bvid = normalizeText(candidate.bvid);
+            if (!bvid) {
+              skipped += 1;
+              items.push({
+                bvid: candidate.bvid,
+                runId: candidate.runId,
+                status: "skipped",
+                reason: "missing-bvid",
+              });
+              continue;
+            }
+
+            if (activeBvids.has(bvid)) {
+              skipped += 1;
+              items.push({
+                bvid,
+                runId: candidate.runId,
+                status: "skipped",
+                reason: "already-running",
+              });
+              continue;
+            }
+
+            const recentRetryCount = recentRetries.filter((audit) => audit.bvid === bvid).length;
+            if (recentRetryCount >= safeMaxRecentRetries) {
+              skipped += 1;
+              items.push({
+                bvid,
+                runId: candidate.runId,
+                status: "skipped",
+                reason: "recently-retried",
+                recentRetryCount,
+              });
+              continue;
+            }
+
+            const result = await executePipelineRetryOperation(db, pipelineService, {
+              bvid,
+              publish: true,
+              forceSummary: candidate.failureCategory === "summary",
+              triggerSource,
+            });
+            const runId = inferRunId(result);
+            recentRetries.push({
+              id: -1,
+              action: "pipeline-retry",
+              scope: "pipeline",
+              trigger_source: triggerSource,
+              bvid,
+              run_id: runId,
+              request_json: null,
+              status: result.ok ? "succeeded" : "failed",
+              result_json: null,
+              error_message: normalizeText(result.errorMessage),
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+
+            if (isResultOk(result)) {
+              triggered += 1;
+              items.push({
+                bvid,
+                runId: runId ?? candidate.runId,
+                status: "triggered",
+                failureCategory: candidate.failureCategory,
+              });
+              continue;
+            }
+
+            failed += 1;
+            items.push({
+              bvid,
+              runId: runId ?? candidate.runId,
+              status: "failed",
+              failureCategory: candidate.failureCategory,
+              errorMessage: extractResultErrorMessage(result),
+            });
+          }
+
+          return {
+            selected: selected.length,
+            scanned: candidates.length,
+            triggered,
+            skipped,
+            failed,
+            items,
+          };
         },
       });
     },
@@ -134,6 +285,7 @@ export function createOperationsService({
         action: "pipeline-publish",
         scope: "pipeline",
         bvid,
+        triggerSource,
         request: {
           bvid,
           confirm: true,
@@ -143,7 +295,7 @@ export function createOperationsService({
           return pipelineService.runPipeline({
             bvid,
             publish: true,
-            triggerSource: "web",
+            triggerSource,
           });
         },
       });
@@ -161,6 +313,7 @@ export function createOperationsService({
         action: "rebuild-publish-thread",
         scope: "publish",
         bvid,
+        triggerSource,
         request: {
           bvid,
           confirm: true,
@@ -186,18 +339,56 @@ export function createOperationsService({
   };
 }
 
+function executePipelineRetryOperation(
+  db: ReturnType<typeof openDatabase>,
+  pipelineService: ReturnType<typeof createPipelineService>,
+  {
+    bvid,
+    publish,
+    forceSummary,
+    triggerSource,
+  }: {
+    bvid: string;
+    publish: boolean;
+    forceSummary: boolean;
+    triggerSource: string;
+  },
+) {
+  return executeAuditedOperation(db, {
+    action: "pipeline-retry",
+    scope: "pipeline",
+    bvid,
+    triggerSource,
+    request: {
+      bvid,
+      publish: Boolean(publish),
+      forceSummary: Boolean(forceSummary),
+    },
+    run() {
+      return pipelineService.runPipeline({
+        bvid,
+        publish,
+        forceSummary,
+        triggerSource,
+      });
+    },
+  });
+}
+
 async function executeAuditedOperation(
   db: ReturnType<typeof openDatabase>,
   {
     action,
     scope,
     bvid = null,
+    triggerSource = "web",
     request = null,
     run,
   }: {
     action: string;
     scope: string;
     bvid?: string | null;
+    triggerSource?: string;
     request?: unknown;
     run: () => Promise<unknown> | unknown;
   },
@@ -205,7 +396,7 @@ async function executeAuditedOperation(
   const audit = insertOperationAudit(db, {
     action,
     scope,
-    triggerSource: "web",
+    triggerSource,
     bvid,
     request,
     status: "started",
@@ -294,6 +485,24 @@ function inferRunId(result: unknown): string | null {
   return normalizeText(candidate.result?.runId);
 }
 
+function isResultOk(result: unknown): boolean {
+  if (!result || typeof result !== "object") {
+    return true;
+  }
+
+  const candidate = result as { ok?: unknown };
+  return candidate.ok !== false;
+}
+
+function extractResultErrorMessage(result: unknown): string | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  const candidate = result as { errorMessage?: unknown; result?: { errorMessage?: unknown } };
+  return normalizeText(candidate.errorMessage) ?? normalizeText(candidate.result?.errorMessage);
+}
+
 function parseJson(value: string | null): unknown {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
@@ -318,4 +527,27 @@ function ensureConfirmed(confirm: boolean, label: string) {
 function normalizeText(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function uniqueByBvid<T extends { bvid: string | null }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const output: T[] = [];
+
+  for (const item of items) {
+    const bvid = normalizeText(item.bvid);
+    if (!bvid || seen.has(bvid)) {
+      continue;
+    }
+
+    seen.add(bvid);
+    output.push(item);
+  }
+
+  return output;
+}
+
+function isWithinRecentHours(value: string, hours: number): boolean {
+  const threshold = Date.now() - Math.max(1, Number(hours) || 1) * 3600 * 1000;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= threshold;
 }
