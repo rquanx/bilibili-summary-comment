@@ -4,6 +4,7 @@ import { runCommand, runVenvModule } from "../shared/runtime-tools";
 import {
   DEFAULT_FASTER_WHISPER_MODEL_NAME,
   prependPathEntries,
+  resolveDirectFasterWhisperComputeType,
   resolveLocalFasterWhisperConfig,
   resolveLocalFasterWhisperExecutableConfig,
 } from "./faster-whisper-config";
@@ -15,6 +16,8 @@ import { delay, formatErrorMessage, formatTranscriptionTarget } from "./utils";
 const TRANSCRIPTION_RETRY_LIMIT = 3;
 const TRANSCRIPTION_RETRY_DELAY_MS = 10_000;
 const EXPECTED_TRANSCRIPTION_LANGUAGE = "zh";
+const WINDOWS_FAIL_FAST_EXIT_CODE = 3221226505;
+const WINDOWS_FAIL_FAST_SIGNED_EXIT_CODE = -1073740791;
 
 interface LocalFasterWhisperConfig {
   exists: boolean;
@@ -125,22 +128,49 @@ export async function transcribeWithRetries({
               "Subtitle",
               `Running direct FasterWhisper binary ${localFasterWhisperExecutable.programPath}`,
             );
-            await runDirectCommandImpl(localFasterWhisperExecutable.programPath, directArgs, {
-              env: buildDirectFasterWhisperEnv(localFasterWhisperExecutable),
-              streamOutput: true,
-              outputStream: progress?.rawOutputStream ?? progress?.outputStream,
-              logger: progress?.logger ?? null,
-              logContext: {
+            try {
+              await runDirectCommandImpl(localFasterWhisperExecutable.programPath, directArgs, {
+                env: buildDirectFasterWhisperEnv(localFasterWhisperExecutable),
+                streamOutput: true,
+                outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+                logger: progress?.logger ?? null,
+                logContext: {
+                  scope: "subtitle",
+                  action: "asr-command",
+                  bvid,
+                  pageNo,
+                  cid,
+                  partTitle,
+                  engine,
+                  attempt,
+                },
+              });
+            } catch (error) {
+              if (!shouldRecoverDirectFasterWhisperCrash(error, subtitlePath)) {
+                throw error;
+              }
+
+              const recoveryMessage = [
+                "Direct FasterWhisper exited with Windows fail-fast after writing subtitle output;",
+                "reusing generated .srt file",
+              ].join(" ");
+              eventLogger?.log({
                 scope: "subtitle",
                 action: "asr-command",
-                bvid,
+                status: "recovered",
                 pageNo,
                 cid,
                 partTitle,
-                engine,
-                attempt,
-              },
-            });
+                message: recoveryMessage,
+                details: {
+                  engine,
+                  attempt,
+                  subtitlePath,
+                  exitCode: readCommandExitCode(error),
+                },
+              });
+              progress?.logPartStage?.(pageNo, "Subtitle", recoveryMessage);
+            }
             finalizeDirectFasterWhisperOutput({
               audioPath,
               subtitlePath,
@@ -449,8 +479,11 @@ export function buildDirectFasterWhisperArgs({
     args.push("--vad_method", configuredVadMethod.replaceAll("-", "_"));
   }
 
-  if (executableConfig.device === "cuda") {
-    args.push("--compute_type", "float16");
+  const resolvedComputeType = resolveDirectFasterWhisperComputeType({
+    device: executableConfig.device,
+  });
+  if (resolvedComputeType) {
+    args.push("--compute_type", resolvedComputeType);
   }
 
   return args;
@@ -529,6 +562,24 @@ function shouldUseDirectFasterWhisper(
   executableConfig: LocalFasterWhisperExecutableConfig | null,
 ): executableConfig is LocalFasterWhisperExecutableConfig {
   return engine === "faster-whisper" && Boolean(executableConfig?.programPath);
+}
+
+function shouldRecoverDirectFasterWhisperCrash(error: unknown, subtitlePath: string) {
+  const exitCode = readCommandExitCode(error);
+  if (exitCode !== WINDOWS_FAIL_FAST_EXIT_CODE && exitCode !== WINDOWS_FAIL_FAST_SIGNED_EXIT_CODE) {
+    return false;
+  }
+
+  try {
+    return fs.statSync(subtitlePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+function readCommandExitCode(error: unknown): number | null {
+  const code = Number((error as { code?: unknown } | null | undefined)?.code);
+  return Number.isFinite(code) ? code : null;
 }
 
 function finalizeDirectFasterWhisperOutput({

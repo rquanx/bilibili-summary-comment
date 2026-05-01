@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { firstNonEmptyString } from "./utils";
 
 export const DEFAULT_FASTER_WHISPER_MODEL_NAME = "large-v3-turbo";
@@ -11,10 +12,13 @@ interface FasterWhisperEnv extends Record<string, string | undefined> {
   VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH?: string;
   VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN?: string;
   VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE?: string;
+  VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_COMPUTE_TYPE?: string;
   LOCALAPPDATA?: string;
   XDG_DATA_HOME?: string;
   HOME?: string;
 }
+
+let cachedNvidiaGpuNames: string[] | null = null;
 
 export function resolveLocalFasterWhisperConfig({
   env = process.env,
@@ -183,8 +187,60 @@ export function inferFasterWhisperDevice(programPath: string | null | undefined,
   return normalizedPath.includes("faster-whisper-xxl") ? "cuda" : "cpu";
 }
 
+export function resolveDirectFasterWhisperComputeType({
+  device,
+  env = process.env,
+  readGpuNamesImpl = readNvidiaGpuNames,
+}: {
+  device: string | null | undefined;
+  env?: FasterWhisperEnv;
+  readGpuNamesImpl?: () => string[];
+}): string | null {
+  const normalizedConfiguredComputeType = String(env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_COMPUTE_TYPE ?? "").trim().toLowerCase();
+  if (normalizedConfiguredComputeType) {
+    return normalizedConfiguredComputeType;
+  }
+
+  if (String(device ?? "").trim().toLowerCase() !== "cuda") {
+    return null;
+  }
+
+  const gpuNames = readGpuNamesImpl();
+  if (gpuNames.some(isNvidiaRtx50SeriesGpuName)) {
+    return "float32";
+  }
+
+  return "float16";
+}
+
 function uniqueNonEmptyPaths(candidates: Array<string | null | undefined>): string[] {
   return [...new Set(candidates.filter((candidate) => typeof candidate === "string" && candidate.trim()))];
+}
+
+function readNvidiaGpuNames(): string[] {
+  if (cachedNvidiaGpuNames) {
+    return cachedNvidiaGpuNames;
+  }
+
+  try {
+    const stdout = execFileSync("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    cachedNvidiaGpuNames = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    cachedNvidiaGpuNames = [];
+  }
+
+  return cachedNvidiaGpuNames;
+}
+
+function isNvidiaRtx50SeriesGpuName(value: string): boolean {
+  return /\brtx\s+50\d{2}\b/i.test(String(value ?? ""));
 }
 
 function isFasterWhisperProgramPathName(targetPath: string): boolean {
