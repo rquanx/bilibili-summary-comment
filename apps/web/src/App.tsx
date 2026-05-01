@@ -501,10 +501,6 @@ function DashboardPage() {
     queryKey: ["dashboard", "active-pipelines"],
     queryFn: async () => fetchJson<{ ok: true; items: DashboardRunItem[] }>("/api/dashboard/active-pipelines?limit=100"),
   });
-  const recentQuery = useQuery({
-    queryKey: ["dashboard", "recent-runs"],
-    queryFn: async () => fetchJson<{ ok: true; items: DashboardRunItem[] }>("/api/dashboard/recent-runs?limit=60"),
-  });
   const failureQueueQuery = useQuery({
     queryKey: ["dashboard", "failure-queue"],
     queryFn: async () => fetchJson<{ ok: true; items: FailureQueueItem[] }>("/api/dashboard/failure-queue?limit=16"),
@@ -522,17 +518,10 @@ function DashboardPage() {
     queryFn: async () => fetchJson<{ ok: true; status: SchedulerStatus }>("/api/scheduler/status"),
     refetchInterval: 5000,
   });
-  const auditsQuery = useQuery({
-    queryKey: ["audits", "all"],
-    queryFn: async () => fetchJson<{ ok: true; items: ActionAudit[] }>("/api/actions/audits?limit=20"),
-    refetchInterval: 5000,
-  });
 
   const summary = summaryQuery.data?.summary;
   const scheduler = schedulerQuery.data?.status;
-  const auditItems = auditsQuery.data?.items ?? [];
   const activeItems = (activeQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
-  const recentItems = (recentQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
   const failureQueueItems = (failureQueueQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
   const failureGroupItems = failureGroupsQuery.data?.items ?? [];
   const healthSnapshot = healthQuery.data?.snapshot;
@@ -722,14 +711,8 @@ function FailuresPage() {
     queryKey: ["dashboard", "failure-groups", "page"],
     queryFn: async () => fetchJson<{ ok: true; items: FailureGroupItem[] }>("/api/dashboard/failure-groups?limit=24"),
   });
-  const auditsQuery = useQuery({
-    queryKey: ["audits", "failures-page"],
-    queryFn: async () => fetchJson<{ ok: true; items: ActionAudit[] }>("/api/actions/audits?limit=30"),
-    refetchInterval: 5000,
-  });
   const failureQueueItems = (failureQueueQuery.data?.items ?? []).filter((item) => matchesRunFilter(item, deferredFilter));
   const failureGroupItems = failureGroupsQuery.data?.items ?? [];
-  const auditItems = auditsQuery.data?.items ?? [];
 
   async function runAction(actionKey: string, targetPath: string, body: Record<string, unknown>) {
     setPendingAction(actionKey);
@@ -812,7 +795,7 @@ function FailuresPage() {
             <span className="text-sm text-[var(--muted)]">{t("common.items", { count: failureQueueItems.length })}</span>
           </div>
           <FailureQueueList
-            items={failureQueueItems}
+            items={failureQueueItems.slice(0, 24)}
             pendingAction={pendingAction}
             onRetry={(item) => {
               if (!item.bvid) {
@@ -823,17 +806,6 @@ function FailuresPage() {
             }}
           />
         </div>
-      </section>
-
-      <section className="glass-panel rounded-[1.6rem]">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.audits")}</p>
-            <h3 className="text-xl font-semibold">{t("failures.title.recoveryActions")}</h3>
-          </div>
-          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: auditItems.length })}</span>
-        </div>
-        <AuditList items={auditItems} emptyText={t("failures.empty.recoveryActions")} />
       </section>
     </div>
   );
@@ -853,10 +825,6 @@ function HealthPage() {
     queryFn: async () => fetchJson<{ ok: true; status: SchedulerStatus }>("/api/scheduler/status"),
     refetchInterval: 5000,
   });
-  const activeQuery = useQuery({
-    queryKey: ["dashboard", "active-pipelines", "health-page"],
-    queryFn: async () => fetchJson<{ ok: true; items: DashboardRunItem[] }>("/api/dashboard/active-pipelines?limit=100"),
-  });
   const recoveryQuery = useQuery({
     queryKey: ["dashboard", "recovery-candidates"],
     queryFn: async () => fetchJson<{ ok: true; items: RecoveryCandidateItem[] }>("/api/dashboard/recovery-candidates?limit=20"),
@@ -866,7 +834,6 @@ function HealthPage() {
   const snapshot = healthQuery.data?.snapshot ?? null;
   const attentionItems = healthQuery.data?.items ?? [];
   const scheduler = schedulerQuery.data?.status ?? null;
-  const activeItems = activeQuery.data?.items ?? [];
   const recoveryItems = recoveryQuery.data?.items ?? [];
 
   async function runAction(actionKey: string, targetPath: string, body: Record<string, unknown>) {
@@ -888,14 +855,18 @@ function HealthPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title={t("health.metric.attention")} value={snapshot?.attentionCount ?? 0} tone={(snapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral"} />
-        <MetricCard title={t("health.metric.critical")} value={snapshot?.criticalCount ?? 0} tone="danger" />
-        <MetricCard title={t("health.metric.warnings")} value={snapshot?.warningCount ?? 0} tone="neutral" />
-        <MetricCard title={t("health.metric.stalled")} value={snapshot?.staleRunningCount ?? 0} tone="accent" />
+      <section className="glass-panel rounded-[1.6rem]">
+        <StatStrip
+          items={[
+            { title: t("health.metric.attention"), value: snapshot?.attentionCount ?? 0, tone: (snapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral" },
+            { title: t("health.metric.critical"), value: snapshot?.criticalCount ?? 0, tone: "danger" },
+            { title: t("health.metric.warnings"), value: snapshot?.warningCount ?? 0, tone: "neutral" },
+            { title: t("health.metric.stalled"), value: snapshot?.staleRunningCount ?? 0, tone: "accent" },
+          ]}
+        />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+      <section className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
         <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.scheduler")}</p>
@@ -909,7 +880,7 @@ function HealthPage() {
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.attention")}</p>
             <h2 className="text-[1.65rem] font-semibold tracking-[-0.03em]">{t("health.title.attentionQueue")}</h2>
           </div>
-          <HealthWatchCard snapshot={snapshot} items={attentionItems} />
+          <HealthWatchCard snapshot={snapshot} items={attentionItems.slice(0, 8)} />
         </div>
       </section>
 
@@ -927,7 +898,7 @@ function HealthPage() {
           </div>
         ) : null}
         <RecoveryCandidateList
-          items={recoveryItems}
+          items={recoveryItems.slice(0, 12)}
           pendingAction={pendingAction}
           onRecover={(item) => {
             if (!item.bvid) {
@@ -960,17 +931,6 @@ function HealthPage() {
           }}
         />
       </section>
-
-      <section className="glass-panel rounded-[1.6rem]">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.running")}</p>
-            <h3 className="text-xl font-semibold">{t("dashboard.title.activePipelines")}</h3>
-          </div>
-          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: activeItems.length })}</span>
-        </div>
-        <RunTable items={activeItems} emptyText={t("dashboard.empty.active")} />
-      </section>
     </div>
   );
 }
@@ -978,6 +938,7 @@ function HealthPage() {
 function SettingsPage() {
   const { locale, t, formatDateTime } = useUiText();
   const queryClient = useQueryClient();
+  const [settingsView, setSettingsView] = useState<"scheduler" | "summary" | "publish" | "auth" | "history">("scheduler");
   const [draft, setDraft] = useState<ManagedSettings | null>(null);
   const [pendingSave, setPendingSave] = useState(false);
   const [pendingRollbackId, setPendingRollbackId] = useState<number | null>(null);
@@ -1223,11 +1184,15 @@ function SettingsPage() {
             {message}
           </div>
         ) : null}
-        <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard title={t("settings.metric.dirtyFields")} value={dirty ? t("common.yes") : t("common.no")} tone={dirty ? "accent" : "neutral"} />
-          <MetricCard title={t("settings.metric.cronTimezone")} value={schedule?.timezone ?? t("common.system")} tone="neutral" />
-          <MetricCard title={t("settings.metric.configAudits")} value={configHistory.length} tone="success" />
-          <MetricCard title={t("settings.metric.restartRequired")} value={schedulerRestartPending ? t("common.yes") : t("common.no")} tone={schedulerRestartPending ? "danger" : "neutral"} />
+        <div className="mt-5">
+          <StatStrip
+            items={[
+              { title: t("settings.metric.dirtyFields"), value: dirty ? t("common.yes") : t("common.no"), tone: dirty ? "accent" : "neutral" },
+              { title: t("settings.metric.cronTimezone"), value: schedule?.timezone ?? t("common.system"), tone: "neutral" },
+              { title: t("settings.metric.configAudits"), value: configHistory.length, tone: "success" },
+              { title: t("settings.metric.restartRequired"), value: schedulerRestartPending ? t("common.yes") : t("common.no"), tone: schedulerRestartPending ? "danger" : "neutral" },
+            ]}
+          />
         </div>
         <div className="mt-5 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
@@ -1255,120 +1220,48 @@ function SettingsPage() {
         </div>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="glass-panel rounded-[1.6rem]">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.scheduler")}</p>
-            <h3 className="text-xl font-semibold">{t("settings.title.sweepSettings")}</h3>
-          </div>
-          <ManagedSettingsGroup
-            definitions={definitions.filter((item) => item.group === "scheduler")}
-            draft={draft}
-            onChange={setDraft}
-          />
-        </div>
-
-        <div className="glass-panel rounded-[1.6rem]">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.cron")}</p>
-            <h3 className="text-xl font-semibold">{t("settings.title.schedulePlan")}</h3>
-          </div>
-          <SchedulerPlanCard schedule={schedule} />
-        </div>
+      <section className="glass-panel rounded-[1.6rem]">
+        <SegmentedControl
+          value={settingsView}
+          onChange={(value) => {
+            setSettingsView(value as typeof settingsView);
+          }}
+          options={[
+            { value: "scheduler", label: t("settings.title.sweepSettings") },
+            { value: "summary", label: t("settings.title.inference") },
+            { value: "publish", label: t("settings.title.cooldown") },
+            { value: "auth", label: t("settings.title.biliLogin") },
+            { value: "history", label: t("settings.title.configHistory") },
+          ]}
+        />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <div className="glass-panel rounded-[1.6rem]">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.auth")}</p>
-            <h3 className="text-xl font-semibold">{t("settings.title.biliLogin")}</h3>
-          </div>
-          <p className="text-sm leading-6 text-[var(--muted)]">
-            {t("settings.auth.description")}
-          </p>
-          <div className="mt-4 grid gap-4">
-            <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
-              {t("settings.auth.authFileOverride")}
-              <input
-                value={loginAuthFile}
-                onChange={(event) => {
-                  setLoginAuthFile(event.target.value);
-                }}
-                className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
-                placeholder={t("settings.auth.placeholder.authFile")}
-              />
-            </label>
-            <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
-              {t("settings.auth.cookieFileOverride")}
-              <input
-                value={loginCookieFile}
-                onChange={(event) => {
-                  setLoginCookieFile(event.target.value);
-                }}
-                className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
-                placeholder={t("settings.auth.placeholder.cookieFile")}
-              />
-            </label>
-            <div className="flex flex-wrap gap-3">
-              <ActionButton
-                label={t("settings.auth.startSession")}
-                busy={pendingLoginStart}
-                onClick={() => {
-                  void startBiliLogin();
-                }}
-              />
-              {loginSession && (loginSession.status === "pending" || loginSession.status === "scanned") ? (
-                <ActionButton
-                  label={t("settings.auth.cancelSession")}
-                  busy={pendingLoginCancel}
-                  onClick={() => {
-                    void cancelBiliLogin();
-                  }}
-                />
-              ) : null}
+      {settingsView === "scheduler" ? (
+        <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+          <div className="glass-panel rounded-[1.6rem]">
+            <div className="mb-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.scheduler")}</p>
+              <h3 className="text-xl font-semibold">{t("settings.title.sweepSettings")}</h3>
             </div>
+            <ManagedSettingsGroup
+              definitions={definitions.filter((item) => item.group === "scheduler")}
+              draft={draft}
+              onChange={setDraft}
+            />
           </div>
-        </div>
 
-        <div className="glass-panel rounded-[1.6rem]">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.session")}</p>
-            <h3 className="text-xl font-semibold">{t("settings.title.currentSession")}</h3>
-          </div>
-          {loginSession ? (
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <StatusPill status={loginSession.status} />
-                <span className="text-sm text-[var(--muted)]">{t("common.updatedAt", { value: formatDateTime(loginSession.updatedAt) })}</span>
-              </div>
-              <KeyValueCard label={t("settings.session.authFile")} value={loginSession.authFile} />
-              <KeyValueCard label={t("settings.session.cookieFile")} value={loginSession.cookieFile || "-"} />
-              <KeyValueCard label={t("settings.session.mid")} value={loginSession.mid ? String(loginSession.mid) : "-"} />
-              {loginSession.loginUrl ? (
-                <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
-                  {t("settings.session.loginUrl")}
-                  <textarea
-                    readOnly
-                    value={loginSession.loginUrl}
-                    rows={4}
-                    className="rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm leading-6 outline-none"
-                  />
-                </label>
-              ) : null}
-              {loginSession.errorMessage ? (
-                <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4 text-sm text-[var(--muted)]">
-                  {loginSession.errorMessage}
-                </div>
-              ) : null}
+          <div className="glass-panel rounded-[1.6rem]">
+            <div className="mb-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.cron")}</p>
+              <h3 className="text-xl font-semibold">{t("settings.title.schedulePlan")}</h3>
             </div>
-          ) : (
-            <EmptyState text={t("settings.session.empty")} />
-          )}
-        </div>
-      </section>
+            <SchedulerPlanCard schedule={schedule} />
+          </div>
+        </section>
+      ) : null}
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <div className="glass-panel rounded-[1.6rem]">
+      {settingsView === "summary" ? (
+        <section className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.summary")}</p>
             <h3 className="text-xl font-semibold">{t("settings.title.inference")}</h3>
@@ -1378,9 +1271,11 @@ function SettingsPage() {
             draft={draft}
             onChange={setDraft}
           />
-        </div>
+        </section>
+      ) : null}
 
-        <div className="glass-panel rounded-[1.6rem]">
+      {settingsView === "publish" ? (
+        <section className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.publish")}</p>
             <h3 className="text-xl font-semibold">{t("settings.title.cooldown")}</h3>
@@ -1390,29 +1285,123 @@ function SettingsPage() {
             draft={draft}
             onChange={setDraft}
           />
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section className="glass-panel rounded-[1.6rem]">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.history")}</p>
-            <h3 className="text-xl font-semibold">{t("settings.title.configHistory")}</h3>
+      {settingsView === "auth" ? (
+        <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+          <div className="glass-panel rounded-[1.6rem]">
+            <div className="mb-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.auth")}</p>
+              <h3 className="text-xl font-semibold">{t("settings.title.biliLogin")}</h3>
+            </div>
+            <p className="text-sm leading-6 text-[var(--muted)]">
+              {t("settings.auth.description")}
+            </p>
+            <div className="mt-4 grid gap-4">
+              <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
+                {t("settings.auth.authFileOverride")}
+                <input
+                  value={loginAuthFile}
+                  onChange={(event) => {
+                    setLoginAuthFile(event.target.value);
+                  }}
+                  className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+                  placeholder={t("settings.auth.placeholder.authFile")}
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
+                {t("settings.auth.cookieFileOverride")}
+                <input
+                  value={loginCookieFile}
+                  onChange={(event) => {
+                    setLoginCookieFile(event.target.value);
+                  }}
+                  className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+                  placeholder={t("settings.auth.placeholder.cookieFile")}
+                />
+              </label>
+              <div className="flex flex-wrap gap-3">
+                <ActionButton
+                  label={t("settings.auth.startSession")}
+                  busy={pendingLoginStart}
+                  onClick={() => {
+                    void startBiliLogin();
+                  }}
+                />
+                {loginSession && (loginSession.status === "pending" || loginSession.status === "scanned") ? (
+                  <ActionButton
+                    label={t("settings.auth.cancelSession")}
+                    busy={pendingLoginCancel}
+                    onClick={() => {
+                      void cancelBiliLogin();
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
           </div>
-          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: configHistory.length })}</span>
-        </div>
-        <ConfigHistoryList
-          items={configHistory}
-          pendingRollbackId={pendingRollbackId}
-          onRollback={(item) => {
-            if (!window.confirm(t("settings.history.confirm.rollback", { id: item.id }))) {
-              return;
-            }
 
-            void rollbackToHistory(item);
-          }}
-        />
-      </section>
+          <div className="glass-panel rounded-[1.6rem]">
+            <div className="mb-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.session")}</p>
+              <h3 className="text-xl font-semibold">{t("settings.title.currentSession")}</h3>
+            </div>
+            {loginSession ? (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <StatusPill status={loginSession.status} />
+                  <span className="text-sm text-[var(--muted)]">{t("common.updatedAt", { value: formatDateTime(loginSession.updatedAt) })}</span>
+                </div>
+                <KeyValueCard label={t("settings.session.authFile")} value={loginSession.authFile} />
+                <KeyValueCard label={t("settings.session.cookieFile")} value={loginSession.cookieFile || "-"} />
+                <KeyValueCard label={t("settings.session.mid")} value={loginSession.mid ? String(loginSession.mid) : "-"} />
+                {loginSession.loginUrl ? (
+                  <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
+                    {t("settings.session.loginUrl")}
+                    <textarea
+                      readOnly
+                      value={loginSession.loginUrl}
+                      rows={4}
+                      className="rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm leading-6 outline-none"
+                    />
+                  </label>
+                ) : null}
+                {loginSession.errorMessage ? (
+                  <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4 text-sm text-[var(--muted)]">
+                    {loginSession.errorMessage}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <EmptyState text={t("settings.session.empty")} />
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {settingsView === "history" ? (
+        <section className="glass-panel rounded-[1.6rem]">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.history")}</p>
+              <h3 className="text-xl font-semibold">{t("settings.title.configHistory")}</h3>
+            </div>
+            <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: configHistory.length })}</span>
+          </div>
+          <ConfigHistoryList
+            items={configHistory}
+            pendingRollbackId={pendingRollbackId}
+            onRollback={(item) => {
+              if (!window.confirm(t("settings.history.confirm.rollback", { id: item.id }))) {
+                return;
+              }
+
+              void rollbackToHistory(item);
+            }}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -1433,9 +1422,9 @@ function ConfigHistoryList({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {items.map((item) => (
-        <div key={item.id} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+    <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+      {items.map((item, index) => (
+        <div key={item.id} className={`px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -1448,7 +1437,7 @@ function ConfigHistoryList({
                 {t(`settings.history.reason.${item.reason || "update"}`)} · {item.triggerSource || t("common.web")} · {formatDateTime(item.createdAt)}
                 {typeof item.restoredFromAuditId === "number" ? ` · ${t("settings.history.restoredFrom", { id: item.restoredFromAuditId })}` : ""}
               </p>
-              <p className="mt-3 text-sm text-[var(--muted)]">
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                 {item.changedKeys.length > 0 ? item.changedKeys.join(", ") : t("settings.history.changedKeys.empty")}
               </p>
             </div>
@@ -1557,6 +1546,7 @@ function PipelineDetailPage() {
   const queryClient = useQueryClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [detailView, setDetailView] = useState<"summary" | "parts" | "runs" | "events" | "audits">("summary");
   const [importSummaryText, setImportSummaryText] = useState("");
   const [importSummarySource, setImportSummarySource] = useState<string | null>(null);
   const [runPage, setRunPage] = useState(0);
@@ -1568,6 +1558,7 @@ function PipelineDetailPage() {
   useEffect(() => {
     setRunPage(0);
     setEventPage(0);
+    setDetailView("summary");
     setImportSummaryText("");
     setImportSummarySource(null);
   }, [bvid]);
@@ -1644,20 +1635,8 @@ function PipelineDetailPage() {
         </div>
 
         <div className="mt-5 flex flex-wrap gap-3">
-          <ActionButton
-            label={t("pipeline.button.syncVideo")}
-            busy={pendingAction === "sync-video"}
-            onClick={() => {
-              void runAction("sync-video", `/api/actions/pipeline/${encodeURIComponent(bvid)}/sync`, {});
-            }}
-          />
-          <ActionButton
-            label={t("pipeline.button.retry")}
-            busy={pendingAction === "retry"}
-            onClick={() => {
-              void runAction("retry", `/api/actions/pipeline/${encodeURIComponent(bvid)}/retry`, {});
-            }}
-          />
+          <ActionButton label={t("pipeline.button.syncVideo")} busy={pendingAction === "sync-video"} onClick={() => void runAction("sync-video", `/api/actions/pipeline/${encodeURIComponent(bvid)}/sync`, {})} />
+          <ActionButton label={t("pipeline.button.retry")} busy={pendingAction === "retry"} onClick={() => void runAction("retry", `/api/actions/pipeline/${encodeURIComponent(bvid)}/retry`, {})} />
           <ActionButton
             label={t("pipeline.button.recoverZombie")}
             busy={pendingAction === "recover-zombie"}
@@ -1665,7 +1644,6 @@ function PipelineDetailPage() {
               if (!window.confirm(t("pipeline.confirm.recoverZombie"))) {
                 return;
               }
-
               void runAction("recover-zombie", `/api/actions/pipeline/${encodeURIComponent(bvid)}/recover-zombie`, {
                 confirm: true,
                 retry: true,
@@ -1682,10 +1660,7 @@ function PipelineDetailPage() {
                 if (!window.confirm(t("pipeline.confirm.cancelRun"))) {
                   return;
                 }
-
-                void runAction("cancel", `/api/actions/pipeline/${encodeURIComponent(bvid)}/cancel`, {
-                  reason: "manual-cancel",
-                });
+                void runAction("cancel", `/api/actions/pipeline/${encodeURIComponent(bvid)}/cancel`, { reason: "manual-cancel" });
               }}
             />
           ) : null}
@@ -1696,10 +1671,7 @@ function PipelineDetailPage() {
               if (!window.confirm(t("pipeline.confirm.publishNow"))) {
                 return;
               }
-
-              void runAction("publish", `/api/actions/pipeline/${encodeURIComponent(bvid)}/publish`, {
-                confirm: true,
-              });
+              void runAction("publish", `/api/actions/pipeline/${encodeURIComponent(bvid)}/publish`, { confirm: true });
             }}
           />
           <ActionButton
@@ -1709,10 +1681,7 @@ function PipelineDetailPage() {
               if (!window.confirm(t("pipeline.confirm.markRebuild"))) {
                 return;
               }
-
-              void runAction("rebuild", `/api/actions/pipeline/${encodeURIComponent(bvid)}/rebuild-publish-thread`, {
-                confirm: true,
-              });
+              void runAction("rebuild", `/api/actions/pipeline/${encodeURIComponent(bvid)}/rebuild-publish-thread`, { confirm: true });
             }}
           />
         </div>
@@ -1724,88 +1693,96 @@ function PipelineDetailPage() {
         ) : null}
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
-        <div className="glass-panel rounded-[1.6rem]">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.manual")}</p>
-            <h3 className="text-xl font-semibold">{t("pipeline.title.importSummary")}</h3>
-          </div>
-          <p className="text-sm leading-6 text-[var(--muted)]">
-            {t("pipeline.importSummary.description")}
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <label className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]">
-              {t("pipeline.importSummary.loadFile")}
-              <input
-                type="file"
-                accept=".md,.txt,text/markdown,text/plain"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  if (!file) {
+      <section className="glass-panel rounded-[1.6rem]">
+        <SegmentedControl
+          value={detailView}
+          onChange={(value) => {
+            setDetailView(value as typeof detailView);
+          }}
+          options={[
+            { value: "summary", label: t("pipeline.title.importSummary") },
+            { value: "parts", label: t("pipeline.title.pageStatus") },
+            { value: "runs", label: t("pipeline.title.runHistory") },
+            { value: "events", label: t("pipeline.title.timeline") },
+            { value: "audits", label: t("dashboard.title.manualActions") },
+          ]}
+        />
+      </section>
+
+      {detailView === "summary" ? (
+        <section className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
+          <div className="glass-panel rounded-[1.6rem]">
+            <div className="mb-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.manual")}</p>
+              <h3 className="text-xl font-semibold">{t("pipeline.title.importSummary")}</h3>
+            </div>
+            <p className="text-sm leading-6 text-[var(--muted)]">{t("pipeline.importSummary.description")}</p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <label className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]">
+                {t("pipeline.importSummary.loadFile")}
+                <input
+                  type="file"
+                  accept=".md,.txt,text/markdown,text/plain"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    if (!file) {
+                      return;
+                    }
+
+                    void file.text().then((content) => {
+                      setImportSummaryText(content);
+                      setImportSummarySource(file.name);
+                    });
+                  }}
+                />
+              </label>
+              <ActionButton
+                label={t("pipeline.importSummary.button")}
+                busy={pendingAction === "import-summary"}
+                onClick={() => {
+                  if (!importSummaryText.trim()) {
+                    setActionMessage(t("pipeline.importSummary.failed"));
                     return;
                   }
 
-                  void file.text().then((content) => {
-                    setImportSummaryText(content);
-                    setImportSummarySource(file.name);
+                  void runAction("import-summary", `/api/actions/pipeline/${encodeURIComponent(bvid)}/import-summary`, {
+                    summaryText: importSummaryText,
                   });
                 }}
               />
-            </label>
-            <ActionButton
-              label={t("pipeline.importSummary.button")}
-              busy={pendingAction === "import-summary"}
-              onClick={() => {
-                if (!importSummaryText.trim()) {
-                  setActionMessage(t("pipeline.importSummary.failed"));
-                  return;
+            </div>
+            {importSummarySource ? <p className="mt-3 text-sm text-[var(--muted)]">{t("pipeline.importSummary.loadedFile", { name: importSummarySource })}</p> : null}
+            <textarea
+              value={importSummaryText}
+              onChange={(event) => {
+                setImportSummaryText(event.target.value);
+                if (importSummarySource) {
+                  setImportSummarySource(t("pipeline.importSummary.editedInBrowser"));
                 }
-
-                void runAction("import-summary", `/api/actions/pipeline/${encodeURIComponent(bvid)}/import-summary`, {
-                  summaryText: importSummaryText,
-                });
               }}
+              rows={12}
+              className="mt-4 w-full rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm leading-6 outline-none transition focus:border-[var(--accent)]"
+              placeholder={"<1P>\n00:00 ...\n\n<2P>\n00:00 ..."}
             />
           </div>
-          {importSummarySource ? (
-            <p className="mt-3 text-sm text-[var(--muted)]">{t("pipeline.importSummary.loadedFile", { name: importSummarySource })}</p>
-          ) : null}
-          <textarea
-            value={importSummaryText}
-            onChange={(event) => {
-              setImportSummaryText(event.target.value);
-              if (importSummarySource) {
-                setImportSummarySource(t("pipeline.importSummary.editedInBrowser"));
-              }
-            }}
-            rows={12}
-            className="mt-4 w-full rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm leading-6 outline-none transition focus:border-[var(--accent)]"
-            placeholder={"<1P>\n00:00 ...\n\n<2P>\n00:00 ..."}
-          />
-        </div>
 
-        <div className="glass-panel rounded-[1.6rem]">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.repair")}</p>
-            <h3 className="text-xl font-semibold">{t("pipeline.title.repairNotes")}</h3>
-          </div>
-          <div className="flex flex-col gap-3 text-sm leading-6 text-[var(--muted)]">
-            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-              {t("pipeline.repair.syncVideo")}
+          <div className="glass-panel rounded-[1.6rem]">
+            <div className="mb-4">
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.repair")}</p>
+              <h3 className="text-xl font-semibold">{t("pipeline.title.repairNotes")}</h3>
             </div>
-            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-              {t("pipeline.repair.importSummary")}
-            </div>
-            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-              {t("pipeline.repair.validation")}
+            <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64 text-sm leading-6 text-[var(--muted)]">
+              <div className="px-4 py-3">{t("pipeline.repair.syncVideo")}</div>
+              <div className="border-t border-[var(--line)] px-4 py-3">{t("pipeline.repair.importSummary")}</div>
+              <div className="border-t border-[var(--line)] px-4 py-3">{t("pipeline.repair.validation")}</div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <div className="glass-panel rounded-[1.6rem]">
+      {detailView === "parts" ? (
+        <section className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.parts")}</p>
@@ -1837,9 +1814,11 @@ function PipelineDetailPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
+      ) : null}
 
-        <div className="glass-panel rounded-[1.6rem]">
+      {detailView === "runs" ? (
+        <section className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.runs")}</p>
@@ -1850,9 +1829,9 @@ function PipelineDetailPage() {
           {runItems.length === 0 ? (
             <EmptyState text={t("pipeline.empty.runs")} />
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="divide-y divide-[var(--line)]">
               {runItems.map((run) => (
-                <div key={run.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/70 px-4 py-4">
+                <div key={run.runId} className="py-3 first:pt-0 last:pb-0">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-semibold">{run.currentStage || run.currentScope || t("pipeline.stage.pipeline")}</p>
@@ -1860,7 +1839,7 @@ function PipelineDetailPage() {
                     </div>
                     <StatusPill status={run.runStatus} />
                   </div>
-                  <p className="mt-3 text-sm text-[var(--muted)]">{run.lastErrorMessage || run.lastMessage || "-"}</p>
+                  <p className="mt-2 text-sm text-[var(--muted)]">{run.lastErrorMessage || run.lastMessage || "-"}</p>
                 </div>
               ))}
             </div>
@@ -1878,11 +1857,11 @@ function PipelineDetailPage() {
               }
             }}
           />
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="glass-panel rounded-[1.6rem]">
+      {detailView === "events" ? (
+        <section className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.timeline")}</p>
@@ -1895,7 +1874,7 @@ function PipelineDetailPage() {
           ) : (
             <div className="timeline flex flex-col gap-4">
               {eventItems.map((event) => (
-                <div key={event.id} className="timeline-item rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+                <div key={event.id} className="timeline-item border-b border-[var(--line)] px-0 py-3 last:border-b-0">
                   <div className="flex flex-wrap items-center gap-3">
                     <StatusPill status={event.status} />
                     <span className="text-sm font-semibold">{event.scope}/{event.action}</span>
@@ -1920,9 +1899,11 @@ function PipelineDetailPage() {
               }
             }}
           />
-        </div>
+        </section>
+      ) : null}
 
-        <div className="glass-panel rounded-[1.6rem]">
+      {detailView === "audits" ? (
+        <section className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.audits")}</p>
@@ -1931,8 +1912,8 @@ function PipelineDetailPage() {
             <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: auditItems.length })}</span>
           </div>
           <AuditList items={auditItems} emptyText={t("pipeline.empty.audits")} />
-        </div>
-      </section>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -1971,30 +1952,37 @@ function HealthWatchCard({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <KeyValueCard label={t("healthWatch.label.critical")} value={String(snapshot.criticalCount)} />
-      <KeyValueCard label={t("healthWatch.label.warnings")} value={String(snapshot.warningCount)} />
-      <KeyValueCard label={t("healthWatch.label.stalled")} value={String(snapshot.staleRunningCount)} />
-      <KeyValueCard label={t("healthWatch.label.heartbeatAge")} value={formatDuration(snapshot.schedulerHeartbeatAgeMs)} />
+    <div className="flex flex-col gap-4">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <KeyValueCard label={t("healthWatch.label.critical")} value={String(snapshot.criticalCount)} />
+        <KeyValueCard label={t("healthWatch.label.warnings")} value={String(snapshot.warningCount)} />
+        <KeyValueCard label={t("healthWatch.label.stalled")} value={String(snapshot.staleRunningCount)} />
+        <KeyValueCard label={t("healthWatch.label.heartbeatAge")} value={formatDuration(snapshot.schedulerHeartbeatAgeMs)} />
+      </div>
       {items.length === 0 ? (
         <EmptyState text={t("healthWatch.empty.items")} />
       ) : (
-        items.map((item) => (
-          <div key={`${item.kind}:${item.runId || item.updatedAt || item.title}`} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate font-semibold">{item.title}</p>
-                <p className="mt-1 text-sm text-[var(--muted)]">
-                  {item.currentStage || item.status || item.kind}
-                  {item.bvid ? ` · ${item.bvid}` : ""}
-                </p>
+        <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+          {items.map((item, index) => (
+            <div
+              key={`${item.kind}:${item.runId || item.updatedAt || item.title}`}
+              className={`px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold">{item.title}</p>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    {item.currentStage || item.status || item.kind}
+                    {item.bvid ? ` · ${item.bvid}` : ""}
+                  </p>
+                </div>
+                <SeverityPill severity={item.severity} />
               </div>
-              <SeverityPill severity={item.severity} />
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{item.message}</p>
+              <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.updatedAt)}</p>
             </div>
-            <p className="mt-3 text-sm text-[var(--muted)]">{item.message}</p>
-            <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.updatedAt)}</p>
-          </div>
-        ))
+          ))}
+        </div>
       )}
     </div>
   );
@@ -2014,11 +2002,11 @@ function AuditList({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {items.map((item) => (
-        <div key={item.id} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
+    <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+      {items.map((item, index) => (
+        <div key={item.id} className={`px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
               <p className="font-semibold">{item.action}</p>
               <p className="mt-1 text-sm text-[var(--muted)]">
                 {item.bvid || item.scope} · {t("audit.label.audit", { id: item.id })}
@@ -2026,7 +2014,7 @@ function AuditList({
             </div>
             <StatusPill status={item.status} />
           </div>
-          <p className="mt-3 text-sm text-[var(--muted)]">
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
             {item.errorMessage || describeAuditResult(item.result, t, formatDateTime) || t("common.noResultDetails")}
           </p>
           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.createdAt)}</p>
@@ -2044,10 +2032,10 @@ function FailureGroupList({ items }: { items: FailureGroupItem[] }) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {items.map((item) => (
-        <div key={item.key} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-          <div className="flex items-center justify-between gap-3">
+    <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+      {items.map((item, index) => (
+        <div key={item.key} className={`px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}>
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate font-semibold">{item.failedStep || item.failureCategory}</p>
               <p className="mt-1 text-sm text-[var(--muted)]">{item.failureCategory} · {t("common.runs", { count: item.count })}</p>
@@ -2059,7 +2047,7 @@ function FailureGroupList({ items }: { items: FailureGroupItem[] }) {
               </span>
             </div>
           </div>
-          <p className="mt-3 text-sm text-[var(--muted)]">{item.latestMessage || item.resolutionReason}</p>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{item.latestMessage || item.resolutionReason}</p>
           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.latestUpdatedAt)}</p>
         </div>
       ))}
@@ -2085,9 +2073,9 @@ function RecoveryCandidateList({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {items.map((item) => (
-        <div key={item.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+    <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+      {items.map((item, index) => (
+        <div key={item.runId} className={`px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -2098,7 +2086,7 @@ function RecoveryCandidateList({
               <p className="mt-1 text-sm text-[var(--muted)]">
                 {t("audit.text.stale", { bvid: item.bvid || "-", duration: formatDuration(item.staleForMs), stage: item.currentStage || "-" })}
               </p>
-              <p className="mt-3 text-sm text-[var(--muted)]">{item.recoveryReason}</p>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{item.recoveryReason}</p>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               {item.recommendedAction === "cancel" ? (
@@ -2148,9 +2136,9 @@ function FailureQueueList({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {items.map((item) => (
-        <div key={item.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+    <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+      {items.map((item, index) => (
+        <div key={item.runId} className={`px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -2165,7 +2153,7 @@ function FailureQueueList({
                   updated: formatDateTime(item.updatedAt),
                 })}
               </p>
-              <p className="mt-3 text-sm text-[var(--muted)]">{item.lastErrorMessage || item.lastMessage || item.resolutionReason}</p>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{item.lastErrorMessage || item.lastMessage || item.resolutionReason}</p>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               {item.bvid ? (
@@ -2196,26 +2184,64 @@ function FailureQueueList({
   );
 }
 
-function MetricCard({
-  title,
-  value,
-  tone,
+function StatStrip({
+  items,
 }: {
-  title: string;
-  value: string | number;
-  tone: "accent" | "success" | "danger" | "neutral";
+  items: Array<{
+    title: string;
+    value: string | number;
+    tone: "accent" | "success" | "danger" | "neutral";
+  }>;
 }) {
-  const toneClass = {
-    accent: "from-[rgba(191,79,36,0.2)] to-white/60",
-    success: "from-[rgba(24,122,89,0.18)] to-white/60",
-    danger: "from-[rgba(184,45,45,0.16)] to-white/60",
-    neutral: "from-[rgba(23,33,43,0.08)] to-white/60",
-  }[tone];
+  const toneClassMap = {
+    accent: "text-[var(--accent)]",
+    success: "text-[var(--success)]",
+    danger: "text-[var(--danger)]",
+    neutral: "text-[var(--ink)]",
+  } as const;
 
   return (
-    <div className={`glass-panel rounded-[1.4rem] bg-gradient-to-br ${toneClass} p-5`}>
-      <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">{title}</p>
-      <p className="mt-4 text-3xl font-semibold tracking-tight">{value}</p>
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => (
+        <div key={item.title} className="rounded-[1.15rem] border border-[var(--line)] bg-white/66 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">{item.title}</p>
+          <p className={`mt-2 text-lg font-semibold tracking-[-0.03em] ${toneClassMap[item.tone]}`}>{item.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SegmentedControl({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{
+    value: string;
+    label: string;
+  }>;
+}) {
+  return (
+    <div className="inline-flex flex-wrap rounded-full border border-[var(--line)] bg-white/72 p-1">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => {
+            onChange(option.value);
+          }}
+          className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+            value === option.value
+              ? "bg-[var(--ink)] text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)]"
+              : "text-[var(--muted)] hover:text-[var(--ink)]"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -2299,18 +2325,16 @@ function SchedulerPlanCard({ schedule }: { schedule: SchedulerPlan | null }) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {schedule.tasks.map((task) => (
-        <div key={task.key} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="font-semibold">{task.label}</p>
-              <p className="mt-1 text-sm text-[var(--muted)]">{task.description}</p>
-            </div>
-            <span className="rounded-full border border-[var(--line)] bg-white/90 px-3 py-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">
-              {task.cron}
-            </span>
+    <div className="overflow-hidden rounded-[1.15rem] border border-[var(--line)] bg-white/64">
+      {schedule.tasks.map((task, index) => (
+        <div key={task.key} className={`flex flex-wrap items-start justify-between gap-3 px-4 py-3 ${index > 0 ? "border-t border-[var(--line)]" : ""}`}>
+          <div className="min-w-0">
+            <p className="font-semibold">{task.label}</p>
+            <p className="mt-1 text-sm text-[var(--muted)]">{task.description}</p>
           </div>
+          <span className="rounded-full border border-[var(--line)] bg-white/90 px-3 py-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">
+            {task.cron}
+          </span>
         </div>
       ))}
     </div>
@@ -2327,9 +2351,9 @@ function KeyValueCard({
   valueNode?: ReactNode;
 }) {
   return (
-    <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">{label}</p>
-      <div className="mt-3 text-sm font-medium">{valueNode ?? value ?? "-"}</div>
+    <div className="rounded-[1rem] border border-[var(--line)] bg-white/58 px-3.5 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">{label}</p>
+      <div className="mt-2 text-sm font-medium leading-6">{valueNode ?? value ?? "-"}</div>
     </div>
   );
 }
