@@ -8,6 +8,7 @@ import {
   createConfigService,
   createDashboardService,
   createOperationsService,
+  createPipelineQueryService,
   createSchedulerStatusService,
 } from "../../../packages/core/src/index";
 import { getRepoRoot } from "../../../scripts/lib/shared/runtime-tools";
@@ -19,6 +20,13 @@ const activePipelinesQuerySchema = z.object({
 const recentRunsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
   status: z.string().trim().optional(),
+});
+
+const runsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  status: z.string().trim().optional(),
+  bvid: z.string().trim().optional(),
 });
 
 const failureQueueQuerySchema = z.object({
@@ -51,6 +59,11 @@ const pipelineDetailParamsSchema = z.object({
 const pipelineDetailQuerySchema = z.object({
   runLimit: z.coerce.number().int().min(1).max(100).optional(),
   eventLimit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+const pipelineTimelineQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
 });
 
 const eventStreamQuerySchema = z.object({
@@ -86,6 +99,13 @@ const settingsBodySchema = z.object({
     retryFailuresSinceHours: z.coerce.number().int().min(1).optional(),
     retryFailuresMaxRecent: z.coerce.number().int().min(0).optional(),
     retryFailuresWindowHours: z.coerce.number().int().min(1).optional(),
+    zombieRecoveryEnabled: z.boolean().optional(),
+    zombieRecoveryStaleMs: z.coerce.number().int().min(60_000).optional(),
+    zombieRecoveryLimit: z.coerce.number().int().min(1).optional(),
+    zombieRecoveryMaxRecent: z.coerce.number().int().min(0).optional(),
+    zombieRecoveryWindowHours: z.coerce.number().int().min(1).optional(),
+    zombieRecoveryRetry: z.boolean().optional(),
+    zombieRecoveryStates: z.string().trim().min(1).optional(),
     refreshDays: z.coerce.number().int().min(1).optional(),
     cleanupDays: z.coerce.number().int().min(1).optional(),
     gapCheckSinceHours: z.coerce.number().int().min(1).optional(),
@@ -94,6 +114,7 @@ const settingsBodySchema = z.object({
     publishCron: z.string().trim().min(1).optional(),
     gapCheckCron: z.string().trim().min(1).optional(),
     retryFailuresCron: z.string().trim().min(1).optional(),
+    zombieRecoveryCron: z.string().trim().min(1).optional(),
     refreshCron: z.string().trim().min(1).optional(),
     cleanupCron: z.string().trim().min(1).optional(),
   }).optional(),
@@ -109,6 +130,12 @@ const settingsBodySchema = z.object({
     appendCooldownMaxMs: z.coerce.number().int().min(1).optional(),
     rebuildCooldownMinMs: z.coerce.number().int().min(1).optional(),
     rebuildCooldownMaxMs: z.coerce.number().int().min(1).optional(),
+    maxConcurrent: z.coerce.number().int().min(1).optional(),
+    healthcheckSinceHours: z.coerce.number().int().min(1).optional(),
+    includeRecentPublishedHealthcheck: z.boolean().optional(),
+    stopOnFirstFailure: z.boolean().optional(),
+    rebuildPriority: z.enum(["append-first", "rebuild-first"]).optional(),
+    cooldownOnlyWhenCommentsCreated: z.boolean().optional(),
   }).optional(),
 });
 
@@ -133,6 +160,7 @@ export async function buildApiServer({
     configService?: ReturnType<typeof createConfigService>;
     dashboardService?: ReturnType<typeof createDashboardService>;
     operationsService?: ReturnType<typeof createOperationsService>;
+    pipelineQueryService?: ReturnType<typeof createPipelineQueryService>;
     schedulerStatusService?: ReturnType<typeof createSchedulerStatusService>;
   };
 } = {}) {
@@ -148,6 +176,9 @@ export async function buildApiServer({
   const operationsService = services.operationsService ?? createOperationsService({
     dbPath,
   });
+  const pipelineQueryService = services.pipelineQueryService ?? createPipelineQueryService({
+    dbPath,
+  });
   const schedulerStatusService = services.schedulerStatusService ?? createSchedulerStatusService({
     dbPath,
   });
@@ -156,6 +187,7 @@ export async function buildApiServer({
     configService.close?.();
     dashboardService.close?.();
     operationsService.close?.();
+    pipelineQueryService.close?.();
     schedulerStatusService.close?.();
   });
 
@@ -195,6 +227,34 @@ export async function buildApiServer({
         limit: query.limit ?? 50,
         statuses,
       }),
+    };
+  });
+
+  app.get("/api/dashboard/runs", async (request) => {
+    const query = runsQuerySchema.parse(request.query ?? {});
+    const statuses = query.status
+      ? query.status.split(",").map((item) => item.trim()).filter(Boolean)
+      : null;
+    const limit = query.limit ?? 25;
+    const offset = query.offset ?? 0;
+    const items = pipelineQueryService.listRuns({
+      limit,
+      offset,
+      statuses,
+      bvid: query.bvid ?? null,
+    });
+    const total = pipelineQueryService.countRuns({
+      statuses,
+      bvid: query.bvid ?? null,
+    });
+
+    return {
+      ok: true,
+      items,
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
     };
   });
 
@@ -439,6 +499,30 @@ export async function buildApiServer({
     return result;
   });
 
+  app.post("/api/actions/recover-zombies", async (request, reply) => {
+    const body = actionBodySchema.extend({
+      limit: z.coerce.number().int().min(1).max(50).optional(),
+      maxRecentRecoveries: z.coerce.number().int().min(0).max(20).optional(),
+      recoveryWindowHours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+      states: z.array(z.enum(["missing-lock", "orphaned-lock", "stalled"])).optional(),
+    }).parse(request.body ?? {});
+    const result = await operationsService.recoverZombiePipelines({
+      confirm: Boolean(body.confirm),
+      staleMs: body.staleMs ?? 15 * 60 * 1000,
+      limit: body.limit ?? 3,
+      maxRecentRecoveries: body.maxRecentRecoveries ?? 1,
+      recoveryWindowHours: body.recoveryWindowHours ?? 6,
+      retry: body.retry !== false,
+      states: body.states ?? ["missing-lock", "orphaned-lock"],
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("Confirmation required") ? 400 : 500);
+    }
+
+    return result;
+  });
+
   app.post("/api/actions/pipeline/:bvid/publish", async (request, reply) => {
     const params = pipelineDetailParamsSchema.parse(request.params ?? {});
     const body = actionBodySchema.parse(request.body ?? {});
@@ -494,6 +578,78 @@ export async function buildApiServer({
     return {
       ok: true,
       detail,
+    };
+  });
+
+  app.get("/api/dashboard/pipeline/:bvid/runs", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const query = pipelineTimelineQuerySchema.parse(request.query ?? {});
+    const limit = query.limit ?? 10;
+    const offset = query.offset ?? 0;
+    const detail = pipelineQueryService.getPipelineDetail(params.bvid, {
+      runLimit: 1,
+      eventLimit: 1,
+    });
+    const items = pipelineQueryService.listRuns({
+      bvid: params.bvid,
+      limit,
+      offset,
+    });
+    const total = pipelineQueryService.countRuns({
+      bvid: params.bvid,
+    });
+
+    if (!detail.video && total === 0) {
+      reply.code(404);
+      return {
+        ok: false,
+        message: `Pipeline not found: ${params.bvid}`,
+      };
+    }
+
+    return {
+      ok: true,
+      items,
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
+    };
+  });
+
+  app.get("/api/dashboard/pipeline/:bvid/events", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const query = pipelineTimelineQuerySchema.parse(request.query ?? {});
+    const limit = query.limit ?? 25;
+    const offset = query.offset ?? 0;
+    const detail = pipelineQueryService.getPipelineDetail(params.bvid, {
+      runLimit: 1,
+      eventLimit: 1,
+    });
+    const items = pipelineQueryService.listEvents({
+      bvid: params.bvid,
+      limit,
+      offset,
+    });
+    const total = pipelineQueryService.countEvents({
+      bvid: params.bvid,
+    });
+
+    if (!detail.video && total === 0) {
+      reply.code(404);
+      return {
+        ok: false,
+        message: `Pipeline not found: ${params.bvid}`,
+      };
+    }
+
+    return {
+      ok: true,
+      items,
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
     };
   });
 

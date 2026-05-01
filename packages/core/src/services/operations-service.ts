@@ -423,75 +423,151 @@ export function createOperationsService({
       retry?: boolean;
       reason?: string;
     }) {
-      return executeAuditedOperation(db, {
-        action: "pipeline-recover-zombie",
-        scope: "pipeline",
+      ensureConfirmed(confirm, "zombie pipeline recovery");
+      return executeZombieRecoveryOperation(db, dashboardService, pipelineService, {
         bvid,
+        staleMs,
+        triggerSource,
+        retry,
+        reason,
+      });
+    },
+    async recoverZombiePipelines({
+      staleMs = 15 * 60 * 1000,
+      limit = 3,
+      maxRecentRecoveries = 1,
+      recoveryWindowHours = 6,
+      retry = true,
+      states = ["missing-lock", "orphaned-lock"],
+      confirm = false,
+    }: {
+      staleMs?: number;
+      limit?: number;
+      maxRecentRecoveries?: number;
+      recoveryWindowHours?: number;
+      retry?: boolean;
+      states?: Array<"missing-lock" | "orphaned-lock" | "stalled">;
+      confirm?: boolean;
+    } = {}) {
+      ensureConfirmed(confirm, "zombie recovery sweep");
+      return executeAuditedOperation(db, {
+        action: "recover-zombie-queue",
+        scope: "pipeline",
         triggerSource,
         request: {
-          bvid,
-          staleMs: Math.max(60_000, Number(staleMs) || 15 * 60 * 1000),
           confirm: true,
+          staleMs: Math.max(60_000, Number(staleMs) || 15 * 60 * 1000),
+          limit: Math.max(1, Number(limit) || 3),
+          maxRecentRecoveries: Math.max(0, Number(maxRecentRecoveries) || 1),
+          recoveryWindowHours: Math.max(1, Number(recoveryWindowHours) || 6),
           retry: Boolean(retry),
-          reason: normalizeText(reason) ?? "manual-zombie-recovery",
+          states,
         },
         async run() {
-          ensureConfirmed(confirm, "zombie pipeline recovery");
-          const activeRun = getActivePipelineRunStateByBvid(db, bvid);
-          if (!activeRun) {
-            throw new Error(`No running pipeline for ${bvid}`);
-          }
-
-          const candidate = findRecoveryCandidate(dashboardService, bvid, staleMs, ["missing-lock", "orphaned-lock"]);
-          if (!candidate) {
-            throw new Error(`No recoverable zombie pipeline found for ${bvid}`);
-          }
-
-          const syntheticEvent = insertPipelineEvent(db, {
-            runId: activeRun.run_id,
-            triggerSource,
-            videoId: activeRun.video_id,
-            bvid: activeRun.bvid,
-            videoTitle: activeRun.video_title,
-            pageNo: activeRun.current_page_no,
-            cid: activeRun.current_cid,
-            partTitle: activeRun.current_part_title,
-            scope: "pipeline",
-            action: "run",
-            status: "failed",
-            message: `Recovered zombie pipeline: ${candidate.recoveryReason}`,
-            details: {
-              failedScope: "pipeline",
-              failedAction: "stale-recovery",
-              failedStep: "pipeline/stale-recovery",
-              recoveryReason: normalizeText(reason) ?? "manual-zombie-recovery",
-              previousRunId: activeRun.run_id,
-              staleForMs: candidate.staleForMs,
-              lockExists: candidate.lockExists,
-              lockStale: candidate.lockStale,
-            },
+          const safeStaleMs = Math.max(60_000, Number(staleMs) || 15 * 60 * 1000);
+          const safeLimit = Math.max(1, Number(limit) || 3);
+          const safeMaxRecentRecoveries = Math.max(0, Number(maxRecentRecoveries) || 1);
+          const safeRecoveryWindowHours = Math.max(1, Number(recoveryWindowHours) || 6);
+          const safeStates: Array<"missing-lock" | "orphaned-lock" | "stalled"> = Array.isArray(states) && states.length > 0
+            ? states
+            : ["missing-lock", "orphaned-lock"];
+          const candidates = dashboardService.listRecoveryCandidates({
+            limit: Math.max(20, safeLimit * 4),
+            staleMs: safeStaleMs,
+            states: safeStates,
           });
+          const recentRecoveries = listOperationAudits(db, {
+            limit: 500,
+          }).filter((audit) =>
+            audit.action === "pipeline-recover-zombie"
+            && isWithinRecentHours(audit.created_at, safeRecoveryWindowHours),
+          );
+          const selected = uniqueByBvid(candidates);
+          const items = [];
+          let recovered = 0;
+          let skipped = 0;
+          let failed = 0;
 
-          let retryResult: unknown = null;
-          if (retry) {
-            retryResult = await pipelineService.runPipeline({
+          for (const candidate of selected) {
+            if (recovered >= safeLimit) {
+              break;
+            }
+
+            const bvid = normalizeText(candidate.bvid);
+            if (!bvid) {
+              skipped += 1;
+              items.push({
+                bvid: candidate.bvid,
+                runId: candidate.runId,
+                status: "skipped",
+                reason: "missing-bvid",
+              });
+              continue;
+            }
+
+            const recentRecoveryCount = recentRecoveries.filter((audit) => audit.bvid === bvid).length;
+            if (recentRecoveryCount >= safeMaxRecentRecoveries) {
+              skipped += 1;
+              items.push({
+                bvid,
+                runId: candidate.runId,
+                status: "skipped",
+                reason: "recently-recovered",
+                recentRecoveryCount,
+              });
+              continue;
+            }
+
+            const result = await executeZombieRecoveryOperation(db, dashboardService, pipelineService, {
               bvid,
-              publish: true,
-              forceSummary: false,
+              staleMs: safeStaleMs,
               triggerSource,
+              retry,
+              reason: "scheduler-zombie-recovery",
+            });
+            recentRecoveries.push({
+              id: -1,
+              action: "pipeline-recover-zombie",
+              scope: "pipeline",
+              trigger_source: triggerSource,
+              bvid,
+              run_id: inferRunId(result) ?? candidate.runId,
+              request_json: null,
+              status: result.ok ? "succeeded" : "failed",
+              result_json: null,
+              error_message: normalizeText(result.errorMessage),
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+
+            if (isResultOk(result)) {
+              recovered += 1;
+              items.push({
+                bvid,
+                runId: inferRunId(result) ?? candidate.runId,
+                status: "recovered",
+                recoveryState: candidate.recoveryState,
+              });
+              continue;
+            }
+
+            failed += 1;
+            items.push({
+              bvid,
+              runId: candidate.runId,
+              status: "failed",
+              recoveryState: candidate.recoveryState,
+              errorMessage: extractResultErrorMessage(result),
             });
           }
 
           return {
-            ok: true,
-            bvid,
-            previousRunId: activeRun.run_id,
-            recoveryState: candidate.recoveryState,
-            staleForMs: candidate.staleForMs,
-            syntheticEventId: syntheticEvent?.id ?? null,
-            retryQueued: retry ? isResultOk(retryResult) : false,
-            retryRunId: retry ? inferRunId(retryResult) : null,
-            retryResult,
+            selected: selected.length,
+            scanned: candidates.length,
+            recovered,
+            skipped,
+            failed,
+            items,
           };
         },
       });
@@ -534,6 +610,96 @@ function executePipelineRetryOperation(
         forceSummary,
         triggerSource,
       });
+    },
+  });
+}
+
+function executeZombieRecoveryOperation(
+  db: ReturnType<typeof openDatabase>,
+  dashboardService: ReturnType<typeof createDashboardService>,
+  pipelineService: ReturnType<typeof createPipelineService>,
+  {
+    bvid,
+    staleMs,
+    triggerSource,
+    retry,
+    reason,
+  }: {
+    bvid: string;
+    staleMs: number;
+    triggerSource: string;
+    retry: boolean;
+    reason?: string;
+  },
+) {
+  return executeAuditedOperation(db, {
+    action: "pipeline-recover-zombie",
+    scope: "pipeline",
+    bvid,
+    triggerSource,
+    request: {
+      bvid,
+      staleMs: Math.max(60_000, Number(staleMs) || 15 * 60 * 1000),
+      retry: Boolean(retry),
+      reason: normalizeText(reason) ?? "manual-zombie-recovery",
+    },
+    async run() {
+      const activeRun = getActivePipelineRunStateByBvid(db, bvid);
+      if (!activeRun) {
+        throw new Error(`No running pipeline for ${bvid}`);
+      }
+
+      const candidate = findRecoveryCandidate(dashboardService, bvid, staleMs, ["missing-lock", "orphaned-lock"]);
+      if (!candidate) {
+        throw new Error(`No recoverable zombie pipeline found for ${bvid}`);
+      }
+
+      const syntheticEvent = insertPipelineEvent(db, {
+        runId: activeRun.run_id,
+        triggerSource,
+        videoId: activeRun.video_id,
+        bvid: activeRun.bvid,
+        videoTitle: activeRun.video_title,
+        pageNo: activeRun.current_page_no,
+        cid: activeRun.current_cid,
+        partTitle: activeRun.current_part_title,
+        scope: "pipeline",
+        action: "run",
+        status: "failed",
+        message: `Recovered zombie pipeline: ${candidate.recoveryReason}`,
+        details: {
+          failedScope: "pipeline",
+          failedAction: "stale-recovery",
+          failedStep: "pipeline/stale-recovery",
+          recoveryReason: normalizeText(reason) ?? "manual-zombie-recovery",
+          previousRunId: activeRun.run_id,
+          staleForMs: candidate.staleForMs,
+          lockExists: candidate.lockExists,
+          lockStale: candidate.lockStale,
+        },
+      });
+
+      let retryResult: unknown = null;
+      if (retry) {
+        retryResult = await pipelineService.runPipeline({
+          bvid,
+          publish: true,
+          forceSummary: false,
+          triggerSource,
+        });
+      }
+
+      return {
+        ok: true,
+        bvid,
+        previousRunId: activeRun.run_id,
+        recoveryState: candidate.recoveryState,
+        staleForMs: candidate.staleForMs,
+        syntheticEventId: syntheticEvent?.id ?? null,
+        retryQueued: retry ? isResultOk(retryResult) : false,
+        retryRunId: retry ? inferRunId(retryResult) : null,
+        retryResult,
+      };
     },
   });
 }

@@ -15,11 +15,12 @@ import {
   createConfigService,
   createDashboardService,
   createOperationsService,
+  createPipelineQueryService,
   createSchedulerControlService,
   createSchedulerStatusService,
 } from "../packages/core/src/index";
 import { buildApiServer } from "../apps/api/src/app";
-import { resolveSchedulerConfig } from "../scripts/lib/config/app-config";
+import { resolvePublishRuntimeConfig, resolveSchedulerConfig } from "../scripts/lib/config/app-config";
 import { resolveSummaryConfig } from "../scripts/lib/summary/config";
 
 test("dashboard service derives active and failed run snapshots from pipeline events", () => {
@@ -251,6 +252,147 @@ test("dashboard service derives active and failed run snapshots from pipeline ev
   }
 });
 
+test("pipeline query service exposes paginated run and event history", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-query-service-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1QUERY",
+      aid: 10002,
+      title: "Query Video",
+      ownerMid: 124,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 9002,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+
+    insertPipelineEvent(db, {
+      runId: "run-query-1",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "First run started",
+    });
+    insertPipelineEvent(db, {
+      runId: "run-query-1",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "succeeded",
+      message: "First run succeeded",
+    });
+
+    insertPipelineEvent(db, {
+      runId: "run-query-2",
+      triggerSource: "cli",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "Second run started",
+    });
+    insertPipelineEvent(db, {
+      runId: "run-query-2",
+      triggerSource: "cli",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "summary",
+      action: "llm",
+      status: "started",
+      message: "Summary started",
+    });
+    insertPipelineEvent(db, {
+      runId: "run-query-2",
+      triggerSource: "cli",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "failed",
+      message: "Second run failed",
+      details: {
+        failedScope: "summary",
+        failedAction: "llm",
+        failedStep: "summary",
+      },
+    });
+
+    const service = createPipelineQueryService({
+      dbPath,
+    });
+
+    try {
+      const totalRuns = service.countRuns({
+        bvid: "BV1QUERY",
+      });
+      const failedRuns = service.listRuns({
+        bvid: "BV1QUERY",
+        statuses: ["failed"],
+      });
+      const firstPageRuns = service.listRuns({
+        bvid: "BV1QUERY",
+        limit: 1,
+        offset: 0,
+      });
+      const secondPageRuns = service.listRuns({
+        bvid: "BV1QUERY",
+        limit: 1,
+        offset: 1,
+      });
+      const totalEvents = service.countEvents({
+        bvid: "BV1QUERY",
+      });
+      const eventPage = service.listEvents({
+        bvid: "BV1QUERY",
+        limit: 2,
+        offset: 1,
+      });
+      const detail = service.getPipelineDetail("BV1QUERY", {
+        runLimit: 2,
+        eventLimit: 3,
+      });
+
+      assert.equal(totalRuns, 2);
+      assert.equal(failedRuns.length, 1);
+      assert.equal(failedRuns[0].runId, "run-query-2");
+      assert.equal(firstPageRuns.length, 1);
+      assert.equal(secondPageRuns.length, 1);
+      assert.notEqual(firstPageRuns[0].runId, secondPageRuns[0].runId);
+
+      assert.equal(totalEvents, 5);
+      assert.equal(eventPage.length, 2);
+      assert.equal(detail.latestRun?.runId, "run-query-2");
+      assert.equal(detail.recentRuns.length, 2);
+      assert.equal(detail.recentEvents.length, 3);
+      assert.equal(detail.parts.length, 1);
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("api exposes dashboard and pipeline detail endpoints from the shared service layer", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-dashboard-api-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -352,6 +494,15 @@ test("api exposes dashboard and pipeline detail endpoints from the shared servic
       assert.equal(recentResponse.statusCode, 200);
       assert.equal(recentResponse.json().items.length, 1);
 
+      const runsResponse = await app.inject({
+        method: "GET",
+        url: "/api/dashboard/runs?limit=1&offset=1",
+      });
+      assert.equal(runsResponse.statusCode, 200);
+      assert.equal(runsResponse.json().items.length, 1);
+      assert.equal(runsResponse.json().total, 2);
+      assert.equal(runsResponse.json().offset, 1);
+
       const failureQueueResponse = await app.inject({
         method: "GET",
         url: "/api/dashboard/failure-queue?limit=10",
@@ -385,6 +536,22 @@ test("api exposes dashboard and pipeline detail endpoints from the shared servic
       assert.equal(detailResponse.statusCode, 200);
       assert.equal(detailResponse.json().detail.video.bvid, "BV1API");
       assert.equal(detailResponse.json().detail.parts.length, 1);
+
+      const pipelineRunsResponse = await app.inject({
+        method: "GET",
+        url: "/api/dashboard/pipeline/BV1API/runs?limit=1&offset=0",
+      });
+      assert.equal(pipelineRunsResponse.statusCode, 200);
+      assert.equal(pipelineRunsResponse.json().items.length, 1);
+      assert.equal(pipelineRunsResponse.json().total, 2);
+
+      const pipelineEventsResponse = await app.inject({
+        method: "GET",
+        url: "/api/dashboard/pipeline/BV1API/events?limit=2&offset=1",
+      });
+      assert.equal(pipelineEventsResponse.statusCode, 200);
+      assert.equal(pipelineEventsResponse.json().items.length, 2);
+      assert.equal(pipelineEventsResponse.json().total, 4);
     } finally {
       await app.close();
     }
@@ -1072,6 +1239,14 @@ test("config service persists managed settings and runtime resolvers consume dat
           timezone: "Asia/Shanghai",
           summaryCron: "15 * * * *",
           publishCron: "25 * * * *",
+          zombieRecoveryEnabled: true,
+          zombieRecoveryStaleMs: 1_800_000,
+          zombieRecoveryLimit: 4,
+          zombieRecoveryMaxRecent: 2,
+          zombieRecoveryWindowHours: 12,
+          zombieRecoveryRetry: false,
+          zombieRecoveryStates: "missing-lock,orphaned-lock",
+          zombieRecoveryCron: "35 * * * *",
         },
         summary: {
           model: "gpt-config-test",
@@ -1087,6 +1262,12 @@ test("config service persists managed settings and runtime resolvers consume dat
           appendCooldownMaxMs: 2000,
           rebuildCooldownMinMs: 3000,
           rebuildCooldownMaxMs: 4500,
+          maxConcurrent: 3,
+          healthcheckSinceHours: 48,
+          includeRecentPublishedHealthcheck: false,
+          stopOnFirstFailure: false,
+          rebuildPriority: "rebuild-first",
+          cooldownOnlyWhenCommentsCreated: false,
         },
       },
     });
@@ -1101,11 +1282,14 @@ test("config service persists managed settings and runtime resolvers consume dat
     assert.equal(config.settings.scheduler.summaryUsers, "123,456");
     assert.equal(config.settings.scheduler.summaryConcurrency, 7);
     assert.equal(config.settings.scheduler.summaryCron, "15 * * * *");
+    assert.equal(config.settings.scheduler.zombieRecoveryLimit, 4);
     assert.equal(config.settings.summary.model, "gpt-config-test");
     assert.equal(config.settings.publish.appendCooldownMinMs, 1000);
+    assert.equal(config.settings.publish.maxConcurrent, 3);
     assert.equal(config.schedule.timezone, "Asia/Shanghai");
-    assert.equal(config.schedule.tasks.length >= 6, true);
+    assert.equal(config.schedule.tasks.length >= 7, true);
     assert.equal(config.schedule.tasks.find((item) => item.key === "summary")?.cron, "15 * * * *");
+    assert.equal(config.schedule.tasks.find((item) => item.key === "zombie-recovery")?.cron, "35 * * * *");
 
     const schedulerConfig = resolveSchedulerConfig({
       db: dbPath,
@@ -1116,6 +1300,19 @@ test("config service persists managed settings and runtime resolvers consume dat
     assert.equal(schedulerConfig.timezone, "Asia/Shanghai");
     assert.equal(schedulerConfig.summaryCron, "15 * * * *");
     assert.equal(schedulerConfig.publishCron, "25 * * * *");
+    assert.equal(schedulerConfig.zombieRecoveryCron, "35 * * * *");
+    assert.equal(schedulerConfig.zombieRecoveryLimit, 4);
+    assert.equal(schedulerConfig.zombieRecoveryRetry, false);
+
+    const publishRuntimeConfig = resolvePublishRuntimeConfig({
+      db: dbPath,
+    });
+    assert.equal(publishRuntimeConfig.maxConcurrent, 3);
+    assert.equal(publishRuntimeConfig.healthcheckSinceHours, 48);
+    assert.equal(publishRuntimeConfig.includeRecentPublishedHealthcheck, false);
+    assert.equal(publishRuntimeConfig.stopOnFirstFailure, false);
+    assert.equal(publishRuntimeConfig.rebuildPriority, "rebuild-first");
+    assert.equal(publishRuntimeConfig.cooldownOnlyWhenCommentsCreated, false);
 
     const summaryConfig = resolveSummaryConfig({
       db: dbPath,
@@ -1306,6 +1503,7 @@ test("scheduler status service parses heartbeat health and current tasks", () =>
       currentTasks: ["summary", "publish"],
       startedAt: new Date(Date.now() - 10_000).toISOString(),
       lastRetryFailuresAt: new Date(Date.now() - 5_000).toISOString(),
+      lastZombieRecoveryAt: new Date(Date.now() - 4_000).toISOString(),
       lastHeartbeatAt: new Date().toISOString(),
     });
 
@@ -1321,6 +1519,7 @@ test("scheduler status service parses heartbeat health and current tasks", () =>
       assert.deepEqual(status.currentTasks, ["summary", "publish"]);
       assert.equal(status.summaryConcurrency, 3);
       assert.equal(typeof status.taskTimes["retry-failures"], "string");
+      assert.equal(typeof status.taskTimes["zombie-recovery"], "string");
     } finally {
       service.close();
     }
@@ -1547,6 +1746,30 @@ test("api exposes retry-failure batch action route", async () => {
           return [];
         },
       } as any,
+      pipelineQueryService: {
+        close() {},
+        listRuns() {
+          return [];
+        },
+        countRuns() {
+          return 0;
+        },
+        listEvents() {
+          return [];
+        },
+        countEvents() {
+          return 0;
+        },
+        getPipelineDetail() {
+          return {
+            video: null,
+            parts: [],
+            latestRun: null,
+            recentRuns: [],
+            recentEvents: [],
+          };
+        },
+      } as any,
       configService: {
         close() {},
         getConfig() {
@@ -1766,6 +1989,30 @@ test("api exposes cancel action and maps running-pipeline conflicts to 409", asy
         },
         listEventsAfterId() {
           return [];
+        },
+      } as any,
+      pipelineQueryService: {
+        close() {},
+        listRuns() {
+          return [];
+        },
+        countRuns() {
+          return 0;
+        },
+        listEvents() {
+          return [];
+        },
+        countEvents() {
+          return 0;
+        },
+        getPipelineDetail() {
+          return {
+            video: null,
+            parts: [],
+            latestRun: null,
+            recentRuns: [],
+            recentEvents: [],
+          };
         },
       } as any,
       configService: {

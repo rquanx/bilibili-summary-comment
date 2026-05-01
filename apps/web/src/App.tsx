@@ -33,6 +33,31 @@ type DashboardRunItem = {
   pendingSummaryPath: string | null;
 };
 
+type PipelineEventItem = {
+  id: number;
+  runId: string | null;
+  bvid: string | null;
+  videoTitle: string | null;
+  pageNo: number | null;
+  cid: number | null;
+  partTitle: string | null;
+  scope: string;
+  action: string;
+  status: string;
+  message: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+type PagedResponse<T> = {
+  ok: true;
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+};
+
 type FailureQueueItem = DashboardRunItem & {
   failureCategory: string;
   resolution: "retryable" | "manual" | "inspect";
@@ -113,17 +138,7 @@ type PipelineDetailResponse = {
   parts: VideoPart[];
   latestRun: DashboardRunItem | null;
   recentRuns: DashboardRunItem[];
-  recentEvents: Array<{
-    id: number;
-    runId: string | null;
-    pageNo: number | null;
-    partTitle: string | null;
-    scope: string;
-    action: string;
-    status: string;
-    message: string | null;
-    createdAt: string;
-  }>;
+  recentEvents: PipelineEventItem[];
 };
 
 type SchedulerStatus = {
@@ -183,6 +198,13 @@ type ManagedSettings = {
     retryFailuresSinceHours: number;
     retryFailuresMaxRecent: number;
     retryFailuresWindowHours: number;
+    zombieRecoveryEnabled: boolean;
+    zombieRecoveryStaleMs: number;
+    zombieRecoveryLimit: number;
+    zombieRecoveryMaxRecent: number;
+    zombieRecoveryWindowHours: number;
+    zombieRecoveryRetry: boolean;
+    zombieRecoveryStates: string;
     refreshDays: number;
     cleanupDays: number;
     gapCheckSinceHours: number;
@@ -191,6 +213,7 @@ type ManagedSettings = {
     publishCron: string;
     gapCheckCron: string;
     retryFailuresCron: string;
+    zombieRecoveryCron: string;
     refreshCron: string;
     cleanupCron: string;
   };
@@ -206,6 +229,12 @@ type ManagedSettings = {
     appendCooldownMaxMs: number;
     rebuildCooldownMinMs: number;
     rebuildCooldownMaxMs: number;
+    maxConcurrent: number;
+    healthcheckSinceHours: number;
+    includeRecentPublishedHealthcheck: boolean;
+    stopOnFirstFailure: boolean;
+    rebuildPriority: "append-first" | "rebuild-first";
+    cooldownOnlyWhenCommentsCreated: boolean;
   };
 };
 
@@ -265,6 +294,7 @@ export default function App() {
         <RefreshBridge />
         <Routes>
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/runs" element={<RunsPage />} />
           <Route path="/failures" element={<FailuresPage />} />
           <Route path="/health" element={<HealthPage />} />
           <Route path="/settings" element={<SettingsPage />} />
@@ -286,6 +316,7 @@ function Header() {
           </div>
           <nav className="flex flex-wrap gap-2">
             <HeaderLink to="/" label="Dashboard" />
+            <HeaderLink to="/runs" label="Runs" />
             <HeaderLink to="/failures" label="Failures" />
             <HeaderLink to="/health" label="Health" />
             <HeaderLink to="/settings" label="Settings" />
@@ -1194,17 +1225,119 @@ function ConfigHistoryList({
   );
 }
 
+function RunsPage() {
+  const pageSize = 25;
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [page, setPage] = useState(0);
+  const offset = page * pageSize;
+  const statusQuery = statusFilter === "all" ? "" : `&status=${encodeURIComponent(statusFilter)}`;
+
+  const runsQuery = useQuery({
+    queryKey: ["dashboard", "runs", statusFilter, offset],
+    queryFn: async () => fetchJson<PagedResponse<DashboardRunItem>>(`/api/dashboard/runs?limit=${pageSize}&offset=${offset}${statusQuery}`),
+  });
+
+  const items = runsQuery.data?.items ?? [];
+  const total = runsQuery.data?.total ?? 0;
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = offset + items.length;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">history</p>
+            <h2 className="mt-1 text-3xl font-semibold tracking-tight">Run History</h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--muted)]">
+              Browse the complete pipeline run log instead of only the recent dashboard slice.
+            </p>
+          </div>
+          <label className="flex min-w-[220px] flex-col gap-2 text-sm text-[var(--muted)]">
+            Status filter
+            <select
+              value={statusFilter}
+              onChange={(event) => {
+                setStatusFilter(event.target.value);
+                setPage(0);
+              }}
+              className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+            >
+              <option value="all">All statuses</option>
+              <option value="running">Running</option>
+              <option value="succeeded">Succeeded</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">runs</p>
+            <h3 className="text-xl font-semibold">All Pipeline Runs</h3>
+          </div>
+          <span className="text-sm text-[var(--muted)]">
+            {pageStart}-{pageEnd} / {total}
+          </span>
+        </div>
+
+        <RunTable items={items} emptyText="No runs match the current filter." />
+
+        <PaginationControls
+          className="mt-4"
+          canGoPrevious={page > 0}
+          canGoNext={Boolean(runsQuery.data?.hasMore)}
+          onPrevious={() => {
+            setPage((current) => Math.max(0, current - 1));
+          }}
+          onNext={() => {
+            if (runsQuery.data?.hasMore) {
+              setPage((current) => current + 1);
+            }
+          }}
+        />
+      </section>
+    </div>
+  );
+}
+
 function PipelineDetailPage() {
   const params = useParams();
   const queryClient = useQueryClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [runPage, setRunPage] = useState(0);
+  const [eventPage, setEventPage] = useState(0);
   const bvid = String(params.bvid ?? "").trim();
+  const runPageSize = 10;
+  const eventPageSize = 25;
+
+  useEffect(() => {
+    setRunPage(0);
+    setEventPage(0);
+  }, [bvid]);
 
   const detailQuery = useQuery({
     queryKey: ["pipeline", bvid],
     enabled: Boolean(bvid),
     queryFn: async () => fetchJson<{ ok: true; detail: PipelineDetailResponse }>(`/api/dashboard/pipeline/${encodeURIComponent(bvid)}`),
+  });
+  const runsQuery = useQuery({
+    queryKey: ["pipeline", bvid, "runs", runPage],
+    enabled: Boolean(bvid),
+    queryFn: async () => fetchJson<PagedResponse<DashboardRunItem>>(
+      `/api/dashboard/pipeline/${encodeURIComponent(bvid)}/runs?limit=${runPageSize}&offset=${runPage * runPageSize}`,
+    ),
+  });
+  const eventsQuery = useQuery({
+    queryKey: ["pipeline", bvid, "events", eventPage],
+    enabled: Boolean(bvid),
+    queryFn: async () => fetchJson<PagedResponse<PipelineEventItem>>(
+      `/api/dashboard/pipeline/${encodeURIComponent(bvid)}/events?limit=${eventPageSize}&offset=${eventPage * eventPageSize}`,
+    ),
   });
   const auditsQuery = useQuery({
     queryKey: ["audits", bvid],
@@ -1216,6 +1349,8 @@ function PipelineDetailPage() {
   const detail = detailQuery.data?.detail;
   const video = detail?.video;
   const auditItems = auditsQuery.data?.items ?? [];
+  const runItems = runsQuery.data?.items ?? detail?.recentRuns ?? [];
+  const eventItems = eventsQuery.data?.items ?? detail?.recentEvents ?? [];
 
   async function runAction(actionKey: string, targetPath: string, body: Record<string, unknown>) {
     setPendingAction(actionKey);
@@ -1369,45 +1504,83 @@ function PipelineDetailPage() {
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">runs</p>
-              <h3 className="text-xl font-semibold">Recent Runs</h3>
+              <h3 className="text-xl font-semibold">Run History</h3>
             </div>
+            <span className="text-sm text-[var(--muted)]">{runsQuery.data?.total ?? detail?.recentRuns.length ?? 0} runs</span>
           </div>
-          <div className="flex flex-col gap-3">
-            {(detail?.recentRuns ?? []).map((run) => (
-              <div key={run.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/70 px-4 py-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">{run.currentStage || run.currentScope || "pipeline"}</p>
-                    <p className="mt-1 text-sm text-[var(--muted)]">{formatDateTime(run.updatedAt)}</p>
+          {runItems.length === 0 ? (
+            <EmptyState text="No runs recorded for this pipeline yet." />
+          ) : (
+            <div className="flex flex-col gap-3">
+              {runItems.map((run) => (
+                <div key={run.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/70 px-4 py-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{run.currentStage || run.currentScope || "pipeline"}</p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">{formatDateTime(run.updatedAt)}</p>
+                    </div>
+                    {renderStatus(run.runStatus)}
                   </div>
-                  {renderStatus(run.runStatus)}
+                  <p className="mt-3 text-sm text-[var(--muted)]">{run.lastErrorMessage || run.lastMessage || "-"}</p>
                 </div>
-                <p className="mt-3 text-sm text-[var(--muted)]">{run.lastErrorMessage || run.lastMessage || "-"}</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
+          <PaginationControls
+            className="mt-4"
+            canGoPrevious={runPage > 0}
+            canGoNext={Boolean(runsQuery.data?.hasMore)}
+            onPrevious={() => {
+              setRunPage((current) => Math.max(0, current - 1));
+            }}
+            onNext={() => {
+              if (runsQuery.data?.hasMore) {
+                setRunPage((current) => current + 1);
+              }
+            }}
+          />
         </div>
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">timeline</p>
-            <h3 className="text-xl font-semibold">Recent Events</h3>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">timeline</p>
+              <h3 className="text-xl font-semibold">Event Timeline</h3>
+            </div>
+            <span className="text-sm text-[var(--muted)]">{eventsQuery.data?.total ?? detail?.recentEvents.length ?? 0} events</span>
           </div>
-          <div className="timeline flex flex-col gap-4">
-            {(detail?.recentEvents ?? []).map((event) => (
-              <div key={event.id} className="timeline-item rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
-                <div className="flex flex-wrap items-center gap-3">
-                  {renderStatus(event.status)}
-                  <span className="text-sm font-semibold">{event.scope}/{event.action}</span>
-                  <span className="text-sm text-[var(--muted)]">{formatDateTime(event.createdAt)}</span>
-                  {event.pageNo ? <span className="text-sm text-[var(--muted)]">P{event.pageNo}</span> : null}
+          {eventItems.length === 0 ? (
+            <EmptyState text="No events recorded for this pipeline yet." />
+          ) : (
+            <div className="timeline flex flex-col gap-4">
+              {eventItems.map((event) => (
+                <div key={event.id} className="timeline-item rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {renderStatus(event.status)}
+                    <span className="text-sm font-semibold">{event.scope}/{event.action}</span>
+                    <span className="text-sm text-[var(--muted)]">{formatDateTime(event.createdAt)}</span>
+                    {event.pageNo ? <span className="text-sm text-[var(--muted)]">P{event.pageNo}</span> : null}
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{event.message || event.partTitle || "-"}</p>
                 </div>
-                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{event.message || event.partTitle || "-"}</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
+          <PaginationControls
+            className="mt-4"
+            canGoPrevious={eventPage > 0}
+            canGoNext={Boolean(eventsQuery.data?.hasMore)}
+            onPrevious={() => {
+              setEventPage((current) => Math.max(0, current - 1));
+            }}
+            onNext={() => {
+              if (eventsQuery.data?.hasMore) {
+                setEventPage((current) => current + 1);
+              }
+            }}
+          />
         </div>
 
         <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
@@ -1823,6 +1996,41 @@ function ActionButton({
   );
 }
 
+function PaginationControls({
+  className = "",
+  canGoPrevious,
+  canGoNext,
+  onPrevious,
+  onNext,
+}: {
+  className?: string;
+  canGoPrevious: boolean;
+  canGoNext: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className={`flex items-center justify-end gap-3 ${className}`.trim()}>
+      <button
+        type="button"
+        disabled={!canGoPrevious}
+        onClick={onPrevious}
+        className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Previous
+      </button>
+      <button
+        type="button"
+        disabled={!canGoNext}
+        onClick={onNext}
+        className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
 function RunTable({
   items,
   emptyText,
@@ -1991,6 +2199,20 @@ function getManagedSettingValue(settings: ManagedSettings, key: string): string 
       return settings.scheduler.retryFailuresMaxRecent;
     case "scheduler.retryFailuresWindowHours":
       return settings.scheduler.retryFailuresWindowHours;
+    case "scheduler.zombieRecoveryEnabled":
+      return String(settings.scheduler.zombieRecoveryEnabled);
+    case "scheduler.zombieRecoveryStaleMs":
+      return settings.scheduler.zombieRecoveryStaleMs;
+    case "scheduler.zombieRecoveryLimit":
+      return settings.scheduler.zombieRecoveryLimit;
+    case "scheduler.zombieRecoveryMaxRecent":
+      return settings.scheduler.zombieRecoveryMaxRecent;
+    case "scheduler.zombieRecoveryWindowHours":
+      return settings.scheduler.zombieRecoveryWindowHours;
+    case "scheduler.zombieRecoveryRetry":
+      return String(settings.scheduler.zombieRecoveryRetry);
+    case "scheduler.zombieRecoveryStates":
+      return settings.scheduler.zombieRecoveryStates;
     case "scheduler.refreshDays":
       return settings.scheduler.refreshDays;
     case "scheduler.cleanupDays":
@@ -2007,6 +2229,8 @@ function getManagedSettingValue(settings: ManagedSettings, key: string): string 
       return settings.scheduler.gapCheckCron;
     case "scheduler.retryFailuresCron":
       return settings.scheduler.retryFailuresCron;
+    case "scheduler.zombieRecoveryCron":
+      return settings.scheduler.zombieRecoveryCron;
     case "scheduler.refreshCron":
       return settings.scheduler.refreshCron;
     case "scheduler.cleanupCron":
@@ -2029,6 +2253,18 @@ function getManagedSettingValue(settings: ManagedSettings, key: string): string 
       return settings.publish.rebuildCooldownMinMs;
     case "publish.rebuildCooldownMaxMs":
       return settings.publish.rebuildCooldownMaxMs;
+    case "publish.maxConcurrent":
+      return settings.publish.maxConcurrent;
+    case "publish.healthcheckSinceHours":
+      return settings.publish.healthcheckSinceHours;
+    case "publish.includeRecentPublishedHealthcheck":
+      return String(settings.publish.includeRecentPublishedHealthcheck);
+    case "publish.stopOnFirstFailure":
+      return String(settings.publish.stopOnFirstFailure);
+    case "publish.rebuildPriority":
+      return settings.publish.rebuildPriority;
+    case "publish.cooldownOnlyWhenCommentsCreated":
+      return String(settings.publish.cooldownOnlyWhenCommentsCreated);
     default:
       return null;
   }
@@ -2081,6 +2317,27 @@ function updateManagedSettingValue(
     case "scheduler.retryFailuresWindowHours":
       next.scheduler.retryFailuresWindowHours = normalizeNumericInput(rawValue, current.scheduler.retryFailuresWindowHours);
       return next;
+    case "scheduler.zombieRecoveryEnabled":
+      next.scheduler.zombieRecoveryEnabled = normalizeBooleanInput(rawValue, current.scheduler.zombieRecoveryEnabled);
+      return next;
+    case "scheduler.zombieRecoveryStaleMs":
+      next.scheduler.zombieRecoveryStaleMs = normalizeNumericInput(rawValue, current.scheduler.zombieRecoveryStaleMs);
+      return next;
+    case "scheduler.zombieRecoveryLimit":
+      next.scheduler.zombieRecoveryLimit = normalizeNumericInput(rawValue, current.scheduler.zombieRecoveryLimit);
+      return next;
+    case "scheduler.zombieRecoveryMaxRecent":
+      next.scheduler.zombieRecoveryMaxRecent = normalizeNumericInput(rawValue, current.scheduler.zombieRecoveryMaxRecent);
+      return next;
+    case "scheduler.zombieRecoveryWindowHours":
+      next.scheduler.zombieRecoveryWindowHours = normalizeNumericInput(rawValue, current.scheduler.zombieRecoveryWindowHours);
+      return next;
+    case "scheduler.zombieRecoveryRetry":
+      next.scheduler.zombieRecoveryRetry = normalizeBooleanInput(rawValue, current.scheduler.zombieRecoveryRetry);
+      return next;
+    case "scheduler.zombieRecoveryStates":
+      next.scheduler.zombieRecoveryStates = rawValue;
+      return next;
     case "scheduler.refreshDays":
       next.scheduler.refreshDays = normalizeNumericInput(rawValue, current.scheduler.refreshDays);
       return next;
@@ -2104,6 +2361,9 @@ function updateManagedSettingValue(
       return next;
     case "scheduler.retryFailuresCron":
       next.scheduler.retryFailuresCron = rawValue;
+      return next;
+    case "scheduler.zombieRecoveryCron":
+      next.scheduler.zombieRecoveryCron = rawValue;
       return next;
     case "scheduler.refreshCron":
       next.scheduler.refreshCron = rawValue;
@@ -2138,6 +2398,24 @@ function updateManagedSettingValue(
     case "publish.rebuildCooldownMaxMs":
       next.publish.rebuildCooldownMaxMs = normalizeNumericInput(rawValue, current.publish.rebuildCooldownMaxMs);
       return next;
+    case "publish.maxConcurrent":
+      next.publish.maxConcurrent = normalizeNumericInput(rawValue, current.publish.maxConcurrent);
+      return next;
+    case "publish.healthcheckSinceHours":
+      next.publish.healthcheckSinceHours = normalizeNumericInput(rawValue, current.publish.healthcheckSinceHours);
+      return next;
+    case "publish.includeRecentPublishedHealthcheck":
+      next.publish.includeRecentPublishedHealthcheck = normalizeBooleanInput(rawValue, current.publish.includeRecentPublishedHealthcheck);
+      return next;
+    case "publish.stopOnFirstFailure":
+      next.publish.stopOnFirstFailure = normalizeBooleanInput(rawValue, current.publish.stopOnFirstFailure);
+      return next;
+    case "publish.rebuildPriority":
+      next.publish.rebuildPriority = rawValue === "rebuild-first" ? "rebuild-first" : "append-first";
+      return next;
+    case "publish.cooldownOnlyWhenCommentsCreated":
+      next.publish.cooldownOnlyWhenCommentsCreated = normalizeBooleanInput(rawValue, current.publish.cooldownOnlyWhenCommentsCreated);
+      return next;
     default:
       return current;
   }
@@ -2146,6 +2424,17 @@ function updateManagedSettingValue(
 function normalizeNumericInput(rawValue: string, fallback: number): number {
   const normalized = Number(rawValue);
   return Number.isFinite(normalized) ? normalized : fallback;
+}
+
+function normalizeBooleanInput(rawValue: string, fallback: boolean): boolean {
+  const normalized = String(rawValue ?? "").trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  return fallback;
 }
 
 function formatDateTime(value: string | null | undefined): string {

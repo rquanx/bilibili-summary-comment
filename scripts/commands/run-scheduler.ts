@@ -42,7 +42,7 @@ const command = addWorkRootOption(
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
       .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
-      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | publish | gap-check | retry-failures | cleanup | all."),
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | publish | gap-check | retry-failures | zombie-recovery | cleanup | all."),
   ),
 );
 
@@ -115,6 +115,7 @@ await runCli({
       lastPublishAt = null,
       lastGapCheckAt = null,
       lastRetryFailuresAt = null,
+      lastZombieRecoveryAt = null,
       lastRefreshAt = null,
       lastCleanupAt = null,
       lastError = null,
@@ -125,6 +126,7 @@ await runCli({
       lastPublishAt?: string | null;
       lastGapCheckAt?: string | null;
       lastRetryFailuresAt?: string | null;
+      lastZombieRecoveryAt?: string | null;
       lastRefreshAt?: string | null;
       lastCleanupAt?: string | null;
       lastError?: string | null;
@@ -143,6 +145,7 @@ await runCli({
         lastPublishAt,
         lastGapCheckAt,
         lastRetryFailuresAt,
+        lastZombieRecoveryAt,
         lastRefreshAt,
         lastCleanupAt,
         lastError,
@@ -166,6 +169,7 @@ await runCli({
         ...(taskName === "publish" ? { lastPublishAt: now } : {}),
         ...(taskName === "gap-check" ? { lastGapCheckAt: now } : {}),
         ...(taskName === "retry-failures" ? { lastRetryFailuresAt: now } : {}),
+        ...(taskName === "zombie-recovery" ? { lastZombieRecoveryAt: now } : {}),
         ...(taskName === "refresh" ? { lastRefreshAt: now } : {}),
         ...(taskName === "cleanup" ? { lastCleanupAt: now } : {}),
         ...(errorMessage ? { lastError: `${taskName}: ${errorMessage}` } : {}),
@@ -437,6 +441,48 @@ await runCli({
       };
     }
 
+    async function runZombieRecoveryTask() {
+      runtimeConfig = readSchedulerConfig();
+      const states = String(runtimeConfig.zombieRecoveryStates ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item === "missing-lock" || item === "orphaned-lock" || item === "stalled") as Array<"missing-lock" | "orphaned-lock" | "stalled">;
+      log("Scanning zombie recovery candidates");
+      const result = await operationsService.recoverZombiePipelines({
+        confirm: true,
+        staleMs: runtimeConfig.zombieRecoveryStaleMs,
+        limit: runtimeConfig.zombieRecoveryLimit,
+        maxRecentRecoveries: runtimeConfig.zombieRecoveryMaxRecent,
+        recoveryWindowHours: runtimeConfig.zombieRecoveryWindowHours,
+        retry: runtimeConfig.zombieRecoveryRetry,
+        states,
+      });
+      const payload = result.result && typeof result.result === "object"
+        ? result.result as {
+          recovered?: number;
+          skipped?: number;
+          failed?: number;
+          scanned?: number;
+        }
+        : null;
+      log(
+        `Zombie recovery sweep finished: recovered=${String(payload?.recovered ?? 0)}, skipped=${String(payload?.skipped ?? 0)}, failed=${String(payload?.failed ?? 0)}`,
+        {
+          details: {
+            task: "zombie-recovery",
+            scanned: payload?.scanned ?? null,
+          },
+        },
+      );
+      return {
+        action: "zombie-recovery",
+        recovered: payload?.recovered ?? 0,
+        skipped: payload?.skipped ?? 0,
+        failed: payload?.failed ?? 0,
+        scanned: payload?.scanned ?? 0,
+      };
+    }
+
     const runExclusive = (name, task) => async () => {
       if (runningTasks.has(name)) {
         log(`Skip ${name}: previous run still in progress`);
@@ -535,6 +581,7 @@ await runCli({
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
     const gapCheckRunner = runExclusive("gap-check", runGapCheckTask);
     const retryFailuresRunner = runExclusive("retry-failures", runRetryFailuresTask);
+    const zombieRecoveryRunner = runExclusive("zombie-recovery", runZombieRecoveryTask);
 
     if (args.once) {
       const result = await runOnce(args.once, {
@@ -571,6 +618,9 @@ await runCli({
       await publishRunner();
       await gapCheckRunner();
       await retryFailuresRunner();
+      if (runtimeConfig.zombieRecoveryEnabled) {
+        await zombieRecoveryRunner();
+      }
       await cleanupRunner();
     }
 
@@ -579,13 +629,16 @@ await runCli({
       cron.schedule(runtimeConfig.publishCron, publishRunner, buildCronOptions(runtimeConfig.timezone)),
       cron.schedule(runtimeConfig.gapCheckCron, gapCheckRunner, buildCronOptions(runtimeConfig.timezone)),
       cron.schedule(runtimeConfig.retryFailuresCron, retryFailuresRunner, buildCronOptions(runtimeConfig.timezone)),
+      ...(runtimeConfig.zombieRecoveryEnabled
+        ? [cron.schedule(runtimeConfig.zombieRecoveryCron, zombieRecoveryRunner, buildCronOptions(runtimeConfig.timezone))]
+        : []),
       cron.schedule(runtimeConfig.refreshCron, refreshRunner, buildCronOptions(runtimeConfig.timezone)),
       cron.schedule(runtimeConfig.cleanupCron, cleanupRunner, buildCronOptions(runtimeConfig.timezone)),
     ];
 
     log(`Scheduler started with timezone=${runtimeConfig.timezone ?? "system"}`);
     log(
-      `Cron plan: summary=${runtimeConfig.summaryCron}, publish=${runtimeConfig.publishCron}, gap-check=${runtimeConfig.gapCheckCron}, retry-failures=${runtimeConfig.retryFailuresCron}, refresh=${runtimeConfig.refreshCron}, cleanup=${runtimeConfig.cleanupCron}`,
+      `Cron plan: summary=${runtimeConfig.summaryCron}, publish=${runtimeConfig.publishCron}, gap-check=${runtimeConfig.gapCheckCron}, retry-failures=${runtimeConfig.retryFailuresCron}, zombie-recovery=${runtimeConfig.zombieRecoveryEnabled ? runtimeConfig.zombieRecoveryCron : "disabled"}, refresh=${runtimeConfig.refreshCron}, cleanup=${runtimeConfig.cleanupCron}`,
     );
 
     attachSignalHandlers(scheduledTasks, log, () => {
@@ -642,8 +695,11 @@ async function runOnce(target, runners) {
         await runners.publishRunner(),
         await runners.gapCheckRunner(),
         await runners.retryFailuresRunner(),
+        await runners.zombieRecoveryRunner(),
         await runners.cleanupRunner(),
       ];
+    case "zombie-recovery":
+      return [await runners.zombieRecoveryRunner()];
     default:
       throw new Error(`Invalid --once target: ${target}`);
   }

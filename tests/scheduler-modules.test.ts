@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../scripts/lib/db/database";
+import { upsertAppSetting } from "../scripts/lib/db/app-setting-storage";
 import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
 import { resolveAuthFileForUser } from "../scripts/lib/scheduler/auth-files";
 import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
@@ -1170,6 +1171,193 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
         publishMode: "rebuild",
       },
     ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep can continue after failures when stopOnFirstFailure is disabled", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-continue-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const publishedBvids: string[] = [];
+
+  try {
+    upsertAppSetting(db, {
+      settingKey: "publish.stopOnFirstFailure",
+      value: false,
+    });
+
+    for (const [index, bvid] of ["BVFAILFIRST", "BVCONTINUE"].entries()) {
+      const video = upsertVideo(db, {
+        bvid,
+        aid: index + 1,
+        title: bvid,
+        ownerMid: 123,
+        pageCount: 1,
+      });
+      upsertVideoPart(db, {
+        videoId: video.id,
+        pageNo: 1,
+        cid: 100 + index,
+        partTitle: "P1",
+        durationSec: 10,
+        summaryText: `<1P>\n${bvid}`,
+        published: false,
+        isDeleted: false,
+      });
+    }
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth-1.json");
+      },
+      runPipelineForBvidImpl: async (options) => {
+        const bvid = String(options.bvid);
+        publishedBvids.push(bvid);
+        if (bvid === "BVFAILFIRST") {
+          throw new Error("first failed");
+        }
+
+        return {
+          ok: true,
+          publishResult: {
+            action: "append-replies",
+            createdComments: [{ rpid: 2 }],
+          },
+        };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(publishedBvids, ["BVFAILFIRST", "BVCONTINUE"]);
+    assert.equal(result.aborted, false);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.runs.length, 1);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep can prioritize rebuild work first from managed settings", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-priority-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    upsertAppSetting(db, {
+      settingKey: "publish.rebuildPriority",
+      value: "rebuild-first",
+    });
+
+    const appendVideo = upsertVideo(db, {
+      bvid: "BVAPPENDFIRST",
+      aid: 1,
+      title: "Append First",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: appendVideo.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nappend",
+      published: false,
+      isDeleted: false,
+    });
+
+    const rebuildVideo = upsertVideo(db, {
+      bvid: "BVREBUILDFIRST",
+      aid: 2,
+      title: "Rebuild First",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    db.prepare("UPDATE videos SET publish_needs_rebuild = 1 WHERE id = ?").run(rebuildVideo.id);
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth-1.json");
+      },
+      runPipelineForBvidImpl: async () => ({
+        ok: true,
+        publishResult: {
+          action: "append-replies",
+          createdComments: [{ rpid: 1 }],
+        },
+      }),
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(result.tasks.map((item) => `${item.video.bvid}:${item.publishMode}`), [
+      "BVREBUILDFIRST:rebuild",
+      "BVAPPENDFIRST:append",
+    ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep can disable recent published healthcheck tasks from managed settings", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-no-healthcheck-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  let collectCalls = 0;
+
+  try {
+    upsertAppSetting(db, {
+      settingKey: "publish.includeRecentPublishedHealthcheck",
+      value: false,
+    });
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot: "work",
+      collectRecentUploadsImpl: async () => {
+        collectCalls += 1;
+        return {
+          summaryUsers: [],
+          uploads: [{
+            mid: 123,
+            bvid: "BVSHOULDNOTAPPEAR",
+            aid: 1,
+            title: "Should Not Appear",
+            authFile: path.join(tempRoot, ".auth-1.json"),
+            createdAtUnix: 100,
+            createdAt: new Date(100 * 1000).toISOString(),
+            source: "123",
+          }],
+        };
+      },
+    });
+
+    assert.equal(collectCalls, 0);
+    assert.deepEqual(result.tasks, []);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

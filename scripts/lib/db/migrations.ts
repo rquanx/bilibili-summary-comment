@@ -35,6 +35,7 @@ export function migrateDatabase(db) {
   createOperationAuditsTable(db);
   createSchedulerStatusTable(db);
   ensureSchedulerStatusColumn(db, "last_retry_failures_at", "TEXT");
+  ensureSchedulerStatusColumn(db, "last_zombie_recovery_at", "TEXT");
   createAppSettingsTable(db);
   createGapNotificationsTable(db);
 
@@ -298,6 +299,7 @@ function createSchedulerStatusTable(db) {
       last_publish_at TEXT,
       last_gap_check_at TEXT,
       last_retry_failures_at TEXT,
+      last_zombie_recovery_at TEXT,
       last_refresh_at TEXT,
       last_cleanup_at TEXT,
       last_error TEXT,

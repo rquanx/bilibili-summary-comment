@@ -235,6 +235,7 @@ export interface SchedulerStatusRecord {
   last_publish_at: string | null;
   last_gap_check_at: string | null;
   last_retry_failures_at: string | null;
+  last_zombie_recovery_at: string | null;
   last_refresh_at: string | null;
   last_cleanup_at: string | null;
   last_error: string | null;

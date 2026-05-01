@@ -11,12 +11,19 @@ const DEFAULT_SUMMARY_CRON = "0,30 * * * *";
 const DEFAULT_PUBLISH_CRON = "5 * * * *";
 const DEFAULT_GAP_CHECK_CRON = "10 * * * *";
 const DEFAULT_RETRY_FAILURES_CRON = "20 * * * *";
+const DEFAULT_ZOMBIE_RECOVERY_CRON = "25 * * * *";
 const DEFAULT_REFRESH_CRON = "15 3 * * *";
 const DEFAULT_CLEANUP_CRON = "45 3 * * *";
 const DEFAULT_PUBLISH_APPEND_COOLDOWN_MIN_MS = 15_000;
 const DEFAULT_PUBLISH_APPEND_COOLDOWN_MAX_MS = 30_000;
 const DEFAULT_PUBLISH_REBUILD_COOLDOWN_MIN_MS = 15_000;
 const DEFAULT_PUBLISH_REBUILD_COOLDOWN_MAX_MS = 30_000;
+const DEFAULT_ZOMBIE_RECOVERY_STALE_MS = 15 * 60 * 1000;
+const DEFAULT_PUBLISH_MAX_CONCURRENT = 2;
+const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
+
+const zombieRecoveryStateSchema = z.enum(["missing-lock", "orphaned-lock", "stalled"]);
+const rebuildPrioritySchema = z.enum(["append-first", "rebuild-first"]);
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const cronExpressionSchema = z.string().trim().min(1).refine((value) => cron.validate(value), {
@@ -55,6 +62,18 @@ const managedSchedulerSettingsSchema = z.object({
   retryFailuresSinceHours: positiveIntegerLikeSchema,
   retryFailuresMaxRecent: z.coerce.number().int().min(0),
   retryFailuresWindowHours: positiveIntegerLikeSchema,
+  zombieRecoveryEnabled: z.boolean(),
+  zombieRecoveryStaleMs: z.coerce.number().int().min(60_000),
+  zombieRecoveryLimit: positiveIntegerLikeSchema,
+  zombieRecoveryMaxRecent: z.coerce.number().int().min(0),
+  zombieRecoveryWindowHours: positiveIntegerLikeSchema,
+  zombieRecoveryRetry: z.boolean(),
+  zombieRecoveryStates: z.string().trim().refine((value) => {
+    const states = parseRecoveryStateList(value);
+    return states.length > 0;
+  }, {
+    message: "zombie recovery states must include at least one valid state",
+  }),
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
   gapCheckSinceHours: positiveIntegerLikeSchema,
@@ -63,6 +82,7 @@ const managedSchedulerSettingsSchema = z.object({
   publishCron: cronExpressionSchema,
   gapCheckCron: cronExpressionSchema,
   retryFailuresCron: cronExpressionSchema,
+  zombieRecoveryCron: cronExpressionSchema,
   refreshCron: cronExpressionSchema,
   cleanupCron: cronExpressionSchema,
 });
@@ -100,6 +120,12 @@ const managedPublishSettingsSchema = z.object({
   appendCooldownMaxMs: positiveIntegerLikeSchema,
   rebuildCooldownMinMs: positiveIntegerLikeSchema,
   rebuildCooldownMaxMs: positiveIntegerLikeSchema,
+  maxConcurrent: positiveIntegerLikeSchema,
+  healthcheckSinceHours: positiveIntegerLikeSchema,
+  includeRecentPublishedHealthcheck: z.boolean(),
+  stopOnFirstFailure: z.boolean(),
+  rebuildPriority: rebuildPrioritySchema,
+  cooldownOnlyWhenCommentsCreated: z.boolean(),
 });
 
 export const managedSettingsSchema = z.object({
@@ -249,6 +275,78 @@ const settingDefinitions: SettingDefinition[] = [
     effectiveScope: "applies to the next retry-failures sweep",
   },
   {
+    key: "scheduler.zombieRecoveryEnabled",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryEnabled"],
+    label: "Zombie Recovery Enabled",
+    description: "Whether the scheduler should periodically auto-recover stale runs without a live lock.",
+    input: "select",
+    options: ["true", "false"],
+    requiresRestart: true,
+    effectiveScope: "requires scheduler restart to add or remove the cron task",
+  },
+  {
+    key: "scheduler.zombieRecoveryStaleMs",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryStaleMs"],
+    label: "Zombie Stale Threshold (ms)",
+    description: "How old a running pipeline must be before it is treated as a zombie recovery candidate.",
+    input: "number",
+    requiresRestart: false,
+    effectiveScope: "applies to the next zombie-recovery sweep",
+  },
+  {
+    key: "scheduler.zombieRecoveryLimit",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryLimit"],
+    label: "Zombie Recovery Limit",
+    description: "Max zombie candidates to recover per sweep.",
+    input: "number",
+    requiresRestart: false,
+    effectiveScope: "applies to the next zombie-recovery sweep",
+  },
+  {
+    key: "scheduler.zombieRecoveryMaxRecent",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryMaxRecent"],
+    label: "Zombie Max Recent",
+    description: "Max recent zombie recoveries allowed per bvid in the dedupe window.",
+    input: "number",
+    requiresRestart: false,
+    effectiveScope: "applies to the next zombie-recovery sweep",
+  },
+  {
+    key: "scheduler.zombieRecoveryWindowHours",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryWindowHours"],
+    label: "Zombie Window Hours",
+    description: "Lookback window used to suppress repeated zombie recoveries for the same video.",
+    input: "number",
+    requiresRestart: false,
+    effectiveScope: "applies to the next zombie-recovery sweep",
+  },
+  {
+    key: "scheduler.zombieRecoveryRetry",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryRetry"],
+    label: "Retry After Recovery",
+    description: "Whether zombie recovery should queue a fresh retry after the stale run is failed.",
+    input: "select",
+    options: ["true", "false"],
+    requiresRestart: false,
+    effectiveScope: "applies to the next zombie-recovery sweep",
+  },
+  {
+    key: "scheduler.zombieRecoveryStates",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryStates"],
+    label: "Zombie Recovery States",
+    description: "Comma-separated recovery states that can be auto-recovered, for example missing-lock,orphaned-lock.",
+    input: "text",
+    requiresRestart: false,
+    effectiveScope: "applies to the next zombie-recovery sweep",
+  },
+  {
     key: "scheduler.refreshDays",
     group: "scheduler",
     path: ["scheduler", "refreshDays"],
@@ -324,6 +422,16 @@ const settingDefinitions: SettingDefinition[] = [
     path: ["scheduler", "retryFailuresCron"],
     label: "Retry Failures Cron",
     description: "Cron expression for recurring retry-failures sweeps.",
+    input: "text",
+    requiresRestart: true,
+    effectiveScope: "requires scheduler restart to rebuild cron jobs",
+  },
+  {
+    key: "scheduler.zombieRecoveryCron",
+    group: "scheduler",
+    path: ["scheduler", "zombieRecoveryCron"],
+    label: "Zombie Recovery Cron",
+    description: "Cron expression for recurring zombie recovery sweeps.",
     input: "text",
     requiresRestart: true,
     effectiveScope: "requires scheduler restart to rebuild cron jobs",
@@ -439,6 +547,70 @@ const settingDefinitions: SettingDefinition[] = [
     requiresRestart: false,
     effectiveScope: "applies to the next publish sweep",
   },
+  {
+    key: "publish.maxConcurrent",
+    group: "publish",
+    path: ["publish", "maxConcurrent"],
+    label: "Publish Max Concurrent",
+    description: "Max queued publish tasks to execute in parallel before queue-lock throttling applies.",
+    input: "number",
+    requiresRestart: false,
+    effectiveScope: "applies to the next publish sweep",
+  },
+  {
+    key: "publish.healthcheckSinceHours",
+    group: "publish",
+    path: ["publish", "healthcheckSinceHours"],
+    label: "Healthcheck Window Hours",
+    description: "How far back the publish sweep scans recent uploads to healthcheck existing published threads.",
+    input: "number",
+    requiresRestart: false,
+    effectiveScope: "applies to the next publish sweep",
+  },
+  {
+    key: "publish.includeRecentPublishedHealthcheck",
+    group: "publish",
+    path: ["publish", "includeRecentPublishedHealthcheck"],
+    label: "Include Healthcheck Tasks",
+    description: "Whether publish sweeps should include recent already-published videos for thread healthchecks.",
+    input: "select",
+    options: ["true", "false"],
+    requiresRestart: false,
+    effectiveScope: "applies to the next publish sweep",
+  },
+  {
+    key: "publish.stopOnFirstFailure",
+    group: "publish",
+    path: ["publish", "stopOnFirstFailure"],
+    label: "Stop On First Failure",
+    description: "Whether the publish queue should abort after the first failure instead of continuing the remaining tasks.",
+    input: "select",
+    options: ["true", "false"],
+    requiresRestart: false,
+    effectiveScope: "applies to the next publish sweep",
+  },
+  {
+    key: "publish.rebuildPriority",
+    group: "publish",
+    path: ["publish", "rebuildPriority"],
+    label: "Rebuild Priority",
+    description: "Whether append work or rebuild work should be scheduled first when both are queued.",
+    input: "select",
+    options: ["append-first", "rebuild-first"],
+    requiresRestart: false,
+    effectiveScope: "applies to the next publish sweep",
+  },
+  {
+    key: "publish.cooldownOnlyWhenCommentsCreated",
+    group: "publish",
+    path: ["publish", "cooldownOnlyWhenCommentsCreated"],
+    label: "Cooldown On Comment Create",
+    description: "Whether the publish queue should cool down only after a task actually created comments.",
+    input: "select",
+    options: ["true", "false"],
+    requiresRestart: false,
+    effectiveScope: "applies to the next publish sweep",
+  },
 ];
 
 export function resolveManagedSettings({
@@ -495,6 +667,13 @@ export function buildDefaultManagedSettings(env: Record<string, string | undefin
       retryFailuresSinceHours: env.RETRY_FAILURES_SINCE_HOURS ?? 24 * 7,
       retryFailuresMaxRecent: env.RETRY_FAILURES_MAX_RECENT ?? 1,
       retryFailuresWindowHours: env.RETRY_FAILURES_WINDOW_HOURS ?? 6,
+      zombieRecoveryEnabled: normalizeBooleanEnv(env.ZOMBIE_RECOVERY_ENABLED, true),
+      zombieRecoveryStaleMs: env.ZOMBIE_RECOVERY_STALE_MS ?? DEFAULT_ZOMBIE_RECOVERY_STALE_MS,
+      zombieRecoveryLimit: env.ZOMBIE_RECOVERY_LIMIT ?? 3,
+      zombieRecoveryMaxRecent: env.ZOMBIE_RECOVERY_MAX_RECENT ?? 1,
+      zombieRecoveryWindowHours: env.ZOMBIE_RECOVERY_WINDOW_HOURS ?? 6,
+      zombieRecoveryRetry: normalizeBooleanEnv(env.ZOMBIE_RECOVERY_RETRY, true),
+      zombieRecoveryStates: normalizeRecoveryStateList(env.ZOMBIE_RECOVERY_STATES) ?? "missing-lock,orphaned-lock",
       refreshDays: env.BILI_REFRESH_DAYS ?? 30,
       cleanupDays: env.WORK_CLEANUP_DAYS ?? 2,
       gapCheckSinceHours: env.GAP_CHECK_SINCE_HOURS ?? DEFAULT_GAP_CHECK_SINCE_HOURS,
@@ -503,6 +682,7 @@ export function buildDefaultManagedSettings(env: Record<string, string | undefin
       publishCron: env.PUBLISH_CRON ?? DEFAULT_PUBLISH_CRON,
       gapCheckCron: env.GAP_CHECK_CRON ?? DEFAULT_GAP_CHECK_CRON,
       retryFailuresCron: env.RETRY_FAILURES_CRON ?? DEFAULT_RETRY_FAILURES_CRON,
+      zombieRecoveryCron: env.ZOMBIE_RECOVERY_CRON ?? DEFAULT_ZOMBIE_RECOVERY_CRON,
       refreshCron: env.REFRESH_CRON ?? DEFAULT_REFRESH_CRON,
       cleanupCron: env.CLEANUP_CRON ?? DEFAULT_CLEANUP_CRON,
     },
@@ -518,6 +698,12 @@ export function buildDefaultManagedSettings(env: Record<string, string | undefin
       appendCooldownMaxMs: env.PUBLISH_APPEND_COOLDOWN_MAX_MS ?? DEFAULT_PUBLISH_APPEND_COOLDOWN_MAX_MS,
       rebuildCooldownMinMs: env.PUBLISH_REBUILD_COOLDOWN_MIN_MS ?? DEFAULT_PUBLISH_REBUILD_COOLDOWN_MIN_MS,
       rebuildCooldownMaxMs: env.PUBLISH_REBUILD_COOLDOWN_MAX_MS ?? DEFAULT_PUBLISH_REBUILD_COOLDOWN_MAX_MS,
+      maxConcurrent: env.PUBLISH_MAX_CONCURRENT ?? DEFAULT_PUBLISH_MAX_CONCURRENT,
+      healthcheckSinceHours: env.PUBLISH_HEALTHCHECK_SINCE_HOURS ?? DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS,
+      includeRecentPublishedHealthcheck: normalizeBooleanEnv(env.PUBLISH_INCLUDE_RECENT_PUBLISHED_HEALTHCHECK, true),
+      stopOnFirstFailure: normalizeBooleanEnv(env.PUBLISH_STOP_ON_FIRST_FAILURE, true),
+      rebuildPriority: normalizeRebuildPriority(env.PUBLISH_REBUILD_PRIORITY) ?? "append-first",
+      cooldownOnlyWhenCommentsCreated: normalizeBooleanEnv(env.PUBLISH_COOLDOWN_ONLY_WHEN_COMMENTS_CREATED, true),
     },
   });
 }
@@ -568,7 +754,7 @@ export function listManagedSettingDefinitions() {
 export function buildSchedulerPlan(
   scheduler: Pick<
     ManagedSettings["scheduler"],
-    "timezone" | "summaryCron" | "publishCron" | "gapCheckCron" | "retryFailuresCron" | "refreshCron" | "cleanupCron"
+    "timezone" | "summaryCron" | "publishCron" | "gapCheckCron" | "retryFailuresCron" | "zombieRecoveryCron" | "refreshCron" | "cleanupCron"
   >,
 ) {
   const effectiveTimezone = normalizeOptionalString(scheduler.timezone) ?? "system";
@@ -602,6 +788,13 @@ export function buildSchedulerPlan(
         label: "Retry Failures",
         cron: scheduler.retryFailuresCron,
         description: "Retry retryable failures on the configured cadence.",
+        requiresRestart: true,
+      },
+      {
+        key: "zombie-recovery",
+        label: "Zombie Recovery",
+        cron: scheduler.zombieRecoveryCron,
+        description: "Recover stale running pipelines that no longer hold a live lock.",
         requiresRestart: true,
       },
       {
@@ -661,4 +854,35 @@ function setNestedValue(target: ManagedSettings, path: [string, string], value: 
 function normalizeOptionalString(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function normalizeBooleanEnv(value: unknown, fallback: boolean): boolean {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function normalizeRebuildPriority(value: unknown): "append-first" | "rebuild-first" | null {
+  const normalized = String(value ?? "").trim();
+  return normalized === "append-first" || normalized === "rebuild-first" ? normalized : null;
+}
+
+function parseRecoveryStateList(value: string): string[] {
+  const states = String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+  return [...new Set(states.filter((item) => zombieRecoveryStateSchema.safeParse(item).success))];
+}
+
+function normalizeRecoveryStateList(value: unknown): string | null {
+  const states = parseRecoveryStateList(String(value ?? ""));
+  return states.length > 0 ? states.join(",") : null;
 }

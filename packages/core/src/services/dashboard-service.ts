@@ -2,43 +2,28 @@ import {
   getSchedulerStatus,
   getPipelineRunStateById,
   listActivePipelineRunStates,
-  listPipelineEvents,
-  listRecentPipelineRunStates,
-  listVideoParts,
-  listVideos,
   openDatabase,
 } from "../../../../scripts/lib/db/index";
 import { getVideoPipelineLockSnapshot } from "../../../../scripts/lib/video/pipeline-lock";
-import type { Db, PipelineRunStateRecord, SchedulerStatusRecord, VideoPartRecord, VideoRecord } from "../../../../scripts/lib/db/index";
+import type { Db, PipelineRunStateRecord, SchedulerStatusRecord } from "../../../../scripts/lib/db/index";
+import {
+  createPipelineQueryService,
+  type DashboardRunItem,
+  type PipelineDetail,
+  type PipelineEventItem,
+} from "./pipeline-query-service";
+
+export type {
+  DashboardRunItem,
+  PipelineDetail,
+  PipelineEventItem,
+} from "./pipeline-query-service";
 
 export interface DashboardSummary {
   activeCount: number;
   failedCount24h: number;
   succeededCount24h: number;
   latestUpdatedAt: string | null;
-}
-
-export interface DashboardRunItem {
-  runId: string;
-  bvid: string | null;
-  videoTitle: string | null;
-  triggerSource: string | null;
-  runStatus: string;
-  currentStage: string | null;
-  currentScope: string | null;
-  currentAction: string | null;
-  currentStatus: string | null;
-  currentPageNo: number | null;
-  currentPartTitle: string | null;
-  lastMessage: string | null;
-  lastErrorMessage: string | null;
-  failedStep: string | null;
-  startedAt: string;
-  finishedAt: string | null;
-  updatedAt: string;
-  logPath: string | null;
-  summaryPath: string | null;
-  pendingSummaryPath: string | null;
 }
 
 export interface FailureQueueItem extends DashboardRunItem {
@@ -96,14 +81,6 @@ export interface RecoveryCandidateItem extends DashboardRunItem {
   recommendedAction: "retry-now" | "cancel" | "inspect";
 }
 
-export interface PipelineDetail {
-  video: VideoRecord | null;
-  parts: VideoPartRecord[];
-  latestRun: DashboardRunItem | null;
-  recentRuns: DashboardRunItem[];
-  recentEvents: Array<Record<string, unknown>>;
-}
-
 export function createDashboardService({
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
@@ -112,9 +89,13 @@ export function createDashboardService({
   workRoot?: string;
 } = {}) {
   const db = openDatabase(dbPath);
+  const pipelineQueryService = createPipelineQueryService({
+    dbPath,
+  });
 
   return {
     close() {
+      pipelineQueryService.close?.();
       db.close?.();
     },
     getSummary(): DashboardSummary {
@@ -130,7 +111,10 @@ export function createDashboardService({
       limit?: number;
       statuses?: string[] | null;
     } = {}): DashboardRunItem[] {
-      return listRecentPipelineRunStates(db, { limit, statuses }).map(mapRunStateToItem);
+      return pipelineQueryService.listRuns({
+        limit,
+        statuses,
+      });
     },
     getPipelineDetail(bvid: string, {
       runLimit = 10,
@@ -139,7 +123,7 @@ export function createDashboardService({
       runLimit?: number;
       eventLimit?: number;
     } = {}): PipelineDetail {
-      return getPipelineDetail(db, bvid, {
+      return pipelineQueryService.getPipelineDetail(bvid, {
         runLimit,
         eventLimit,
       });
@@ -152,22 +136,12 @@ export function createDashboardService({
       bvid?: string | null;
       sinceIso?: string | null;
       limit?: number;
-    } = {}) {
-      return listPipelineEvents(db, { bvid, sinceIso, limit }).map((event) => ({
-        id: event.id,
-        runId: event.run_id,
-        bvid: event.bvid,
-        videoTitle: event.video_title,
-        pageNo: event.page_no,
-        cid: event.cid,
-        partTitle: event.part_title,
-        scope: event.scope,
-        action: event.action,
-        status: event.status,
-        message: event.message,
-        details: parseDetails(event.details_json),
-        createdAt: event.created_at,
-      }));
+    } = {}): PipelineEventItem[] {
+      return pipelineQueryService.listEvents({
+        bvid,
+        sinceIso,
+        limit,
+      });
     },
     listEventsAfterId({
       afterId = 0,
@@ -193,12 +167,12 @@ export function createDashboardService({
       resolutions?: Array<FailureQueueItem["resolution"]> | null;
       sinceHours?: number;
     } = {}): FailureQueueItem[] {
-      const recentFailedRuns = listRecentPipelineRunStates(db, {
+      const recentFailedRuns = pipelineQueryService.listRuns({
         limit: Math.max(50, Math.max(1, Number(limit) || 50) * 4),
         statuses: ["failed"],
       })
-        .filter((item) => isWithinRecentHours(item.updated_at, sinceHours))
-        .map((item) => mapRunStateToFailureItem(mapRunStateToItem(item)));
+        .filter((item) => isWithinRecentHours(item.updatedAt, sinceHours))
+        .map((item) => mapRunStateToFailureItem(item));
 
       if (!resolutions || resolutions.length === 0) {
         return recentFailedRuns.slice(0, Math.max(1, Number(limit) || 50));
@@ -216,12 +190,12 @@ export function createDashboardService({
       limit?: number;
       sinceHours?: number;
     } = {}): FailureGroupItem[] {
-      const failedRuns = listRecentPipelineRunStates(db, {
+      const failedRuns = pipelineQueryService.listRuns({
         limit: 500,
         statuses: ["failed"],
       })
-        .filter((item) => isWithinRecentHours(item.updated_at, sinceHours))
-        .map((item) => mapRunStateToFailureItem(mapRunStateToItem(item)));
+        .filter((item) => isWithinRecentHours(item.updatedAt, sinceHours))
+        .map((item) => mapRunStateToFailureItem(item));
 
       const grouped = new Map<string, FailureGroupItem>();
       for (const item of failedRuns) {
@@ -394,52 +368,6 @@ function getDashboardSummary(db: Db): DashboardSummary {
     failedCount24h,
     succeededCount24h,
     latestUpdatedAt,
-  };
-}
-
-function getPipelineDetail(
-  db: Db,
-  bvid: string,
-  {
-    runLimit,
-    eventLimit,
-  }: {
-    runLimit: number;
-    eventLimit: number;
-  },
-): PipelineDetail {
-  const videos = listVideos(db);
-  const video = videos.find((item) => item.bvid === bvid) ?? null;
-  const parts = video ? listVideoParts(db, video.id) : [];
-  const recentRuns = listRecentPipelineRunStates(db, { limit: Math.max(1, runLimit * 4) })
-    .filter((item) => item.bvid === bvid)
-    .slice(0, Math.max(1, runLimit))
-    .map(mapRunStateToItem);
-  const recentEvents = listPipelineEvents(db, {
-    bvid,
-    limit: Math.max(1, eventLimit),
-  }).map((event) => ({
-    id: event.id,
-    runId: event.run_id,
-    bvid: event.bvid,
-    videoTitle: event.video_title,
-    pageNo: event.page_no,
-    cid: event.cid,
-    partTitle: event.part_title,
-    scope: event.scope,
-    action: event.action,
-    status: event.status,
-    message: event.message,
-    details: parseDetails(event.details_json),
-    createdAt: event.created_at,
-  }));
-
-  return {
-    video,
-    parts,
-    latestRun: recentRuns[0] ?? null,
-    recentRuns,
-    recentEvents,
   };
 }
 
