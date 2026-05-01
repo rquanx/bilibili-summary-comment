@@ -5,6 +5,7 @@ export type {
   Db,
   GapNotificationInsert,
   GapNotificationRecord,
+  AppSettingRecord,
   OperationAuditInsert,
   OperationAuditRecord,
   PipelineEventInput,
@@ -29,6 +30,11 @@ export {
   hasGapNotification,
   saveGapNotification,
 } from "./gap-notification-storage";
+export {
+  getAppSettingByKey,
+  listAppSettings,
+  upsertAppSetting,
+} from "./app-setting-storage";
 export {
   getPreferredSummaryText,
   hasPreferredSummaryText,

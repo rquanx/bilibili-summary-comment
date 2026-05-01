@@ -12,11 +12,15 @@ import {
   upsertVideoPart,
 } from "../scripts/lib/db/index";
 import {
+  createConfigService,
   createDashboardService,
   createOperationsService,
+  createSchedulerControlService,
   createSchedulerStatusService,
 } from "../packages/core/src/index";
 import { buildApiServer } from "../apps/api/src/app";
+import { resolveSchedulerConfig } from "../scripts/lib/config/app-config";
+import { resolveSummaryConfig } from "../scripts/lib/summary/config";
 
 test("dashboard service derives active and failed run snapshots from pipeline events", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-dashboard-service-"));
@@ -925,6 +929,234 @@ test("dashboard service surfaces cancelled runs in recent and detail views", () 
   }
 });
 
+test("config service persists managed settings and runtime resolvers consume database overrides", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-config-service-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+
+  const service = createConfigService({
+    dbPath,
+  });
+
+  try {
+    const updateResult = await service.updateSettings({
+      patch: {
+        scheduler: {
+          summaryUsers: "123,456",
+          summaryConcurrency: 7,
+          summarySinceHours: 36,
+          timezone: "Asia/Shanghai",
+          summaryCron: "15 * * * *",
+          publishCron: "25 * * * *",
+        },
+        summary: {
+          model: "gpt-config-test",
+          promptConfigPath: "config/custom-prompts.json",
+        },
+        publish: {
+          appendCooldownMinMs: 1000,
+          appendCooldownMaxMs: 2000,
+          rebuildCooldownMinMs: 3000,
+          rebuildCooldownMaxMs: 4500,
+        },
+      },
+    });
+
+    assert.equal(updateResult.ok, true);
+    assert.equal(
+      (updateResult.result as { changedKeys?: string[] }).changedKeys?.includes("scheduler.summaryUsers"),
+      true,
+    );
+
+    const config = service.getConfig();
+    assert.equal(config.settings.scheduler.summaryUsers, "123,456");
+    assert.equal(config.settings.scheduler.summaryConcurrency, 7);
+    assert.equal(config.settings.scheduler.summaryCron, "15 * * * *");
+    assert.equal(config.settings.summary.model, "gpt-config-test");
+    assert.equal(config.settings.publish.appendCooldownMinMs, 1000);
+    assert.equal(config.schedule.timezone, "Asia/Shanghai");
+    assert.equal(config.schedule.tasks.length >= 6, true);
+    assert.equal(config.schedule.tasks.find((item) => item.key === "summary")?.cron, "15 * * * *");
+
+    const schedulerConfig = resolveSchedulerConfig({
+      db: dbPath,
+    });
+    assert.equal(schedulerConfig.summaryUsers, "123,456");
+    assert.equal(schedulerConfig.summaryConcurrency, 7);
+    assert.equal(schedulerConfig.summarySinceHours, 36);
+    assert.equal(schedulerConfig.timezone, "Asia/Shanghai");
+    assert.equal(schedulerConfig.summaryCron, "15 * * * *");
+    assert.equal(schedulerConfig.publishCron, "25 * * * *");
+
+    const summaryConfig = resolveSummaryConfig({
+      db: dbPath,
+    }, {
+      SUMMARY_API_KEY: "key-123",
+    });
+    assert.equal(summaryConfig.model, "gpt-config-test");
+    assert.equal(summaryConfig.promptConfigPath, "config/custom-prompts.json");
+    assert.equal(summaryConfig.apiKey, "key-123");
+
+    const auditDb = openDatabase(dbPath);
+    try {
+      const audits = auditDb.prepare("SELECT COUNT(*) AS count FROM operation_audits WHERE action = 'config-update'").get() as { count: number };
+      assert.equal(audits.count >= 1, true);
+    } finally {
+      auditDb.close?.();
+    }
+  } finally {
+    service.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("config service exposes config history and can roll back to an earlier snapshot", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-config-rollback-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const service = createConfigService({
+    dbPath,
+  });
+
+  try {
+    const first = await service.updateSettings({
+      patch: {
+        scheduler: {
+          summaryConcurrency: 3,
+        },
+        summary: {
+          model: "gpt-first",
+        },
+      },
+    });
+    const second = await service.updateSettings({
+      patch: {
+        scheduler: {
+          summaryConcurrency: 8,
+        },
+        summary: {
+          model: "gpt-second",
+        },
+      },
+    });
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+
+    const rollback = await service.rollbackToAudit({
+      auditId: first.auditId,
+    });
+    assert.equal(rollback.ok, true);
+    assert.equal((rollback.result as { restoredFromAuditId?: number | null }).restoredFromAuditId, first.auditId);
+
+    const schedulerConfig = resolveSchedulerConfig({
+      db: dbPath,
+    });
+    const summaryConfig = resolveSummaryConfig({
+      db: dbPath,
+    }, {
+      SUMMARY_API_KEY: "key-123",
+    });
+    assert.equal(schedulerConfig.summaryConcurrency, 3);
+    assert.equal(summaryConfig.model, "gpt-first");
+
+    const history = service.listHistory({
+      limit: 10,
+    });
+    assert.equal(history.length >= 3, true);
+    assert.equal(history[0].action, "config-rollback");
+    assert.equal(history.some((item) => item.id === first.auditId && item.action === "config-update"), true);
+  } finally {
+    service.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler control service requests daemon restart by signaling the recorded pid", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-scheduler-restart-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    upsertSchedulerStatus(db, {
+      schedulerKey: "main",
+      status: "running",
+      mode: "daemon",
+      pid: 4321,
+      hostname: "host",
+      startedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+    });
+
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const service = createSchedulerControlService({
+      dbPath,
+      runtime: {
+        signalProcess(pid, signal) {
+          signals.push({
+            pid,
+            signal,
+          });
+        },
+      },
+    });
+
+    try {
+      const result = service.requestRestart();
+      assert.equal(result.ok, true);
+      assert.equal(result.ownerPid, 4321);
+      assert.equal(result.signalSent, true);
+      assert.deepEqual(signals, [
+        {
+          pid: 4321,
+          signal: 0,
+        },
+        {
+          pid: 4321,
+          signal: "SIGTERM",
+        },
+      ]);
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler status storage refreshes started_at when the daemon restarts", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-scheduler-started-at-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const firstStartedAt = "2026-05-01T00:00:00.000Z";
+    const secondStartedAt = "2026-05-01T01:00:00.000Z";
+
+    upsertSchedulerStatus(db, {
+      schedulerKey: "main",
+      status: "running",
+      mode: "daemon",
+      pid: 111,
+      startedAt: firstStartedAt,
+      lastHeartbeatAt: firstStartedAt,
+    });
+    const row = upsertSchedulerStatus(db, {
+      schedulerKey: "main",
+      status: "running",
+      mode: "daemon",
+      pid: 222,
+      startedAt: secondStartedAt,
+      lastHeartbeatAt: secondStartedAt,
+    });
+
+    assert.equal(row?.started_at, secondStartedAt);
+    assert.equal(row?.pid, 222);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("scheduler status service parses heartbeat health and current tasks", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-scheduler-status-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -1093,6 +1325,57 @@ test("api exposes retry-failure batch action route", async () => {
           return [];
         },
       } as any,
+      configService: {
+        close() {},
+        getConfig() {
+          return {
+            settings: {
+              scheduler: {
+                authFile: ".auth/bili-auth.json",
+                cookieFile: null,
+                timezone: "Asia/Shanghai",
+                summaryUsers: "",
+                summarySinceHours: 24,
+                summaryConcurrency: 1,
+                retryFailuresLimit: 3,
+                retryFailuresSinceHours: 168,
+                retryFailuresMaxRecent: 1,
+                retryFailuresWindowHours: 6,
+                refreshDays: 30,
+                cleanupDays: 2,
+                gapCheckSinceHours: 24,
+                gapThresholdSeconds: 5,
+              },
+              summary: {
+                model: "gpt-test",
+                apiBaseUrl: "https://api.openai.com/v1",
+                apiFormat: "auto",
+                promptConfigPath: "config/summary-prompts.json",
+              },
+              publish: {
+                appendCooldownMinMs: 15000,
+                appendCooldownMaxMs: 30000,
+                rebuildCooldownMinMs: 15000,
+                rebuildCooldownMaxMs: 30000,
+              },
+            },
+            definitions: [],
+            schedule: {
+              timezone: "Asia/Shanghai",
+              tasks: [],
+            },
+          };
+        },
+        listHistory() {
+          return [];
+        },
+        updateSettings() {
+          return Promise.resolve({ ok: true, auditId: 10, action: "config-update", scope: "config", result: {} });
+        },
+        rollbackToAudit() {
+          return Promise.resolve({ ok: true, auditId: 11, action: "config-rollback", scope: "config", result: {} });
+        },
+      } as any,
       operationsService: {
         close() {},
         listAudits() {
@@ -1117,6 +1400,28 @@ test("api exposes retry-failure batch action route", async () => {
               triggered: 2,
               skipped: 1,
               failed: 0,
+            },
+          });
+        },
+        restartScheduler({ confirm }: { confirm?: boolean }) {
+          if (!confirm) {
+            return Promise.resolve({
+              ok: false,
+              auditId: 7,
+              action: "scheduler-restart",
+              scope: "scheduler",
+              errorMessage: "Confirmation required for scheduler restart",
+            });
+          }
+
+          return Promise.resolve({
+            ok: true,
+            auditId: 7,
+            action: "scheduler-restart",
+            scope: "scheduler",
+            result: {
+              signalSent: true,
+              ownerPid: 2468,
             },
           });
         },
@@ -1166,6 +1471,17 @@ test("api exposes retry-failure batch action route", async () => {
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().ok, true);
     assert.equal(response.json().result.triggered, 2);
+
+    const restartResponse = await app.inject({
+      method: "POST",
+      url: "/api/scheduler/restart",
+      payload: {
+        confirm: true,
+      },
+    });
+    assert.equal(restartResponse.statusCode, 200);
+    assert.equal(restartResponse.json().ok, true);
+    assert.equal(restartResponse.json().result.ownerPid, 2468);
   } finally {
     await app.close();
   }
@@ -1227,6 +1543,57 @@ test("api exposes cancel action and maps running-pipeline conflicts to 409", asy
         },
         listEventsAfterId() {
           return [];
+        },
+      } as any,
+      configService: {
+        close() {},
+        getConfig() {
+          return {
+            settings: {
+              scheduler: {
+                authFile: ".auth/bili-auth.json",
+                cookieFile: null,
+                timezone: "Asia/Shanghai",
+                summaryUsers: "",
+                summarySinceHours: 24,
+                summaryConcurrency: 1,
+                retryFailuresLimit: 3,
+                retryFailuresSinceHours: 168,
+                retryFailuresMaxRecent: 1,
+                retryFailuresWindowHours: 6,
+                refreshDays: 30,
+                cleanupDays: 2,
+                gapCheckSinceHours: 24,
+                gapThresholdSeconds: 5,
+              },
+              summary: {
+                model: "gpt-test",
+                apiBaseUrl: "https://api.openai.com/v1",
+                apiFormat: "auto",
+                promptConfigPath: "config/summary-prompts.json",
+              },
+              publish: {
+                appendCooldownMinMs: 15000,
+                appendCooldownMaxMs: 30000,
+                rebuildCooldownMinMs: 15000,
+                rebuildCooldownMaxMs: 30000,
+              },
+            },
+            definitions: [],
+            schedule: {
+              timezone: "Asia/Shanghai",
+              tasks: [],
+            },
+          };
+        },
+        listHistory() {
+          return [];
+        },
+        updateSettings() {
+          return Promise.resolve({ ok: true, auditId: 10, action: "config-update", scope: "config", result: {} });
+        },
+        rollbackToAudit() {
+          return Promise.resolve({ ok: true, auditId: 11, action: "config-rollback", scope: "config", result: {} });
         },
       } as any,
       operationsService: {
@@ -1342,5 +1709,117 @@ test("api exposes cancel action and maps running-pipeline conflicts to 409", asy
     assert.equal(publishResponse.statusCode, 409);
   } finally {
     await app.close();
+  }
+});
+
+test("api exposes managed settings routes with validation and persistence", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-settings-api-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const app = await buildApiServer({
+    dbPath,
+    logger: false,
+    webDistDir: path.join(tempRoot, "missing-web-dist"),
+  });
+
+  try {
+    const initialResponse = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+    });
+    assert.equal(initialResponse.statusCode, 200);
+    assert.equal(initialResponse.json().ok, true);
+    assert.equal(Array.isArray(initialResponse.json().definitions), true);
+    assert.equal(Array.isArray(initialResponse.json().schedule.tasks), true);
+
+    const invalidResponse = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        publish: {
+          appendCooldownMinMs: 5000,
+          appendCooldownMaxMs: 1000,
+        },
+        scheduler: {
+          summaryCron: "not-a-cron",
+        },
+      },
+    });
+    assert.equal(invalidResponse.statusCode, 400);
+    assert.equal(invalidResponse.json().ok, false);
+
+    const updateResponse = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        scheduler: {
+          summaryUsers: "123,456",
+          summaryConcurrency: 9,
+          timezone: "Asia/Shanghai",
+          summaryCron: "12 * * * *",
+        },
+        summary: {
+          model: "gpt-settings-api",
+        },
+      },
+    });
+    assert.equal(updateResponse.statusCode, 200);
+    assert.equal(updateResponse.json().ok, true);
+    assert.equal(updateResponse.json().result.settings.scheduler.summaryConcurrency, 9);
+    assert.equal(updateResponse.json().result.schedule.tasks.find((item: { key: string; cron: string }) => item.key === "summary")?.cron, "12 * * * *");
+    const firstAuditId = updateResponse.json().auditId;
+
+    const secondUpdateResponse = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        scheduler: {
+          summaryConcurrency: 4,
+        },
+        summary: {
+          model: "gpt-settings-api-v2",
+        },
+      },
+    });
+    assert.equal(secondUpdateResponse.statusCode, 200);
+    assert.equal(secondUpdateResponse.json().ok, true);
+
+    const afterResponse = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+    });
+    assert.equal(afterResponse.statusCode, 200);
+    assert.equal(afterResponse.json().settings.scheduler.summaryUsers, "123,456");
+    assert.equal(afterResponse.json().settings.summary.model, "gpt-settings-api-v2");
+    assert.equal(afterResponse.json().schedule.timezone, "Asia/Shanghai");
+    assert.equal(afterResponse.json().schedule.tasks.find((item: { key: string; cron: string }) => item.key === "summary")?.cron, "12 * * * *");
+
+    const historyResponse = await app.inject({
+      method: "GET",
+      url: "/api/settings/history?limit=10",
+    });
+    assert.equal(historyResponse.statusCode, 200);
+    assert.equal(historyResponse.json().ok, true);
+    assert.equal(historyResponse.json().items.length >= 2, true);
+
+    const rollbackResponse = await app.inject({
+      method: "POST",
+      url: "/api/settings/rollback",
+      payload: {
+        auditId: firstAuditId,
+      },
+    });
+    assert.equal(rollbackResponse.statusCode, 200);
+    assert.equal(rollbackResponse.json().ok, true);
+
+    const afterRollbackResponse = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+    });
+    assert.equal(afterRollbackResponse.statusCode, 200);
+    assert.equal(afterRollbackResponse.json().settings.scheduler.summaryConcurrency, 9);
+    assert.equal(afterRollbackResponse.json().settings.summary.model, "gpt-settings-api");
+  } finally {
+    await app.close();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });

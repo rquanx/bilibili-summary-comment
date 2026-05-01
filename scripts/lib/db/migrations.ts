@@ -35,6 +35,7 @@ export function migrateDatabase(db) {
   createOperationAuditsTable(db);
   createSchedulerStatusTable(db);
   ensureSchedulerStatusColumn(db, "last_retry_failures_at", "TEXT");
+  createAppSettingsTable(db);
   createGapNotificationsTable(db);
 
   db.exec(`
@@ -332,6 +333,17 @@ function createGapNotificationsTable(db) {
       gap_end_at TEXT NOT NULL,
       gap_seconds INTEGER NOT NULL,
       notified_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+}
+
+function createAppSettingsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      setting_key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )

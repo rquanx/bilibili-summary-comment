@@ -244,6 +244,13 @@ export interface SchedulerStatusRecord {
   updated_at: string;
 }
 
+export interface AppSettingRecord {
+  setting_key: string;
+  value_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface GapNotificationRecord {
   id: number;
   gap_key: string;

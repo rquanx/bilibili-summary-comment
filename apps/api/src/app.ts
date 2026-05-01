@@ -5,6 +5,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { z } from "zod";
 import {
+  createConfigService,
   createDashboardService,
   createOperationsService,
   createSchedulerStatusService,
@@ -65,6 +66,51 @@ const auditsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
+const settingsBodySchema = z.object({
+  scheduler: z.object({
+    authFile: z.string().trim().min(1).optional(),
+    cookieFile: z.string().trim().nullable().optional(),
+    timezone: z.string().trim().nullable().optional(),
+    summaryUsers: z.string().optional(),
+    summarySinceHours: z.coerce.number().int().min(1).optional(),
+    summaryConcurrency: z.coerce.number().int().min(1).optional(),
+    retryFailuresLimit: z.coerce.number().int().min(1).optional(),
+    retryFailuresSinceHours: z.coerce.number().int().min(1).optional(),
+    retryFailuresMaxRecent: z.coerce.number().int().min(0).optional(),
+    retryFailuresWindowHours: z.coerce.number().int().min(1).optional(),
+    refreshDays: z.coerce.number().int().min(1).optional(),
+    cleanupDays: z.coerce.number().int().min(1).optional(),
+    gapCheckSinceHours: z.coerce.number().int().min(1).optional(),
+    gapThresholdSeconds: z.coerce.number().int().min(1).optional(),
+    summaryCron: z.string().trim().min(1).optional(),
+    publishCron: z.string().trim().min(1).optional(),
+    gapCheckCron: z.string().trim().min(1).optional(),
+    retryFailuresCron: z.string().trim().min(1).optional(),
+    refreshCron: z.string().trim().min(1).optional(),
+    cleanupCron: z.string().trim().min(1).optional(),
+  }).optional(),
+  summary: z.object({
+    model: z.string().trim().min(1).optional(),
+    apiBaseUrl: z.string().trim().url().optional(),
+    apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]).optional(),
+    promptConfigPath: z.string().trim().nullable().optional(),
+  }).optional(),
+  publish: z.object({
+    appendCooldownMinMs: z.coerce.number().int().min(1).optional(),
+    appendCooldownMaxMs: z.coerce.number().int().min(1).optional(),
+    rebuildCooldownMinMs: z.coerce.number().int().min(1).optional(),
+    rebuildCooldownMaxMs: z.coerce.number().int().min(1).optional(),
+  }).optional(),
+});
+
+const settingsHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const settingsRollbackBodySchema = z.object({
+  auditId: z.coerce.number().int().positive(),
+});
+
 export async function buildApiServer({
   dbPath = process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
   webDistDir = path.join(getRepoRoot(), "apps", "web", "dist"),
@@ -75,6 +121,7 @@ export async function buildApiServer({
   webDistDir?: string;
   logger?: boolean;
   services?: {
+    configService?: ReturnType<typeof createConfigService>;
     dashboardService?: ReturnType<typeof createDashboardService>;
     operationsService?: ReturnType<typeof createOperationsService>;
     schedulerStatusService?: ReturnType<typeof createSchedulerStatusService>;
@@ -86,6 +133,9 @@ export async function buildApiServer({
   const dashboardService = services.dashboardService ?? createDashboardService({
     dbPath,
   });
+  const configService = services.configService ?? createConfigService({
+    dbPath,
+  });
   const operationsService = services.operationsService ?? createOperationsService({
     dbPath,
   });
@@ -94,6 +144,7 @@ export async function buildApiServer({
   });
 
   app.addHook("onClose", async () => {
+    configService.close?.();
     dashboardService.close?.();
     operationsService.close?.();
     schedulerStatusService.close?.();
@@ -177,6 +228,72 @@ export async function buildApiServer({
       ok: true,
       ...health,
     };
+  });
+
+  app.get("/api/settings", async () => ({
+    ok: true,
+    ...configService.getConfig(),
+  }));
+
+  app.get("/api/settings/history", async (request) => {
+    const query = settingsHistoryQuerySchema.parse(request.query ?? {});
+    return {
+      ok: true,
+      items: configService.listHistory({
+        limit: query.limit ?? 20,
+      }),
+    };
+  });
+
+  app.put("/api/settings", async (request, reply) => {
+    const body = settingsBodySchema.parse(request.body ?? {});
+    const result = await configService.updateSettings({
+      patch: body,
+    });
+
+    if (!result.ok) {
+      reply.code(400);
+    }
+
+    return result;
+  });
+
+  app.post("/api/settings/rollback", async (request, reply) => {
+    const body = settingsRollbackBodySchema.parse(request.body ?? {});
+    const result = await configService.rollbackToAudit({
+      auditId: body.auditId,
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("Unknown config audit") ? 404 : 400);
+    }
+
+    return result;
+  });
+
+  app.post("/api/scheduler/restart", async (request, reply) => {
+    const body = z.object({
+      confirm: z.boolean().optional(),
+    }).parse(request.body ?? {});
+    const result = await operationsService.restartScheduler({
+      confirm: Boolean(body.confirm),
+    });
+
+    if (!result.ok) {
+      const errorMessage = String(result.errorMessage ?? "");
+      reply.code(
+        errorMessage.includes("Confirmation required")
+          ? 400
+          : errorMessage.includes("not running")
+            || errorMessage.includes("daemon mode")
+            || errorMessage.includes("unavailable")
+            || errorMessage.includes("status not found")
+            ? 409
+            : 500,
+      );
+    }
+
+    return result;
   });
 
   app.get("/api/actions/audits", async (request) => {

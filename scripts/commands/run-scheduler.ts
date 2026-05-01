@@ -55,25 +55,30 @@ await runCli({
   command,
   printResult: false,
   async handler(args) {
-    const config = resolveSchedulerConfig(args);
-    config.authFile = resolveBiliAuthFile(config.authFile);
-    const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
+    function readSchedulerConfig() {
+      const nextConfig = resolveSchedulerConfig(args);
+      nextConfig.authFile = resolveBiliAuthFile(nextConfig.authFile);
+      nextConfig.cookieFile = nextConfig.cookieFile ? resolveBiliCookieFile(nextConfig.cookieFile) : null;
+      return nextConfig;
+    }
+
+    let runtimeConfig = readSchedulerConfig();
     const runningTasks = new Set<string>();
-    const schedulerStatusDb = openDatabase(config.dbPath);
+    const schedulerStatusDb = openDatabase(runtimeConfig.dbPath);
     const operationsService = createOperationsService({
-      dbPath: config.dbPath,
-      workRoot: config.workRoot,
+      dbPath: runtimeConfig.dbPath,
+      workRoot: runtimeConfig.workRoot,
       triggerSource: "scheduler",
     });
     const schedulerStartedAt = new Date().toISOString();
     let schedulerHeartbeat: NodeJS.Timeout | null = null;
     const schedulerLogger = createWorkFileLogger({
-      workRoot: config.workRoot,
+      workRoot: runtimeConfig.workRoot,
       name: "scheduler",
       context: {
         scope: "scheduler",
-        cookieFile: resolvedCookieFile,
-        dbPath: config.dbPath,
+        cookieFile: runtimeConfig.cookieFile,
+        dbPath: runtimeConfig.dbPath,
       },
     });
 
@@ -125,11 +130,11 @@ await runCli({
         schedulerKey: "main",
         status,
         mode: args.once ? "once" : "daemon",
-        timezone: config.timezone ?? null,
+        timezone: runtimeConfig.timezone ?? null,
         pid: process.pid,
         hostname: os.hostname(),
-        summaryUsers: config.summaryUsers,
-        summaryConcurrency: config.summaryConcurrency,
+        summaryUsers: runtimeConfig.summaryUsers,
+        summaryConcurrency: runtimeConfig.summaryConcurrency,
         currentTasks,
         lastSummaryAt,
         lastPublishAt,
@@ -188,9 +193,10 @@ await runCli({
     }
 
     async function runRefreshTask({ force = false } = {}) {
-      const bundle = loadBiliAuthBundle(config.authFile);
+      runtimeConfig = readSchedulerConfig();
+      const bundle = loadBiliAuthBundle(runtimeConfig.authFile);
       if (!bundle) {
-        log(`Skip cookie refresh: auth file not found at ${config.authFile}`);
+        log(`Skip cookie refresh: auth file not found at ${runtimeConfig.authFile}`);
         return {
           action: "skip-refresh",
           reason: "auth-file-missing",
@@ -198,9 +204,9 @@ await runCli({
       }
 
       const lastUpdatedAt = getLastAuthUpdateAt(bundle);
-      const refreshDue = force || isOlderThanDays(lastUpdatedAt, config.refreshDays);
+      const refreshDue = force || isOlderThanDays(lastUpdatedAt, runtimeConfig.refreshDays);
       if (!refreshDue) {
-        log(`Skip cookie refresh: auth bundle is newer than ${config.refreshDays} days`);
+        log(`Skip cookie refresh: auth bundle is newer than ${runtimeConfig.refreshDays} days`);
         return {
           action: "skip-refresh",
           reason: "not-due",
@@ -210,8 +216,8 @@ await runCli({
 
       log("Refreshing Bilibili cookie via TV refresh token");
       const result = await refreshBiliCookie({
-        authFile: config.authFile,
-        cookieFile: resolvedCookieFile,
+        authFile: runtimeConfig.authFile,
+        cookieFile: runtimeConfig.cookieFile,
       });
       log(`Cookie refresh completed: ${result.bundle.updatedAt}`);
       return {
@@ -221,11 +227,12 @@ await runCli({
     }
 
     async function runSummaryTask() {
+      runtimeConfig = readSchedulerConfig();
       const startedAt = new Date();
       const logDay = formatLogDay(startedAt);
       const logGroup = createLogGroupName("summary", null, startedAt);
       const summaryLogger = createWorkFileLogger({
-        workRoot: config.workRoot,
+        workRoot: runtimeConfig.workRoot,
         name: "scheduler",
         label: "summary",
         day: logDay,
@@ -240,13 +247,13 @@ await runCli({
       summaryLogger.progress("Scanning SUMMARY_USERS recent uploads");
       writeConsole("Scanning SUMMARY_USERS recent uploads");
       const result = await syncSummaryUsersRecentVideos({
-        summaryUsers: config.summaryUsers,
-        authFile: config.authFile,
-        cookieFile: resolvedCookieFile ?? undefined,
-        sinceHours: config.summarySinceHours,
-        maxConcurrent: config.summaryConcurrency,
-        dbPath: config.dbPath,
-        workRoot: config.workRoot,
+        summaryUsers: runtimeConfig.summaryUsers,
+        authFile: runtimeConfig.authFile,
+        cookieFile: runtimeConfig.cookieFile ?? undefined,
+        sinceHours: runtimeConfig.summarySinceHours,
+        maxConcurrent: runtimeConfig.summaryConcurrency,
+        dbPath: runtimeConfig.dbPath,
+        workRoot: runtimeConfig.workRoot,
         logDay,
         logGroup,
         publish: false,
@@ -286,11 +293,12 @@ await runCli({
     }
 
     async function runPublishTask() {
+      runtimeConfig = readSchedulerConfig();
       const startedAt = new Date();
       const logDay = formatLogDay(startedAt);
       const logGroup = createLogGroupName("publish", null, startedAt);
       const publishLogger = createWorkFileLogger({
-        workRoot: config.workRoot,
+        workRoot: runtimeConfig.workRoot,
         name: "scheduler",
         label: "publish",
         day: logDay,
@@ -305,10 +313,10 @@ await runCli({
       publishLogger.progress("Scanning queued video publish tasks");
       writeConsole("Scanning queued video publish tasks");
       const result = await runPendingVideoPublishSweep({
-        summaryUsers: config.summaryUsers,
-        authFile: config.authFile,
-        dbPath: config.dbPath,
-        workRoot: config.workRoot,
+        summaryUsers: runtimeConfig.summaryUsers,
+        authFile: runtimeConfig.authFile,
+        dbPath: runtimeConfig.dbPath,
+        workRoot: runtimeConfig.workRoot,
         logDay,
         logGroup,
         logger: publishLogger,
@@ -350,6 +358,7 @@ await runCli({
     }
 
     async function runCleanupTask() {
+      runtimeConfig = readSchedulerConfig();
       if (runningTasks.has("summary") || runningTasks.has("publish")) {
         log("Skip work cleanup: summary or publish task is still running");
         return {
@@ -360,9 +369,9 @@ await runCli({
 
       log("Cleaning old work directories");
       const result = await cleanupOldWorkDirectories({
-        dbPath: config.dbPath,
-        workRoot: config.workRoot,
-        olderThanDays: config.cleanupDays,
+        dbPath: runtimeConfig.dbPath,
+        workRoot: runtimeConfig.workRoot,
+        olderThanDays: runtimeConfig.cleanupDays,
         onLog(message) {
           log(`[cleanup] ${message}`);
         },
@@ -375,14 +384,17 @@ await runCli({
     }
 
     async function runGapCheckTask() {
+      runtimeConfig = readSchedulerConfig();
       log("Checking recent uploads for missing video gaps");
       const result = await runRecentVideoGapCheck({
-        summaryUsers: config.summaryUsers,
-        authFile: config.authFile,
-        cookieFile: resolvedCookieFile ?? undefined,
-        dbPath: config.dbPath,
-        workRoot: config.workRoot,
-        timezone: config.timezone ?? null,
+        summaryUsers: runtimeConfig.summaryUsers,
+        authFile: runtimeConfig.authFile,
+        cookieFile: runtimeConfig.cookieFile ?? undefined,
+        dbPath: runtimeConfig.dbPath,
+        workRoot: runtimeConfig.workRoot,
+        sinceHours: runtimeConfig.gapCheckSinceHours,
+        gapThresholdSeconds: runtimeConfig.gapThresholdSeconds,
+        timezone: runtimeConfig.timezone ?? null,
         onLog(message) {
           log(`[gap-check] ${message}`);
         },
@@ -407,13 +419,14 @@ await runCli({
     }
 
     async function runRetryFailuresTask() {
+      runtimeConfig = readSchedulerConfig();
       log("Scanning retryable failure queue");
       const result = await operationsService.retryRetryableFailures({
         confirm: true,
-        limit: config.retryFailuresLimit,
-        sinceHours: config.retryFailuresSinceHours,
-        maxRecentRetries: config.retryFailuresMaxRecent,
-        retryWindowHours: config.retryFailuresWindowHours,
+        limit: runtimeConfig.retryFailuresLimit,
+        sinceHours: runtimeConfig.retryFailuresSinceHours,
+        maxRecentRetries: runtimeConfig.retryFailuresMaxRecent,
+        retryWindowHours: runtimeConfig.retryFailuresWindowHours,
       });
       const payload = result.result && typeof result.result === "object"
         ? result.result as {
@@ -577,16 +590,18 @@ await runCli({
     }
 
     const scheduledTasks = [
-      cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
-      cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
-      cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
-      cron.schedule("20 * * * *", retryFailuresRunner, buildCronOptions(config.timezone)),
-      cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
-      cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
+      cron.schedule(runtimeConfig.summaryCron, summaryRunner, buildCronOptions(runtimeConfig.timezone)),
+      cron.schedule(runtimeConfig.publishCron, publishRunner, buildCronOptions(runtimeConfig.timezone)),
+      cron.schedule(runtimeConfig.gapCheckCron, gapCheckRunner, buildCronOptions(runtimeConfig.timezone)),
+      cron.schedule(runtimeConfig.retryFailuresCron, retryFailuresRunner, buildCronOptions(runtimeConfig.timezone)),
+      cron.schedule(runtimeConfig.refreshCron, refreshRunner, buildCronOptions(runtimeConfig.timezone)),
+      cron.schedule(runtimeConfig.cleanupCron, cleanupRunner, buildCronOptions(runtimeConfig.timezone)),
     ];
 
-    log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, retry-failures=hourly@minute20, refresh=daily@03:15 when due, cleanup=daily@03:45");
+    log(`Scheduler started with timezone=${runtimeConfig.timezone ?? "system"}`);
+    log(
+      `Cron plan: summary=${runtimeConfig.summaryCron}, publish=${runtimeConfig.publishCron}, gap-check=${runtimeConfig.gapCheckCron}, retry-failures=${runtimeConfig.retryFailuresCron}, refresh=${runtimeConfig.refreshCron}, cleanup=${runtimeConfig.cleanupCron}`,
+    );
 
     attachSignalHandlers(scheduledTasks, log, () => {
       if (schedulerHeartbeat) {
@@ -604,13 +619,13 @@ await runCli({
     return {
       ok: true,
       mode: "daemon",
-      timezone: config.timezone ?? "system",
-      summaryUsers: config.summaryUsers,
-      summaryConcurrency: config.summaryConcurrency,
+      timezone: runtimeConfig.timezone ?? "system",
+      summaryUsers: runtimeConfig.summaryUsers,
+      summaryConcurrency: runtimeConfig.summaryConcurrency,
       publishTask: "serial",
-      retryFailuresLimit: config.retryFailuresLimit,
-      refreshDays: config.refreshDays,
-      cleanupDays: config.cleanupDays,
+      retryFailuresLimit: runtimeConfig.retryFailuresLimit,
+      refreshDays: runtimeConfig.refreshDays,
+      cleanupDays: runtimeConfig.cleanupDays,
     };
   },
 });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_AUTH_FILE } from "../bili/auth";
+import { resolveManagedSettings } from "./managed-settings";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const positiveIntegerLikeSchema = z.coerce.number().int().positive();
@@ -40,16 +41,32 @@ const schedulerConfigSchema = z.object({
   retryFailuresSinceHours: positiveIntegerLikeSchema,
   retryFailuresMaxRecent: z.coerce.number().int().min(0),
   retryFailuresWindowHours: positiveIntegerLikeSchema,
+  gapCheckSinceHours: positiveIntegerLikeSchema,
+  gapThresholdSeconds: positiveIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
+  summaryCron: nonEmptyStringSchema,
+  publishCron: nonEmptyStringSchema,
+  gapCheckCron: nonEmptyStringSchema,
+  retryFailuresCron: nonEmptyStringSchema,
+  refreshCron: nonEmptyStringSchema,
+  cleanupCron: nonEmptyStringSchema,
   dbPath: nonEmptyStringSchema,
   workRoot: nonEmptyStringSchema,
   timezone: optionalTrimmedStringSchema,
 });
 
+const publishRuntimeConfigSchema = z.object({
+  appendCooldownMinMs: positiveIntegerLikeSchema,
+  appendCooldownMaxMs: positiveIntegerLikeSchema,
+  rebuildCooldownMinMs: positiveIntegerLikeSchema,
+  rebuildCooldownMaxMs: positiveIntegerLikeSchema,
+});
+
 type CleanupConfig = z.infer<typeof cleanupConfigSchema>;
 type SummaryUsersConfig = z.infer<typeof summaryUsersConfigSchema>;
 type SchedulerConfig = z.infer<typeof schedulerConfigSchema>;
+type PublishRuntimeConfig = z.infer<typeof publishRuntimeConfigSchema>;
 
 interface AppConfigOptions extends Record<string, unknown> {
   db?: unknown;
@@ -64,45 +81,87 @@ interface AppConfigOptions extends Record<string, unknown> {
   ["retry-failures-since-hours"]?: unknown;
   ["retry-failures-max-recent"]?: unknown;
   ["retry-failures-window-hours"]?: unknown;
+  ["gap-check-since-hours"]?: unknown;
+  ["gap-threshold-seconds"]?: unknown;
   ["auth-file"]?: unknown;
   ["refresh-days"]?: unknown;
 }
 
 export function resolveCleanupConfig(options: AppConfigOptions = {}): CleanupConfig {
+  const env = process.env;
+  const dbPath = String(options.db ?? env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3").trim() || "work/pipeline.sqlite3";
+  const managed = resolveManagedSettings({
+    dbPath,
+    env,
+  });
+
   return cleanupConfigSchema.parse({
-    dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
-    workRoot: options["work-root"] ?? process.env.WORK_ROOT ?? "work",
-    olderThanDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
+    dbPath,
+    workRoot: options["work-root"] ?? env.WORK_ROOT ?? "work",
+    olderThanDays: options["cleanup-days"] ?? managed.scheduler.cleanupDays,
   });
 }
 
 export function resolveSummaryUsersConfig(options: AppConfigOptions = {}): SummaryUsersConfig {
+  const env = process.env;
+  const dbPath = String(options.db ?? env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3").trim() || "work/pipeline.sqlite3";
+  const managed = resolveManagedSettings({
+    dbPath,
+    env,
+  });
+
   return summaryUsersConfigSchema.parse({
-    summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
-    authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? DEFAULT_AUTH_FILE,
-    cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
-    sinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
-    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
-    dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
-    workRoot: options["work-root"] ?? process.env.WORK_ROOT ?? "work",
+    summaryUsers: options["summary-users"] ?? managed.scheduler.summaryUsers ?? "",
+    authFile: options["auth-file"] ?? managed.scheduler.authFile ?? DEFAULT_AUTH_FILE,
+    cookieFile: options["cookie-file"] ?? managed.scheduler.cookieFile,
+    sinceHours: options["summary-since-hours"] ?? managed.scheduler.summarySinceHours,
+    summaryConcurrency: options["summary-concurrency"] ?? managed.scheduler.summaryConcurrency,
+    dbPath,
+    workRoot: options["work-root"] ?? env.WORK_ROOT ?? "work",
   });
 }
 
 export function resolveSchedulerConfig(options: AppConfigOptions = {}): SchedulerConfig {
-  return schedulerConfigSchema.parse({
-    authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? DEFAULT_AUTH_FILE,
-    cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
-    summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
-    summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
-    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
-    retryFailuresLimit: options["retry-failures-limit"] ?? process.env.RETRY_FAILURES_LIMIT ?? 3,
-    retryFailuresSinceHours: options["retry-failures-since-hours"] ?? process.env.RETRY_FAILURES_SINCE_HOURS ?? 24 * 7,
-    retryFailuresMaxRecent: options["retry-failures-max-recent"] ?? process.env.RETRY_FAILURES_MAX_RECENT ?? 1,
-    retryFailuresWindowHours: options["retry-failures-window-hours"] ?? process.env.RETRY_FAILURES_WINDOW_HOURS ?? 6,
-    refreshDays: options["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30,
-    cleanupDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
-    dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
-    workRoot: options["work-root"] ?? process.env.WORK_ROOT ?? "work",
-    timezone: options.timezone ?? process.env.CRON_TIMEZONE,
+  const env = process.env;
+  const dbPath = String(options.db ?? env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3").trim() || "work/pipeline.sqlite3";
+  const managed = resolveManagedSettings({
+    dbPath,
+    env,
   });
+
+  return schedulerConfigSchema.parse({
+    authFile: options["auth-file"] ?? managed.scheduler.authFile ?? DEFAULT_AUTH_FILE,
+    cookieFile: options["cookie-file"] ?? managed.scheduler.cookieFile,
+    summaryUsers: options["summary-users"] ?? managed.scheduler.summaryUsers ?? "",
+    summarySinceHours: options["summary-since-hours"] ?? managed.scheduler.summarySinceHours,
+    summaryConcurrency: options["summary-concurrency"] ?? managed.scheduler.summaryConcurrency,
+    retryFailuresLimit: options["retry-failures-limit"] ?? managed.scheduler.retryFailuresLimit,
+    retryFailuresSinceHours: options["retry-failures-since-hours"] ?? managed.scheduler.retryFailuresSinceHours,
+    retryFailuresMaxRecent: options["retry-failures-max-recent"] ?? managed.scheduler.retryFailuresMaxRecent,
+    retryFailuresWindowHours: options["retry-failures-window-hours"] ?? managed.scheduler.retryFailuresWindowHours,
+    gapCheckSinceHours: options["gap-check-since-hours"] ?? managed.scheduler.gapCheckSinceHours,
+    gapThresholdSeconds: options["gap-threshold-seconds"] ?? managed.scheduler.gapThresholdSeconds,
+    refreshDays: options["refresh-days"] ?? managed.scheduler.refreshDays,
+    cleanupDays: options["cleanup-days"] ?? managed.scheduler.cleanupDays,
+    summaryCron: managed.scheduler.summaryCron,
+    publishCron: managed.scheduler.publishCron,
+    gapCheckCron: managed.scheduler.gapCheckCron,
+    retryFailuresCron: managed.scheduler.retryFailuresCron,
+    refreshCron: managed.scheduler.refreshCron,
+    cleanupCron: managed.scheduler.cleanupCron,
+    dbPath,
+    workRoot: options["work-root"] ?? env.WORK_ROOT ?? "work",
+    timezone: options.timezone ?? managed.scheduler.timezone,
+  });
+}
+
+export function resolvePublishRuntimeConfig(options: AppConfigOptions = {}): PublishRuntimeConfig {
+  const env = process.env;
+  const dbPath = String(options.db ?? env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3").trim() || "work/pipeline.sqlite3";
+  const managed = resolveManagedSettings({
+    dbPath,
+    env,
+  });
+
+  return publishRuntimeConfigSchema.parse(managed.publish);
 }

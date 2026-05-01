@@ -1,4 +1,5 @@
 import { runPipelineForBvid } from "../../../../scripts/lib/scheduler/pipeline-runner";
+import { resolveSchedulerConfig } from "../../../../scripts/lib/config/app-config";
 
 export function createPipelineService({
   dbPath = "work/pipeline.sqlite3",
@@ -27,9 +28,13 @@ export function createPipelineService({
       logGroup?: string | null;
       triggerSource?: string | null;
     }) {
+      const config = resolveSchedulerConfig({
+        db: dbPath,
+        "work-root": workRoot,
+      });
       return runPipelineForBvid({
-        authFile,
-        cookieFile,
+        authFile: authFile ?? config.authFile,
+        cookieFile: cookieFile ?? config.cookieFile ?? null,
         dbPath,
         workRoot,
         bvid,

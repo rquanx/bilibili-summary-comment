@@ -1,4 +1,5 @@
 import { DEFAULT_AUTH_FILE } from "../bili/auth";
+import { resolvePublishRuntimeConfig } from "../config/app-config";
 import { getVideoByIdentity, listVideosPendingPublish, openDatabase } from "../db/index";
 import { findAuthFileForUser } from "./auth-files";
 import { runPipelineForBvid } from "./pipeline-runner";
@@ -8,10 +9,6 @@ import { collectRecentUploadsFromUsers } from "./uploads";
 import type { FileLogger } from "../shared/logger";
 import type { VideoRecord } from "../db/index";
 
-const PUBLISH_APPEND_COOLDOWN_MIN_MS = 15_000;
-const PUBLISH_APPEND_COOLDOWN_MAX_MS = 30_000;
-const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 15_000;
-const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 30_000;
 const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
 const PUBLISH_SWEEP_MAX_CONCURRENCY = 2;
 
@@ -58,7 +55,7 @@ export async function runPendingVideoPublishSweep({
   runPipelineForBvidImpl = runPipelineForBvid,
   collectRecentUploadsImpl = collectRecentUploadsFromUsers,
   getVideoByIdentityImpl = getVideoByIdentity,
-  computePublishCooldownMsImpl = computePublishCooldownMs,
+  computePublishCooldownMsImpl,
   sleepImpl = delay,
 }: {
   summaryUsers?: unknown;
@@ -79,6 +76,10 @@ export async function runPendingVideoPublishSweep({
   computePublishCooldownMsImpl?: (publishMode: "append" | "rebuild") => number;
   sleepImpl?: (timeoutMs: number) => Promise<void>;
 } = {}) {
+  const publishRuntimeConfig = resolvePublishRuntimeConfig({
+    db: dbPath,
+  });
+  const effectiveComputePublishCooldownMs = computePublishCooldownMsImpl ?? ((publishMode: "append" | "rebuild") => computePublishCooldownMs(publishMode, publishRuntimeConfig));
   const targets = parseSummaryUsersImpl(summaryUsers);
   const db = openDatabase(dbPath);
   let tasks: PendingPublishTask[] = [];
@@ -166,7 +167,7 @@ export async function runPendingVideoPublishSweep({
     runs,
     failures,
     runPipelineForBvidImpl,
-    computePublishCooldownMsImpl,
+    computePublishCooldownMsImpl: effectiveComputePublishCooldownMs,
     sleepImpl,
     onAbort() {
       aborted = true;
@@ -211,12 +212,20 @@ function resolveAuthFileForVideo(
   return fallbackAuthFile;
 }
 
-function computePublishCooldownMs(publishMode: "append" | "rebuild") {
+function computePublishCooldownMs(
+  publishMode: "append" | "rebuild",
+  config: {
+    appendCooldownMinMs: number;
+    appendCooldownMaxMs: number;
+    rebuildCooldownMinMs: number;
+    rebuildCooldownMaxMs: number;
+  },
+) {
   if (publishMode === "rebuild") {
-    return randomIntBetween(PUBLISH_REBUILD_COOLDOWN_MIN_MS, PUBLISH_REBUILD_COOLDOWN_MAX_MS);
+    return randomIntBetween(config.rebuildCooldownMinMs, config.rebuildCooldownMaxMs);
   }
 
-  return randomIntBetween(PUBLISH_APPEND_COOLDOWN_MIN_MS, PUBLISH_APPEND_COOLDOWN_MAX_MS);
+  return randomIntBetween(config.appendCooldownMinMs, config.appendCooldownMaxMs);
 }
 
 function randomIntBetween(minValue: number, maxValue: number) {

@@ -53,7 +53,10 @@ export function createOperationsService({
 
   return {
     close() {
-      dashboardService.close?.();
+      closeService(dashboardService);
+      closeService(pipelineService);
+      closeService(publishService);
+      closeService(schedulerControlService);
       db.close?.();
     },
     listAudits({
@@ -115,6 +118,24 @@ export function createOperationsService({
             authFile,
             triggerSource,
           });
+        },
+      });
+    },
+    async restartScheduler({
+      confirm = false,
+    }: {
+      confirm?: boolean;
+    } = {}) {
+      return executeAuditedOperation(db, {
+        action: "scheduler-restart",
+        scope: "scheduler",
+        triggerSource,
+        request: {
+          confirm: true,
+        },
+        run() {
+          ensureConfirmed(confirm, "scheduler restart");
+          return schedulerControlService.requestRestart();
         },
       });
     },
@@ -613,4 +634,15 @@ function ensurePipelineNotActive(db: ReturnType<typeof openDatabase>, bvid: stri
   }
 
   throw new Error(`Cannot ${actionLabel} pipeline while it is already running: ${bvid}`);
+}
+
+function closeService(target: unknown) {
+  if (!target || typeof target !== "object" || !("close" in target)) {
+    return;
+  }
+
+  const close = (target as { close?: unknown }).close;
+  if (typeof close === "function") {
+    close.call(target);
+  }
 }

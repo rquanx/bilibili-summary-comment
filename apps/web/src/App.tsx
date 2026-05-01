@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useState } from "react";
-import type { ReactNode } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Route, Routes, useLocation, useParams } from "react-router-dom";
 
@@ -161,6 +161,89 @@ type ActionResponse = {
   errorMessage?: string;
 };
 
+type ManagedSettings = {
+  scheduler: {
+    authFile: string;
+    cookieFile: string | null;
+    timezone: string | null;
+    summaryUsers: string;
+    summarySinceHours: number;
+    summaryConcurrency: number;
+    retryFailuresLimit: number;
+    retryFailuresSinceHours: number;
+    retryFailuresMaxRecent: number;
+    retryFailuresWindowHours: number;
+    refreshDays: number;
+    cleanupDays: number;
+    gapCheckSinceHours: number;
+    gapThresholdSeconds: number;
+    summaryCron: string;
+    publishCron: string;
+    gapCheckCron: string;
+    retryFailuresCron: string;
+    refreshCron: string;
+    cleanupCron: string;
+  };
+  summary: {
+    model: string;
+    apiBaseUrl: string;
+    apiFormat: "auto" | "responses" | "openai-chat" | "anthropic-messages";
+    promptConfigPath: string | null;
+  };
+  publish: {
+    appendCooldownMinMs: number;
+    appendCooldownMaxMs: number;
+    rebuildCooldownMinMs: number;
+    rebuildCooldownMaxMs: number;
+  };
+};
+
+type ManagedSettingDefinition = {
+  key: string;
+  group: "scheduler" | "summary" | "publish";
+  label: string;
+  description: string;
+  input: "text" | "textarea" | "number" | "select";
+  options?: string[];
+  requiresRestart: boolean;
+  effectiveScope: string;
+};
+
+type SchedulerPlan = {
+  timezone: string;
+  tasks: Array<{
+    key: string;
+    label: string;
+    cron: string;
+    description: string;
+    requiresRestart: boolean;
+  }>;
+};
+
+type ConfigHistoryItem = {
+  id: number;
+  action: string;
+  triggerSource: string;
+  status: string;
+  request: unknown;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  updated: boolean;
+  reason: string | null;
+  restoredFromAuditId: number | null;
+  changedKeys: string[];
+  restartRequiredKeys: string[];
+  changes: Array<{
+    key: string;
+    previousValue: unknown;
+    nextValue: unknown;
+    requiresRestart: boolean;
+    effectiveScope: string;
+  }>;
+  settings: ManagedSettings | null;
+};
+
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL ?? "").trim();
 
 export default function App() {
@@ -173,6 +256,7 @@ export default function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/failures" element={<FailuresPage />} />
           <Route path="/health" element={<HealthPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="/pipeline/:bvid" element={<PipelineDetailPage />} />
         </Routes>
       </div>
@@ -193,6 +277,7 @@ function Header() {
             <HeaderLink to="/" label="Dashboard" />
             <HeaderLink to="/failures" label="Failures" />
             <HeaderLink to="/health" label="Health" />
+            <HeaderLink to="/settings" label="Settings" />
           </nav>
         </div>
         <p className="max-w-3xl text-sm leading-6 text-[var(--muted)] sm:text-base">
@@ -230,7 +315,7 @@ function RefreshBridge() {
       startTransition(() => {
         void queryClient.invalidateQueries({
           predicate(query) {
-            return Array.isArray(query.queryKey) && (query.queryKey[0] === "dashboard" || query.queryKey[0] === "scheduler");
+            return Array.isArray(query.queryKey) && (query.queryKey[0] === "dashboard" || query.queryKey[0] === "scheduler" || query.queryKey[0] === "settings");
           },
         });
 
@@ -689,6 +774,341 @@ function HealthPage() {
   );
 }
 
+function SettingsPage() {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<ManagedSettings | null>(null);
+  const [pendingSave, setPendingSave] = useState(false);
+  const [pendingRollbackId, setPendingRollbackId] = useState<number | null>(null);
+  const [pendingRestart, setPendingRestart] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const settingsQuery = useQuery({
+    queryKey: ["settings"],
+    queryFn: async () => fetchJson<{ ok: true; settings: ManagedSettings; definitions: ManagedSettingDefinition[]; schedule: SchedulerPlan }>("/api/settings"),
+  });
+  const historyQuery = useQuery({
+    queryKey: ["settings", "history"],
+    queryFn: async () => fetchJson<{ ok: true; items: ConfigHistoryItem[] }>("/api/settings/history?limit=30"),
+    refetchInterval: 5000,
+  });
+  const schedulerQuery = useQuery({
+    queryKey: ["scheduler", "status", "settings"],
+    queryFn: async () => fetchJson<{ ok: true; status: SchedulerStatus }>("/api/scheduler/status"),
+    refetchInterval: 5000,
+  });
+
+  useEffect(() => {
+    if (!settingsQuery.data?.settings) {
+      return;
+    }
+
+    setDraft(settingsQuery.data.settings);
+  }, [settingsQuery.data?.settings]);
+
+  const definitions = settingsQuery.data?.definitions ?? [];
+  const schedule = settingsQuery.data?.schedule ?? null;
+  const settings = settingsQuery.data?.settings ?? null;
+  const configHistory = historyQuery.data?.items ?? [];
+  const scheduler = schedulerQuery.data?.status ?? null;
+  const dirty = draft && settings ? JSON.stringify(draft) !== JSON.stringify(settings) : false;
+  const pendingRestartAudit = configHistory.find((item) => item.restartRequiredKeys.length > 0);
+  const schedulerRestartPending = isSchedulerRestartPending(scheduler, pendingRestartAudit);
+
+  async function saveSettings() {
+    if (!draft) {
+      return;
+    }
+
+    setPendingSave(true);
+    setMessage(null);
+    const response = await putJson<ActionResponse & {
+      result?: {
+        changedKeys?: string[];
+        restartRequiredKeys?: string[];
+      };
+    }>("/api/settings", draft as unknown as Record<string, unknown>);
+
+    if (!response.ok) {
+      setPendingSave(false);
+      setMessage(`Save failed: ${response.errorMessage || "unknown error"}`);
+      return;
+    }
+
+    const changedKeys = Array.isArray(response.result?.changedKeys) ? response.result.changedKeys : [];
+    const restartKeys = Array.isArray(response.result?.restartRequiredKeys) ? response.result.restartRequiredKeys : [];
+    setPendingSave(false);
+    setMessage(
+      changedKeys.length > 0
+        ? `Saved ${changedKeys.length} setting(s) with audit #${response.auditId}${restartKeys.length > 0 ? ". Some changes require scheduler restart." : ""}`
+        : `No effective change detected. Audit #${response.auditId}`,
+    );
+    await Promise.all([
+      refreshQueries(queryClient),
+      queryClient.invalidateQueries({
+        queryKey: ["settings"],
+      }),
+    ]);
+  }
+
+  async function rollbackToHistory(item: ConfigHistoryItem) {
+    if (!item.id) {
+      return;
+    }
+
+    setPendingRollbackId(item.id);
+    setMessage(null);
+    const response = await postJson<ActionResponse & {
+      result?: {
+        restoredFromAuditId?: number;
+      };
+    }>("/api/settings/rollback", {
+      auditId: item.id,
+    });
+
+    if (!response.ok) {
+      setPendingRollbackId(null);
+      setMessage(`Rollback failed: ${response.errorMessage || "unknown error"}`);
+      return;
+    }
+
+    setPendingRollbackId(null);
+    setMessage(`Rolled back using audit #${item.id}. New audit #${response.auditId}.`);
+    await Promise.all([
+      refreshQueries(queryClient),
+      queryClient.invalidateQueries({
+        queryKey: ["settings"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["settings", "history"],
+      }),
+    ]);
+  }
+
+  async function requestSchedulerRestart() {
+    setPendingRestart(true);
+    setMessage(null);
+    const response = await postJson<ActionResponse & {
+      result?: {
+        ownerPid?: number | null;
+      };
+    }>("/api/scheduler/restart", {
+      confirm: true,
+    });
+
+    setPendingRestart(false);
+    if (!response.ok) {
+      setMessage(`Scheduler restart request failed: ${response.errorMessage || "unknown error"}`);
+      return;
+    }
+
+    const ownerPid = typeof response.result?.ownerPid === "number" ? response.result.ownerPid : null;
+    setMessage(`Restart signal sent with audit #${response.auditId}${ownerPid ? ` to pid ${ownerPid}` : ""}. The scheduler should come back under its supervisor.`);
+    await refreshQueries(queryClient);
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">phase 4</p>
+            <h2 className="mt-1 text-2xl font-semibold">Managed Runtime Settings</h2>
+            <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+              Scheduler sweep parameters, summary model settings, and publish cooldown strategy now live in SQLite instead of scattered environment defaults.
+              Timezone and cron plan changes still require a scheduler restart; task parameters apply on the next matching run.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-3">
+            <ActionButton
+              label="Request scheduler restart"
+              busy={pendingRestart}
+              onClick={() => {
+                if (!window.confirm("Send a restart signal to the running scheduler now? This expects the process to be managed by a supervisor.")) {
+                  return;
+                }
+
+                void requestSchedulerRestart();
+              }}
+            />
+            <ActionButton
+              label="Reset draft"
+              busy={pendingSave || pendingRestart}
+              onClick={() => {
+                if (settings) {
+                  setDraft(settings);
+                  setMessage(null);
+                }
+              }}
+            />
+            <ActionButton
+              label="Save settings"
+              busy={pendingSave || pendingRestart}
+              onClick={() => {
+                void saveSettings();
+              }}
+            />
+          </div>
+        </div>
+        {message ? (
+          <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm text-[var(--muted)]">
+            {message}
+          </div>
+        ) : null}
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard title="Dirty Fields" value={dirty ? "yes" : "no"} tone={dirty ? "accent" : "neutral"} />
+          <MetricCard title="Cron Timezone" value={schedule?.timezone ?? "system"} tone="neutral" />
+          <MetricCard title="Config Audits" value={configHistory.length} tone="success" />
+          <MetricCard title="Restart Required" value={schedulerRestartPending ? "yes" : "no"} tone={schedulerRestartPending ? "danger" : "neutral"} />
+        </div>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+          <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="font-semibold">Restart state</p>
+              {schedulerRestartPending ? <span className="status-pill status-failed">pending</span> : <span className="status-pill status-succeeded">clear</span>}
+            </div>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              {schedulerRestartPending
+                ? `Latest restart-scoped config audit is #${pendingRestartAudit?.id ?? "-"} and the current scheduler has not restarted after that change yet.`
+                : "No pending scheduler restart is detected from the current config history."}
+            </p>
+          </div>
+          <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="font-semibold">Running daemon</p>
+              {scheduler?.healthy ? <span className="status-pill status-succeeded">healthy</span> : <span className="status-pill status-waiting">{scheduler?.status || "unknown"}</span>}
+            </div>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              {scheduler?.pid ? `pid ${scheduler.pid}` : "No active scheduler pid is recorded."}
+              {scheduler?.mode ? ` · mode ${scheduler.mode}` : ""}
+              {scheduler?.startedAt ? ` · started ${formatDateTime(scheduler.startedAt)}` : ""}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">scheduler</p>
+            <h3 className="text-xl font-semibold">Sweep Settings</h3>
+          </div>
+          <ManagedSettingsGroup
+            definitions={definitions.filter((item) => item.group === "scheduler")}
+            draft={draft}
+            onChange={setDraft}
+          />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">cron</p>
+            <h3 className="text-xl font-semibold">Schedule Plan</h3>
+          </div>
+          <SchedulerPlanCard schedule={schedule} />
+        </div>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-2">
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">summary</p>
+            <h3 className="text-xl font-semibold">Inference Settings</h3>
+          </div>
+          <ManagedSettingsGroup
+            definitions={definitions.filter((item) => item.group === "summary")}
+            draft={draft}
+            onChange={setDraft}
+          />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">publish</p>
+            <h3 className="text-xl font-semibold">Cooldown Strategy</h3>
+          </div>
+          <ManagedSettingsGroup
+            definitions={definitions.filter((item) => item.group === "publish")}
+            draft={draft}
+            onChange={setDraft}
+          />
+        </div>
+      </section>
+
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">history</p>
+            <h3 className="text-xl font-semibold">Config History</h3>
+          </div>
+          <span className="text-sm text-[var(--muted)]">{configHistory.length} rows</span>
+        </div>
+        <ConfigHistoryList
+          items={configHistory}
+          pendingRollbackId={pendingRollbackId}
+          onRollback={(item) => {
+            if (!window.confirm(`Rollback settings to audit #${item.id}?`)) {
+              return;
+            }
+
+            void rollbackToHistory(item);
+          }}
+        />
+      </section>
+    </div>
+  );
+}
+
+function ConfigHistoryList({
+  items,
+  pendingRollbackId,
+  onRollback,
+}: {
+  items: ConfigHistoryItem[];
+  pendingRollbackId: number | null;
+  onRollback: (item: ConfigHistoryItem) => void;
+}) {
+  if (items.length === 0) {
+    return <EmptyState text="No config changes recorded yet." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {items.map((item) => (
+        <div key={item.id} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="font-semibold">#{item.id}</p>
+                {renderStatus(item.status)}
+                <span className="status-pill status-waiting">{item.action}</span>
+                {item.restartRequiredKeys.length > 0 ? <span className="status-pill status-failed">restart</span> : null}
+              </div>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                {item.reason || "update"} 路 {item.triggerSource || "web"} 路 {formatDateTime(item.createdAt)}
+                {typeof item.restoredFromAuditId === "number" ? ` 路 restored from #${item.restoredFromAuditId}` : ""}
+              </p>
+              <p className="mt-3 text-sm text-[var(--muted)]">
+                {item.changedKeys.length > 0 ? item.changedKeys.join(", ") : "No effective key changes"}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={pendingRollbackId === item.id}
+                onClick={() => {
+                  onRollback(item);
+                }}
+                className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-wait disabled:opacity-60"
+              >
+                {pendingRollbackId === item.id ? "Rolling back..." : "Rollback"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PipelineDetailPage() {
   const params = useParams();
   const queryClient = useQueryClient();
@@ -1108,6 +1528,99 @@ function MetricCard({
   );
 }
 
+function ManagedSettingsGroup({
+  definitions,
+  draft,
+  onChange,
+}: {
+  definitions: ManagedSettingDefinition[];
+  draft: ManagedSettings | null;
+  onChange: Dispatch<SetStateAction<ManagedSettings | null>>;
+}) {
+  if (!draft) {
+    return <EmptyState text="Loading managed settings..." />;
+  }
+
+  return (
+    <div className="grid gap-4">
+      {definitions.map((definition) => {
+        const value = getManagedSettingValue(draft, definition.key);
+        const control = definition.input === "textarea" ? (
+          <textarea
+            value={value === null || value === undefined ? "" : String(value)}
+            onChange={(event) => {
+              onChange((current) => updateManagedSettingValue(current, definition.key, event.target.value));
+            }}
+            rows={4}
+            className="min-h-[112px] rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+          />
+        ) : definition.input === "select" ? (
+          <select
+            value={value === null || value === undefined ? "" : String(value)}
+            onChange={(event) => {
+              onChange((current) => updateManagedSettingValue(current, definition.key, event.target.value));
+            }}
+            className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+          >
+            {(definition.options ?? []).map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type={definition.input === "number" ? "number" : "text"}
+            value={value === null || value === undefined ? "" : String(value)}
+            onChange={(event) => {
+              onChange((current) => updateManagedSettingValue(current, definition.key, event.target.value));
+            }}
+            className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+          />
+        );
+
+        return (
+          <div key={definition.key} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-semibold">{definition.label}</p>
+                  {definition.requiresRestart ? <span className="status-pill status-failed">restart</span> : <span className="status-pill status-succeeded">hot</span>}
+                </div>
+                <p className="mt-1 text-sm text-[var(--muted)]">{definition.description}</p>
+              </div>
+            </div>
+            <div className="mt-4">{control}</div>
+            <p className="mt-3 text-xs leading-5 text-[var(--muted)]">Effective scope: {definition.effectiveScope}</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SchedulerPlanCard({ schedule }: { schedule: SchedulerPlan | null }) {
+  if (!schedule) {
+    return <EmptyState text="No schedule information available." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {schedule.tasks.map((task) => (
+        <div key={task.key} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold">{task.label}</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">{task.description}</p>
+            </div>
+            <span className="rounded-full border border-[var(--line)] bg-white/90 px-3 py-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">
+              {task.cron}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function KeyValueCard({
   label,
   value,
@@ -1265,11 +1778,23 @@ async function postJson<T>(targetPath: string, body: Record<string, unknown>): P
   return response.json() as Promise<T>;
 }
 
+async function putJson<T>(targetPath: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(buildApiUrl(targetPath), {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  return response.json() as Promise<T>;
+}
+
 async function refreshQueries(queryClient: ReturnType<typeof useQueryClient>, bvid: string | null = null) {
   await Promise.all([
     queryClient.invalidateQueries({
       predicate(query) {
-        return Array.isArray(query.queryKey) && (query.queryKey[0] === "dashboard" || query.queryKey[0] === "scheduler" || query.queryKey[0] === "audits");
+        return Array.isArray(query.queryKey) && (query.queryKey[0] === "dashboard" || query.queryKey[0] === "scheduler" || query.queryKey[0] === "audits" || query.queryKey[0] === "settings");
       },
     }),
     bvid
@@ -1278,6 +1803,180 @@ async function refreshQueries(queryClient: ReturnType<typeof useQueryClient>, bv
       })
       : Promise.resolve(),
   ]);
+}
+
+function getManagedSettingValue(settings: ManagedSettings, key: string): string | number | null {
+  switch (key) {
+    case "scheduler.authFile":
+      return settings.scheduler.authFile;
+    case "scheduler.cookieFile":
+      return settings.scheduler.cookieFile;
+    case "scheduler.timezone":
+      return settings.scheduler.timezone;
+    case "scheduler.summaryUsers":
+      return settings.scheduler.summaryUsers;
+    case "scheduler.summarySinceHours":
+      return settings.scheduler.summarySinceHours;
+    case "scheduler.summaryConcurrency":
+      return settings.scheduler.summaryConcurrency;
+    case "scheduler.retryFailuresLimit":
+      return settings.scheduler.retryFailuresLimit;
+    case "scheduler.retryFailuresSinceHours":
+      return settings.scheduler.retryFailuresSinceHours;
+    case "scheduler.retryFailuresMaxRecent":
+      return settings.scheduler.retryFailuresMaxRecent;
+    case "scheduler.retryFailuresWindowHours":
+      return settings.scheduler.retryFailuresWindowHours;
+    case "scheduler.refreshDays":
+      return settings.scheduler.refreshDays;
+    case "scheduler.cleanupDays":
+      return settings.scheduler.cleanupDays;
+    case "scheduler.gapCheckSinceHours":
+      return settings.scheduler.gapCheckSinceHours;
+    case "scheduler.gapThresholdSeconds":
+      return settings.scheduler.gapThresholdSeconds;
+    case "scheduler.summaryCron":
+      return settings.scheduler.summaryCron;
+    case "scheduler.publishCron":
+      return settings.scheduler.publishCron;
+    case "scheduler.gapCheckCron":
+      return settings.scheduler.gapCheckCron;
+    case "scheduler.retryFailuresCron":
+      return settings.scheduler.retryFailuresCron;
+    case "scheduler.refreshCron":
+      return settings.scheduler.refreshCron;
+    case "scheduler.cleanupCron":
+      return settings.scheduler.cleanupCron;
+    case "summary.model":
+      return settings.summary.model;
+    case "summary.apiBaseUrl":
+      return settings.summary.apiBaseUrl;
+    case "summary.apiFormat":
+      return settings.summary.apiFormat;
+    case "summary.promptConfigPath":
+      return settings.summary.promptConfigPath;
+    case "publish.appendCooldownMinMs":
+      return settings.publish.appendCooldownMinMs;
+    case "publish.appendCooldownMaxMs":
+      return settings.publish.appendCooldownMaxMs;
+    case "publish.rebuildCooldownMinMs":
+      return settings.publish.rebuildCooldownMinMs;
+    case "publish.rebuildCooldownMaxMs":
+      return settings.publish.rebuildCooldownMaxMs;
+    default:
+      return null;
+  }
+}
+
+function updateManagedSettingValue(
+  current: ManagedSettings | null,
+  key: string,
+  rawValue: string,
+): ManagedSettings | null {
+  if (!current) {
+    return current;
+  }
+
+  const next: ManagedSettings = {
+    scheduler: { ...current.scheduler },
+    summary: { ...current.summary },
+    publish: { ...current.publish },
+  };
+  const nullableValue = rawValue.trim() ? rawValue : null;
+
+  switch (key) {
+    case "scheduler.authFile":
+      next.scheduler.authFile = rawValue;
+      return next;
+    case "scheduler.cookieFile":
+      next.scheduler.cookieFile = nullableValue;
+      return next;
+    case "scheduler.timezone":
+      next.scheduler.timezone = nullableValue;
+      return next;
+    case "scheduler.summaryUsers":
+      next.scheduler.summaryUsers = rawValue;
+      return next;
+    case "scheduler.summarySinceHours":
+      next.scheduler.summarySinceHours = normalizeNumericInput(rawValue, current.scheduler.summarySinceHours);
+      return next;
+    case "scheduler.summaryConcurrency":
+      next.scheduler.summaryConcurrency = normalizeNumericInput(rawValue, current.scheduler.summaryConcurrency);
+      return next;
+    case "scheduler.retryFailuresLimit":
+      next.scheduler.retryFailuresLimit = normalizeNumericInput(rawValue, current.scheduler.retryFailuresLimit);
+      return next;
+    case "scheduler.retryFailuresSinceHours":
+      next.scheduler.retryFailuresSinceHours = normalizeNumericInput(rawValue, current.scheduler.retryFailuresSinceHours);
+      return next;
+    case "scheduler.retryFailuresMaxRecent":
+      next.scheduler.retryFailuresMaxRecent = normalizeNumericInput(rawValue, current.scheduler.retryFailuresMaxRecent);
+      return next;
+    case "scheduler.retryFailuresWindowHours":
+      next.scheduler.retryFailuresWindowHours = normalizeNumericInput(rawValue, current.scheduler.retryFailuresWindowHours);
+      return next;
+    case "scheduler.refreshDays":
+      next.scheduler.refreshDays = normalizeNumericInput(rawValue, current.scheduler.refreshDays);
+      return next;
+    case "scheduler.cleanupDays":
+      next.scheduler.cleanupDays = normalizeNumericInput(rawValue, current.scheduler.cleanupDays);
+      return next;
+    case "scheduler.gapCheckSinceHours":
+      next.scheduler.gapCheckSinceHours = normalizeNumericInput(rawValue, current.scheduler.gapCheckSinceHours);
+      return next;
+    case "scheduler.gapThresholdSeconds":
+      next.scheduler.gapThresholdSeconds = normalizeNumericInput(rawValue, current.scheduler.gapThresholdSeconds);
+      return next;
+    case "scheduler.summaryCron":
+      next.scheduler.summaryCron = rawValue;
+      return next;
+    case "scheduler.publishCron":
+      next.scheduler.publishCron = rawValue;
+      return next;
+    case "scheduler.gapCheckCron":
+      next.scheduler.gapCheckCron = rawValue;
+      return next;
+    case "scheduler.retryFailuresCron":
+      next.scheduler.retryFailuresCron = rawValue;
+      return next;
+    case "scheduler.refreshCron":
+      next.scheduler.refreshCron = rawValue;
+      return next;
+    case "scheduler.cleanupCron":
+      next.scheduler.cleanupCron = rawValue;
+      return next;
+    case "summary.model":
+      next.summary.model = rawValue;
+      return next;
+    case "summary.apiBaseUrl":
+      next.summary.apiBaseUrl = rawValue;
+      return next;
+    case "summary.apiFormat":
+      next.summary.apiFormat = rawValue as ManagedSettings["summary"]["apiFormat"];
+      return next;
+    case "summary.promptConfigPath":
+      next.summary.promptConfigPath = nullableValue;
+      return next;
+    case "publish.appendCooldownMinMs":
+      next.publish.appendCooldownMinMs = normalizeNumericInput(rawValue, current.publish.appendCooldownMinMs);
+      return next;
+    case "publish.appendCooldownMaxMs":
+      next.publish.appendCooldownMaxMs = normalizeNumericInput(rawValue, current.publish.appendCooldownMaxMs);
+      return next;
+    case "publish.rebuildCooldownMinMs":
+      next.publish.rebuildCooldownMinMs = normalizeNumericInput(rawValue, current.publish.rebuildCooldownMinMs);
+      return next;
+    case "publish.rebuildCooldownMaxMs":
+      next.publish.rebuildCooldownMaxMs = normalizeNumericInput(rawValue, current.publish.rebuildCooldownMaxMs);
+      return next;
+    default:
+      return current;
+  }
+}
+
+function normalizeNumericInput(rawValue: string, fallback: number): number {
+  const normalized = Number(rawValue);
+  return Number.isFinite(normalized) ? normalized : fallback;
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -1364,7 +2063,7 @@ function describeAuditResult(result: unknown): string {
   }
 
   if (payload.signalSent === true) {
-    return `cancel signal sent${typeof payload.ownerPid === "number" ? ` to pid ${payload.ownerPid}` : ""}`;
+    return `signal sent${typeof payload.ownerPid === "number" ? ` to pid ${payload.ownerPid}` : ""}`;
   }
 
   if (Array.isArray(payload.generatedPages)) {
@@ -1372,4 +2071,25 @@ function describeAuditResult(result: unknown): string {
   }
 
   return "";
+}
+
+function isSchedulerRestartPending(
+  scheduler: SchedulerStatus | null,
+  audit: ConfigHistoryItem | undefined,
+): boolean {
+  if (!audit || audit.restartRequiredKeys.length === 0) {
+    return false;
+  }
+
+  const auditTimestamp = new Date(audit.createdAt).getTime();
+  if (!Number.isFinite(auditTimestamp)) {
+    return true;
+  }
+
+  const startedAtTimestamp = scheduler?.startedAt ? new Date(scheduler.startedAt).getTime() : Number.NaN;
+  if (!Number.isFinite(startedAtTimestamp)) {
+    return true;
+  }
+
+  return startedAtTimestamp < auditTimestamp;
 }

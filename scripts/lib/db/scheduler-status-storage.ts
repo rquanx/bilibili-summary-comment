@@ -86,7 +86,7 @@ export function upsertSchedulerStatus(
         last_refresh_at = COALESCE(excluded.last_refresh_at, scheduler_status.last_refresh_at),
         last_cleanup_at = COALESCE(excluded.last_cleanup_at, scheduler_status.last_cleanup_at),
         last_error = COALESCE(excluded.last_error, scheduler_status.last_error),
-        started_at = COALESCE(scheduler_status.started_at, excluded.started_at),
+        started_at = COALESCE(excluded.started_at, scheduler_status.started_at),
         last_heartbeat_at = COALESCE(excluded.last_heartbeat_at, scheduler_status.last_heartbeat_at),
         updated_at = excluded.updated_at
     `).run(

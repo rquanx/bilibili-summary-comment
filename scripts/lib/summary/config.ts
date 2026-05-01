@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveManagedSettings } from "../config/managed-settings";
 
 const summaryConfigSchema = z.object({
   model: z.string().trim().min(1),
@@ -11,6 +12,7 @@ const summaryConfigSchema = z.object({
 type SummaryConfig = z.infer<typeof summaryConfigSchema>;
 
 interface SummaryConfigArgs extends Record<string, unknown> {
+  db?: unknown;
   model?: unknown;
   ["api-key"]?: unknown;
   ["api-base-url"]?: unknown;
@@ -19,17 +21,23 @@ interface SummaryConfigArgs extends Record<string, unknown> {
 }
 
 export function resolveSummaryConfig(args: SummaryConfigArgs = {}, env = process.env): SummaryConfig {
+  const dbPath = String((args as { db?: unknown }).db ?? env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3").trim() || "work/pipeline.sqlite3";
+  const managed = resolveManagedSettings({
+    dbPath,
+    env,
+  });
+
   return summaryConfigSchema.parse({
-    model: args.model ?? env.SUMMARY_MODEL ?? env.OPENAI_MODEL ?? "gpt-4o-mini",
+    model: args.model ?? managed.summary.model,
     apiKey: args["api-key"] ?? env.SUMMARY_API_KEY ?? env.OPENAI_API_KEY ?? "",
     apiBaseUrl: normalizeSummaryApiBaseUrl(
-      args["api-base-url"] ?? env.SUMMARY_API_BASE_URL ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+      args["api-base-url"] ?? managed.summary.apiBaseUrl,
     ),
     apiFormat: normalizeSummaryApiFormat(
-      args["api-format"] ?? env.SUMMARY_API_FORMAT ?? env.OPENAI_API_FORMAT ?? "auto",
+      args["api-format"] ?? managed.summary.apiFormat,
     ),
     promptConfigPath: normalizeOptionalSummaryPromptConfigPath(
-      args["prompt-config"] ?? env.SUMMARY_PROMPT_CONFIG ?? "config/summary-prompts.json",
+      args["prompt-config"] ?? managed.summary.promptConfigPath,
     ),
   });
 }

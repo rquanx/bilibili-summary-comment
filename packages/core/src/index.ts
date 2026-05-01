@@ -1,3 +1,4 @@
+export { createConfigService } from "./services/config-service";
 export { createDashboardService } from "./services/dashboard-service";
 export { createOperationsService } from "./services/operations-service";
 export { createPipelineService } from "./services/pipeline-service";
