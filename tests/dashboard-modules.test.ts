@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   insertOperationAudit,
   insertPipelineEvent,
+  listVideoParts,
   openDatabase,
   upsertSchedulerStatus,
   upsertVideo,
@@ -609,6 +610,167 @@ test("operations service records audits and enforces confirmation for risky acti
       assert.equal(audits[0].action, "rebuild-publish-thread");
       assert.equal(audits[0].status, "succeeded");
       assert.equal(audits[1].status, "failed");
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("operations service exposes scheduler maintenance actions and records audits", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-maintenance-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const calls: string[] = [];
+
+  try {
+    const service = createOperationsService({
+      dbPath,
+      services: {
+        schedulerControlService: {
+          close() {},
+          runSummarySweep() {
+            throw new Error("not used");
+          },
+          runGapCheck() {
+            calls.push("gap-check");
+            return {
+              checkedVideos: [{ bvid: "BV1" }],
+              newGaps: [],
+              notifiedGapCount: 0,
+            };
+          },
+          refreshAuth() {
+            calls.push("refresh-auth");
+            return Promise.resolve({
+              action: "refresh",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+            });
+          },
+          cleanupOldWork() {
+            calls.push("cleanup-work");
+            return Promise.resolve({
+              removedDirectories: ["work/old-video"],
+              missingDirectories: [],
+              candidates: [{ bvid: "BVOLD" }],
+            });
+          },
+          requestRestart() {
+            throw new Error("not used");
+          },
+        } as any,
+      },
+    });
+
+    try {
+      const gapCheckResult = await service.runGapCheck({
+        sinceHours: 12,
+      });
+      const refreshAuthResult = await service.refreshAuth({
+        force: true,
+      });
+      const cleanupResult = await service.cleanupWork({
+        cleanupDays: 3,
+      });
+
+      assert.equal(gapCheckResult.ok, true);
+      assert.equal(refreshAuthResult.ok, true);
+      assert.equal(cleanupResult.ok, true);
+      assert.deepEqual(calls, ["gap-check", "refresh-auth", "cleanup-work"]);
+
+      const audits = service.listAudits({
+        limit: 10,
+      });
+      assert.equal(audits.length, 3);
+      assert.deepEqual(audits.map((item) => item.action), ["cleanup-work", "auth-refresh", "gap-check"]);
+      assert.deepEqual(audits.map((item) => item.status), ["succeeded", "succeeded", "succeeded"]);
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("operations service can sync video state and import manual summaries", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-sync-import-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const service = createOperationsService({
+      dbPath,
+      runtime: {
+        readCookie() {
+          return "SESSDATA=fake";
+        },
+        createClient() {
+          return {} as any;
+        },
+        async fetchVideoSnapshot() {
+          return {
+            bvid: "BV1SYNCIMPORT",
+            aid: 50001,
+            title: "Sync Import Video",
+            pageCount: 2,
+            ownerMid: 123,
+            ownerName: "tester",
+            pages: [
+              {
+                pageNo: 1,
+                cid: 90001,
+                partTitle: "P1",
+                durationSec: 10,
+              },
+              {
+                pageNo: 2,
+                cid: 90002,
+                partTitle: "P2",
+                durationSec: 20,
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    try {
+      const syncResult = await service.syncVideoState({
+        bvid: "BV1SYNCIMPORT",
+      });
+      assert.equal(syncResult.ok, true);
+      const syncPayload = syncResult.result as {
+        video: { bvid: string };
+        parts: unknown[];
+      };
+      assert.equal(syncPayload.video.bvid, "BV1SYNCIMPORT");
+      assert.equal(syncPayload.parts.length, 2);
+
+      const importResult = await service.importSummary({
+        bvid: "BV1SYNCIMPORT",
+        summaryText: "<1P>\n00:00 first\n\n<2P>\n00:00 second",
+      });
+      assert.equal(importResult.ok, true);
+      const importPayload = importResult.result as {
+        savedPages: number[];
+      };
+      assert.deepEqual(importPayload.savedPages, [1, 2]);
+
+      const video = db.prepare("SELECT id FROM videos WHERE bvid = ?").get("BV1SYNCIMPORT") as { id: number } | undefined;
+      assert.ok(video);
+      const parts = listVideoParts(db, video.id);
+      assert.equal(parts.length, 2);
+      assert.match(String(parts[0].summary_text), /<1P>/u);
+      assert.match(String(parts[1].summary_text), /<2P>/u);
+
+      const audits = service.listAudits({
+        bvid: "BV1SYNCIMPORT",
+        limit: 10,
+      });
+      assert.deepEqual(audits.map((item) => item.action), ["import-summary", "sync-video-state"]);
     } finally {
       service.close();
     }
@@ -1562,6 +1724,55 @@ test("api exposes action routes and scheduler status", async () => {
       dbPath,
       logger: false,
       webDistDir: path.join(tempRoot, "missing-web-dist"),
+      services: {
+        operationsService: {
+          close() {},
+          listAudits() {
+            return [{
+              id: 1,
+              action: "rebuild-publish-thread",
+              scope: "publish",
+              triggerSource: "web",
+              bvid: "BV1ACTAPI",
+              runId: null,
+              request: null,
+              status: "succeeded",
+              result: {},
+              errorMessage: null,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }];
+          },
+          rebuildPublishThread() {
+            return Promise.resolve({ ok: true, auditId: 1, action: "rebuild-publish-thread", scope: "publish" });
+          },
+          syncVideoState() {
+            return Promise.resolve({
+              ok: true,
+              auditId: 2,
+              action: "sync-video-state",
+              scope: "pipeline",
+              result: {
+                video: {
+                  bvid: "BV1ACTAPI",
+                },
+                parts: [],
+              },
+            });
+          },
+          importSummary() {
+            return Promise.resolve({
+              ok: true,
+              auditId: 3,
+              action: "import-summary",
+              scope: "pipeline",
+              result: {
+                savedPages: [1],
+              },
+            });
+          },
+        } as any,
+      },
     });
 
     try {
@@ -1582,6 +1793,26 @@ test("api exposes action routes and scheduler status", async () => {
       assert.equal(rebuildResponse.statusCode, 200);
       assert.equal(rebuildResponse.json().ok, true);
 
+      const syncResponse = await app.inject({
+        method: "POST",
+        url: "/api/actions/pipeline/BV1ACTAPI/sync",
+        payload: {},
+      });
+      assert.equal(syncResponse.statusCode, 200);
+      assert.equal(syncResponse.json().ok, true);
+      assert.equal(syncResponse.json().result.video.bvid, "BV1ACTAPI");
+
+      const importResponse = await app.inject({
+        method: "POST",
+        url: "/api/actions/pipeline/BV1ACTAPI/import-summary",
+        payload: {
+          summaryText: "<1P>\nmanual import",
+        },
+      });
+      assert.equal(importResponse.statusCode, 200);
+      assert.equal(importResponse.json().ok, true);
+      assert.deepEqual(importResponse.json().result.savedPages, [1]);
+
       const auditsResponse = await app.inject({
         method: "GET",
         url: "/api/actions/audits?bvid=BV1ACTAPI",
@@ -1592,6 +1823,87 @@ test("api exposes action routes and scheduler status", async () => {
       await app.close();
     }
   } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("api exposes Bilibili TV login session routes", async () => {
+  const sessions = new Map<string, any>();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-login-api-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const app = await buildApiServer({
+    dbPath,
+    logger: false,
+    webDistDir: path.join(os.tmpdir(), "missing-web-dist"),
+    services: {
+      loginService: {
+        close() {},
+        async startSession() {
+          const session = {
+            id: "session-1",
+            status: "pending",
+            authFile: ".auth/bili-auth.json",
+            cookieFile: null,
+            loginUrl: "https://example.test/login",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            completedAt: null,
+            errorMessage: null,
+            mid: null,
+          };
+          sessions.set(session.id, session);
+          return session;
+        },
+        getSession(sessionId: string) {
+          return sessions.get(sessionId) ?? null;
+        },
+        cancelSession(sessionId: string) {
+          const session = sessions.get(sessionId);
+          if (!session) {
+            return null;
+          }
+
+          const next = {
+            ...session,
+            status: "cancelled",
+            updatedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+          };
+          sessions.set(sessionId, next);
+          return next;
+        },
+      } as any,
+    },
+  });
+
+  try {
+    const startResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/bili-tv-login/start",
+      payload: {},
+    });
+    assert.equal(startResponse.statusCode, 200);
+    assert.equal(startResponse.json().ok, true);
+    assert.equal(startResponse.json().session.id, "session-1");
+
+    const statusResponse = await app.inject({
+      method: "GET",
+      url: "/api/auth/bili-tv-login/session-1",
+    });
+    assert.equal(statusResponse.statusCode, 200);
+    assert.equal(statusResponse.json().session.loginUrl, "https://example.test/login");
+
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/bili-tv-login/session-1/cancel",
+      payload: {},
+    });
+    assert.equal(cancelResponse.statusCode, 200);
+    assert.equal(cancelResponse.json().session.status, "cancelled");
+  } finally {
+    await app.close();
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -1830,6 +2142,44 @@ test("api exposes retry-failure batch action route", async () => {
         runSummarySweep() {
           return Promise.resolve({ ok: true, auditId: 1, action: "summary-sweep", scope: "scheduler" });
         },
+        runGapCheck() {
+          return Promise.resolve({
+            ok: true,
+            auditId: 8,
+            action: "gap-check",
+            scope: "scheduler",
+            result: {
+              checkedVideos: [{ bvid: "BV1" }],
+              newGaps: [],
+              notifiedGapCount: 0,
+            },
+          });
+        },
+        refreshAuth() {
+          return Promise.resolve({
+            ok: true,
+            auditId: 9,
+            action: "auth-refresh",
+            scope: "scheduler",
+            result: {
+              action: "skip-refresh",
+              reason: "not-due",
+            },
+          });
+        },
+        cleanupWork() {
+          return Promise.resolve({
+            ok: true,
+            auditId: 10,
+            action: "cleanup-work",
+            scope: "scheduler",
+            result: {
+              removedDirectories: [],
+              missingDirectories: [],
+              candidates: [],
+            },
+          });
+        },
         runPublishSweep() {
           return Promise.resolve({ ok: true, auditId: 2, action: "publish-sweep", scope: "scheduler" });
         },
@@ -1917,6 +2267,39 @@ test("api exposes retry-failure batch action route", async () => {
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().ok, true);
     assert.equal(response.json().result.triggered, 2);
+
+    const gapCheckResponse = await app.inject({
+      method: "POST",
+      url: "/api/actions/gap-check",
+      payload: {
+        sinceHours: 12,
+      },
+    });
+    assert.equal(gapCheckResponse.statusCode, 200);
+    assert.equal(gapCheckResponse.json().ok, true);
+    assert.equal(gapCheckResponse.json().result.checkedVideos.length, 1);
+
+    const refreshAuthResponse = await app.inject({
+      method: "POST",
+      url: "/api/actions/refresh-auth",
+      payload: {
+        force: true,
+      },
+    });
+    assert.equal(refreshAuthResponse.statusCode, 200);
+    assert.equal(refreshAuthResponse.json().ok, true);
+    assert.equal(refreshAuthResponse.json().result.reason, "not-due");
+
+    const cleanupResponse = await app.inject({
+      method: "POST",
+      url: "/api/actions/cleanup-work",
+      payload: {
+        cleanupDays: 3,
+      },
+    });
+    assert.equal(cleanupResponse.statusCode, 200);
+    assert.equal(cleanupResponse.json().ok, true);
+    assert.equal(cleanupResponse.json().result.candidates.length, 0);
 
     const restartResponse = await app.inject({
       method: "POST",

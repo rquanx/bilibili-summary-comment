@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { z } from "zod";
+import { createBiliLoginService } from "./bili-login-service";
 import {
   createConfigService,
   createDashboardService,
@@ -75,10 +76,18 @@ const eventStreamQuerySchema = z.object({
 const actionBodySchema = z.object({
   summaryUsers: z.string().trim().optional(),
   authFile: z.string().trim().optional(),
+  cookieFile: z.string().trim().nullable().optional(),
+  timezone: z.string().trim().nullable().optional(),
+  summaryText: z.string().optional(),
   reason: z.string().trim().optional(),
   confirm: z.boolean().optional(),
+  force: z.boolean().optional(),
   forceSummary: z.boolean().optional(),
   staleMs: z.coerce.number().int().min(60_000).max(7 * 24 * 3600 * 1000).optional(),
+  sinceHours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+  refreshDays: z.coerce.number().int().min(1).max(3650).optional(),
+  cleanupDays: z.coerce.number().int().min(1).max(3650).optional(),
+  gapThresholdSeconds: z.coerce.number().int().min(1).max(24 * 3600).optional(),
   retry: z.boolean().optional(),
 });
 
@@ -147,6 +156,15 @@ const settingsRollbackBodySchema = z.object({
   auditId: z.coerce.number().int().positive(),
 });
 
+const loginSessionParamsSchema = z.object({
+  sessionId: z.string().trim().min(1),
+});
+
+const loginSessionBodySchema = z.object({
+  authFile: z.string().trim().optional(),
+  cookieFile: z.string().trim().nullable().optional(),
+});
+
 export async function buildApiServer({
   dbPath = process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
   webDistDir = path.join(getRepoRoot(), "apps", "web", "dist"),
@@ -162,6 +180,7 @@ export async function buildApiServer({
     operationsService?: ReturnType<typeof createOperationsService>;
     pipelineQueryService?: ReturnType<typeof createPipelineQueryService>;
     schedulerStatusService?: ReturnType<typeof createSchedulerStatusService>;
+    loginService?: ReturnType<typeof createBiliLoginService>;
   };
 } = {}) {
   const app = Fastify({
@@ -182,6 +201,7 @@ export async function buildApiServer({
   const schedulerStatusService = services.schedulerStatusService ?? createSchedulerStatusService({
     dbPath,
   });
+  const loginService = services.loginService ?? createBiliLoginService();
 
   app.addHook("onClose", async () => {
     configService.close?.();
@@ -189,6 +209,7 @@ export async function buildApiServer({
     operationsService.close?.();
     pipelineQueryService.close?.();
     schedulerStatusService.close?.();
+    loginService.close?.();
   });
 
   await app.register(cors, {
@@ -330,6 +351,61 @@ export async function buildApiServer({
     };
   });
 
+  app.post("/api/auth/bili-tv-login/start", async (request, reply) => {
+    const body = loginSessionBodySchema.parse(request.body ?? {});
+
+    try {
+      const session = await loginService.startSession({
+        authFile: body.authFile,
+        cookieFile: body.cookieFile,
+      });
+      return {
+        ok: true,
+        session,
+      };
+    } catch (error) {
+      reply.code(500);
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Failed to start Bilibili TV login",
+      };
+    }
+  });
+
+  app.get("/api/auth/bili-tv-login/:sessionId", async (request, reply) => {
+    const params = loginSessionParamsSchema.parse(request.params ?? {});
+    const session = loginService.getSession(params.sessionId);
+    if (!session) {
+      reply.code(404);
+      return {
+        ok: false,
+        message: `Login session not found: ${params.sessionId}`,
+      };
+    }
+
+    return {
+      ok: true,
+      session,
+    };
+  });
+
+  app.post("/api/auth/bili-tv-login/:sessionId/cancel", async (request, reply) => {
+    const params = loginSessionParamsSchema.parse(request.params ?? {});
+    const session = loginService.cancelSession(params.sessionId);
+    if (!session) {
+      reply.code(404);
+      return {
+        ok: false,
+        message: `Login session not found: ${params.sessionId}`,
+      };
+    }
+
+    return {
+      ok: true,
+      session,
+    };
+  });
+
   app.put("/api/settings", async (request, reply) => {
     const body = settingsBodySchema.parse(request.body ?? {});
     const result = await configService.updateSettings({
@@ -397,6 +473,86 @@ export async function buildApiServer({
     const result = await operationsService.runSummarySweep({
       summaryUsers: body.summaryUsers,
       authFile: body.authFile,
+    });
+
+    if (!result.ok) {
+      reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/sync", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.syncVideoState({
+      bvid: params.bvid,
+      authFile: body.authFile,
+      cookieFile: body.cookieFile,
+    });
+
+    if (!result.ok) {
+      reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/import-summary", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.importSummary({
+      bvid: params.bvid,
+      authFile: body.authFile,
+      cookieFile: body.cookieFile,
+      summaryText: body.summaryText,
+    });
+
+    if (!result.ok) {
+      reply.code(String(result.errorMessage ?? "").includes("required") || String(result.errorMessage ?? "").includes("No page markers") || String(result.errorMessage ?? "").includes("invalid") ? 400 : 500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/gap-check", async (request, reply) => {
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.runGapCheck({
+      summaryUsers: body.summaryUsers,
+      authFile: body.authFile,
+      cookieFile: body.cookieFile,
+      sinceHours: body.sinceHours,
+      gapThresholdSeconds: body.gapThresholdSeconds,
+      timezone: body.timezone,
+    });
+
+    if (!result.ok) {
+      reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/refresh-auth", async (request, reply) => {
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.refreshAuth({
+      authFile: body.authFile,
+      cookieFile: body.cookieFile,
+      refreshDays: body.refreshDays,
+      force: Boolean(body.force),
+    });
+
+    if (!result.ok) {
+      reply.code(500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/cleanup-work", async (request, reply) => {
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.cleanupWork({
+      cleanupDays: body.cleanupDays,
     });
 
     if (!result.ok) {

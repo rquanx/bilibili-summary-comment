@@ -1,7 +1,17 @@
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { createContext, startTransition, useContext, useDeferredValue, useEffect, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Route, Routes, useLocation, useParams } from "react-router-dom";
+import {
+  DEFAULT_LOCALE,
+  getInitialLocale,
+  localizeManagedSettingDefinition,
+  localizeSchedulerTask,
+  persistLocale,
+  translate,
+  translateOptional,
+  type Locale,
+} from "./i18n";
 
 type DashboardSummary = {
   activeCount: number;
@@ -284,46 +294,108 @@ type ConfigHistoryItem = {
   settings: ManagedSettings | null;
 };
 
+type BiliLoginSession = {
+  id: string;
+  status: "pending" | "scanned" | "completed" | "failed" | "cancelled";
+  authFile: string;
+  cookieFile: string | null;
+  loginUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+  mid: number | null;
+};
+
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL ?? "").trim();
 
+type I18nContextValue = {
+  locale: Locale;
+  setLocale: Dispatch<SetStateAction<Locale>>;
+  t: (key: string, vars?: Record<string, number | string>) => string;
+  tOptional: (key: string, vars?: Record<string, number | string>) => string | null;
+};
+
+const I18nContext = createContext<I18nContextValue | null>(null);
+
 export default function App() {
+  const [locale, setLocale] = useState<Locale>(() => getInitialLocale());
+
+  useEffect(() => {
+    persistLocale(locale);
+  }, [locale]);
+
+  const value: I18nContextValue = {
+    locale,
+    setLocale,
+    t: (key, vars) => translate(locale, key, vars),
+    tOptional: (key, vars) => translateOptional(locale, key, vars),
+  };
+
   return (
-    <div className="min-h-screen px-4 py-6 sm:px-6 lg:px-10">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <Header />
-        <RefreshBridge />
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/runs" element={<RunsPage />} />
-          <Route path="/failures" element={<FailuresPage />} />
-          <Route path="/health" element={<HealthPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/pipeline/:bvid" element={<PipelineDetailPage />} />
-        </Routes>
+    <I18nContext.Provider value={value}>
+      <div className="min-h-screen px-3 py-4 sm:px-5 lg:px-8">
+        <div className="mx-auto flex max-w-[1440px] flex-col gap-4">
+          <Header />
+          <RefreshBridge />
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/runs" element={<RunsPage />} />
+            <Route path="/failures" element={<FailuresPage />} />
+            <Route path="/health" element={<HealthPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/pipeline/:bvid" element={<PipelineDetailPage />} />
+          </Routes>
+        </div>
       </div>
-    </div>
+    </I18nContext.Provider>
   );
 }
 
 function Header() {
+  const { locale, setLocale, t } = useI18n();
+  const navItems = [
+    { to: "/", label: t("nav.dashboard") },
+    { to: "/runs", label: t("nav.runs") },
+    { to: "/failures", label: t("nav.failures") },
+    { to: "/health", label: t("nav.health") },
+    { to: "/settings", label: t("nav.settings") },
+  ];
+
   return (
-    <header className="glass-panel overflow-hidden rounded-[1.8rem]">
-      <div className="flex flex-col gap-5 bg-[linear-gradient(135deg,rgba(191,79,36,0.18),rgba(255,255,255,0))] px-6 py-6 sm:px-8">
-        <div className="flex items-center justify-between gap-4">
+    <header className="glass-panel overflow-hidden rounded-[1.75rem]">
+      <div className="flex flex-col gap-4 bg-[linear-gradient(135deg,rgba(36,99,235,0.12),rgba(255,255,255,0.55),rgba(255,255,255,0))] px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">video pipeline</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">Operations Console</h1>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">{t("header.brand")}</p>
+            <h1 className="mt-2 text-[2rem] font-semibold tracking-[-0.04em] sm:text-[2.4rem]">{t("header.title")}</h1>
           </div>
-          <nav className="flex flex-wrap gap-2">
-            <HeaderLink to="/" label="Dashboard" />
-            <HeaderLink to="/runs" label="Runs" />
-            <HeaderLink to="/failures" label="Failures" />
-            <HeaderLink to="/health" label="Health" />
-            <HeaderLink to="/settings" label="Settings" />
-          </nav>
+          <div className="flex flex-col items-start gap-3 lg:items-end">
+            <div className="inline-flex rounded-full border border-[var(--line)] bg-white/70 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
+              {(["zh-CN", "en-US"] as Locale[]).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => {
+                    setLocale(option);
+                  }}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                    locale === option
+                      ? "bg-[var(--ink)] text-white shadow-[0_10px_20px_rgba(15,23,42,0.18)]"
+                      : "text-[var(--muted)] hover:text-[var(--ink)]"
+                  }`}
+                >
+                  {t(`locale.${option}`)}
+                </button>
+              ))}
+            </div>
+            <nav className="flex flex-wrap gap-2">
+              {navItems.map((item) => <HeaderLink key={item.to} to={item.to} label={item.label} />)}
+            </nav>
+          </div>
         </div>
-        <p className="max-w-3xl text-sm leading-6 text-[var(--muted)] sm:text-base">
-          Read live pipeline state, inspect failures, trigger recovery actions, and verify scheduler health from one place.
+        <p className="max-w-3xl text-sm leading-6 text-[var(--muted)]">
+          {t("header.description")}
         </p>
       </div>
     </header>
@@ -340,11 +412,35 @@ function HeaderLink({
   return (
     <Link
       to={to}
-      className="rounded-full border border-[var(--line)] bg-white/70 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
+      className="rounded-full border border-[var(--line)] bg-white/72 px-3.5 py-1.5 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] hover:bg-white/88"
     >
       {label}
     </Link>
   );
+}
+
+function useI18n() {
+  const context = useContext(I18nContext);
+  if (!context) {
+    throw new Error("I18nContext is missing");
+  }
+
+  return context;
+}
+
+function useUiText() {
+  const { locale, t, tOptional } = useI18n();
+  return {
+    locale,
+    t,
+    tOptional,
+    formatDateTime(value: string | null | undefined) {
+      return formatDateTime(value, locale);
+    },
+    formatDuration(value: number | null | undefined) {
+      return formatDuration(value, locale);
+    },
+  };
 }
 
 function RefreshBridge() {
@@ -390,6 +486,7 @@ function RefreshBridge() {
 }
 
 function DashboardPage() {
+  const { t, formatDateTime } = useUiText();
   const [filter, setFilter] = useState("");
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -447,147 +544,155 @@ function DashboardPage() {
 
     const response = await postJson<ActionResponse>(targetPath, body);
     if (!response.ok) {
-      setActionMessage(`Action failed: ${response.errorMessage || "unknown error"}`);
+      setActionMessage(t("dashboard.actionFailed", { message: response.errorMessage || t("common.unknown") }));
       setPendingAction(null);
       await refreshQueries(queryClient);
       return;
     }
 
-    setActionMessage(`Action queued with audit #${response.auditId}`);
+    setActionMessage(t("dashboard.actionQueued", { auditId: response.auditId }));
     setPendingAction(null);
     await refreshQueries(queryClient);
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <MetricCard title="Active Pipelines" value={summary?.activeCount ?? 0} tone="accent" />
-        <MetricCard title="Succeeded 24h" value={summary?.succeededCount24h ?? 0} tone="success" />
-        <MetricCard title="Failed 24h" value={summary?.failedCount24h ?? 0} tone="danger" />
-        <MetricCard title="Attention" value={healthSnapshot?.attentionCount ?? 0} tone={(healthSnapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral"} />
-        <MetricCard title="Latest Update" value={formatDateTime(summary?.latestUpdatedAt)} tone="neutral" />
+    <div className="flex flex-col gap-4">
+      <section className="glass-panel rounded-[1.6rem]">
+        <StatStrip
+          items={[
+            { title: t("dashboard.metric.active"), value: summary?.activeCount ?? 0, tone: "accent" },
+            { title: t("dashboard.metric.succeeded24h"), value: summary?.succeededCount24h ?? 0, tone: "success" },
+            { title: t("dashboard.metric.failed24h"), value: summary?.failedCount24h ?? 0, tone: "danger" },
+            { title: t("dashboard.metric.attention"), value: healthSnapshot?.attentionCount ?? 0, tone: (healthSnapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral" },
+            { title: t("dashboard.metric.latestUpdate"), value: formatDateTime(summary?.latestUpdatedAt), tone: "neutral" },
+          ]}
+        />
+        <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.controls")}</p>
+            <h2 className="mt-1 text-[1.65rem] font-semibold tracking-[-0.03em]">{t("dashboard.title.actions")}</h2>
+          </div>
+          <label className="flex w-full max-w-sm flex-col gap-2 text-sm text-[var(--muted)]">
+            {t("common.byBvidOrTitle")}
+            <input
+              value={filter}
+              onChange={(event) => {
+                setFilter(event.target.value);
+              }}
+              className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+              placeholder={t("common.filterPlaceholder")}
+            />
+          </label>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <ActionButton
+            label={t("dashboard.button.summarySweep")}
+            busy={pendingAction === "summary-sweep"}
+            onClick={() => {
+              void runAction("summary-sweep", "/api/actions/summary-sweep", {});
+            }}
+          />
+          <ActionButton
+            label={t("dashboard.button.gapCheck")}
+            busy={pendingAction === "gap-check"}
+            onClick={() => {
+              void runAction("gap-check", "/api/actions/gap-check", {});
+            }}
+          />
+          <ActionButton
+            label={t("dashboard.button.publishSweep")}
+            busy={pendingAction === "publish-sweep"}
+            onClick={() => {
+              if (!window.confirm(t("dashboard.confirm.publishSweep"))) {
+                return;
+              }
+
+              void runAction("publish-sweep", "/api/actions/publish-sweep", {
+                confirm: true,
+              });
+            }}
+          />
+          <ActionButton
+            label={t("dashboard.button.retryFailures")}
+            busy={pendingAction === "retry-failures"}
+            onClick={() => {
+              if (!window.confirm(t("dashboard.confirm.retryFailures"))) {
+                return;
+              }
+
+              void runAction("retry-failures", "/api/actions/retry-failures", {
+                confirm: true,
+                limit: 5,
+                maxRecentRetries: 1,
+                retryWindowHours: 6,
+              });
+            }}
+          />
+        </div>
+        {actionMessage ? (
+          <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm text-[var(--muted)]">
+            {actionMessage}
+          </div>
+        ) : null}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1fr_0.8fr_0.9fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">controls</p>
-              <h2 className="mt-1 text-2xl font-semibold">Operator Actions</h2>
-            </div>
-            <label className="flex w-full max-w-sm flex-col gap-2 text-sm text-[var(--muted)]">
-              Filter by `bvid` or title
-              <input
-                value={filter}
-                onChange={(event) => {
-                  setFilter(event.target.value);
-                }}
-                className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
-                placeholder="for example BV1xxxx"
-              />
-            </label>
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <ActionButton
-              label="Run summary sweep"
-              busy={pendingAction === "summary-sweep"}
-              onClick={() => {
-                void runAction("summary-sweep", "/api/actions/summary-sweep", {});
-              }}
-            />
-            <ActionButton
-              label="Run publish sweep"
-              busy={pendingAction === "publish-sweep"}
-              onClick={() => {
-                if (!window.confirm("Run publish sweep now?")) {
-                  return;
-                }
-
-                void runAction("publish-sweep", "/api/actions/publish-sweep", {
-                  confirm: true,
-                });
-              }}
-            />
-            <ActionButton
-              label="Retry retryable failures"
-              busy={pendingAction === "retry-failures"}
-              onClick={() => {
-                if (!window.confirm("Retry the latest retryable failed pipelines now?")) {
-                  return;
-                }
-
-                void runAction("retry-failures", "/api/actions/retry-failures", {
-                  confirm: true,
-                  limit: 5,
-                  maxRecentRetries: 1,
-                  retryWindowHours: 6,
-                });
-              }}
-            />
-          </div>
-
-          {actionMessage ? (
-            <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm text-[var(--muted)]">
-              {actionMessage}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-          <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">scheduler</p>
-            <h2 className="text-2xl font-semibold">Daemon Status</h2>
-          </div>
-          <SchedulerStatusCard status={scheduler ?? null} />
-        </div>
-
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">attention</p>
-              <h2 className="text-2xl font-semibold">Health Watch</h2>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.active")}</p>
+              <h3 className="text-xl font-semibold">{t("dashboard.title.activePipelines")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{attentionItems.length} items</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: activeItems.length })}</span>
           </div>
-          <HealthWatchCard snapshot={healthSnapshot ?? null} items={attentionItems} />
+          <RunTable items={activeItems} emptyText={t("dashboard.empty.active")} />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem]">
+          <div className="space-y-5">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.scheduler")}</p>
+              <h3 className="text-xl font-semibold">{t("dashboard.title.daemonStatus")}</h3>
+              <div className="mt-3">
+                <SchedulerStatusCard status={scheduler ?? null} />
+              </div>
+            </div>
+
+            <div className="border-t border-[var(--line)] pt-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.attention")}</p>
+                  <h3 className="text-xl font-semibold">{t("dashboard.title.healthWatch")}</h3>
+                </div>
+                <span className="text-sm text-[var(--muted)]">{t("common.items", { count: attentionItems.length })}</span>
+              </div>
+              <HealthWatchCard snapshot={healthSnapshot ?? null} items={attentionItems.slice(0, 4)} />
+            </div>
+
+            <div className="border-t border-[var(--line)] pt-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.hotspots")}</p>
+                  <h3 className="text-xl font-semibold">{t("dashboard.title.failureGroups")}</h3>
+                </div>
+                <span className="text-sm text-[var(--muted)]">{t("common.groups", { count: failureGroupItems.length })}</span>
+              </div>
+              <FailureGroupList items={failureGroupItems.slice(0, 4)} />
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">active</p>
-              <h3 className="text-xl font-semibold">Active Pipelines</h3>
-            </div>
-            <span className="text-sm text-[var(--muted)]">{activeItems.length} rows</span>
-          </div>
-          <RunTable items={activeItems} emptyText="No active pipelines right now." />
-        </div>
-
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">hotspots</p>
-              <h3 className="text-xl font-semibold">Failure Groups</h3>
-            </div>
-            <span className="text-sm text-[var(--muted)]">{failureGroupItems.length} groups</span>
-          </div>
-          <FailureGroupList items={failureGroupItems} />
-        </div>
-      </section>
-
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">queue</p>
-            <h3 className="text-xl font-semibold">Failure Queue</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.queue")}</p>
+            <h3 className="text-xl font-semibold">{t("dashboard.title.failureQueue")}</h3>
           </div>
-          <span className="text-sm text-[var(--muted)]">{failureQueueItems.length} items</span>
+          <span className="text-sm text-[var(--muted)]">{t("common.items", { count: failureQueueItems.length })}</span>
         </div>
         <FailureQueueList
-          items={failureQueueItems}
+          items={failureQueueItems.slice(0, 8)}
           pendingAction={pendingAction}
           onRetry={(item) => {
             if (!item.bvid) {
@@ -598,33 +703,12 @@ function DashboardPage() {
           }}
         />
       </section>
-
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">recent</p>
-            <h3 className="text-xl font-semibold">Recent Runs</h3>
-          </div>
-          <span className="text-sm text-[var(--muted)]">{recentItems.length} rows</span>
-        </div>
-        <RunTable items={recentItems} emptyText="No recent runs available." />
-      </section>
-
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">audits</p>
-            <h3 className="text-xl font-semibold">Recent Manual Actions</h3>
-          </div>
-          <span className="text-sm text-[var(--muted)]">{auditItems.length} rows</span>
-        </div>
-        <AuditList items={auditItems} emptyText="No manual operations recorded yet." />
-      </section>
     </div>
   );
 }
 
 function FailuresPage() {
+  const { t } = useUiText();
   const [filter, setFilter] = useState("");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -653,41 +737,41 @@ function FailuresPage() {
 
     const response = await postJson<ActionResponse>(targetPath, body);
     if (!response.ok) {
-      setActionMessage(`Action failed: ${response.errorMessage || "unknown error"}`);
+      setActionMessage(t("failures.actionFailed", { message: response.errorMessage || t("common.unknown") }));
       setPendingAction(null);
       await refreshQueries(queryClient);
       return;
     }
 
-    setActionMessage(`Action accepted with audit #${response.auditId}`);
+    setActionMessage(t("failures.actionAccepted", { auditId: response.auditId }));
     setPendingAction(null);
     await refreshQueries(queryClient);
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+    <div className="flex flex-col gap-4">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">phase 3</p>
-            <h2 className="mt-1 text-2xl font-semibold">Failure Queue</h2>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("failures.eyebrow.phase")}</p>
+            <h2 className="mt-1 text-[1.65rem] font-semibold tracking-[-0.03em]">{t("failures.title.queue")}</h2>
           </div>
           <label className="flex w-full max-w-sm flex-col gap-2 text-sm text-[var(--muted)]">
-            Filter by `bvid` or title
+            {t("common.byBvidOrTitle")}
             <input
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
               className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
-              placeholder="for example BV1xxxx"
+              placeholder={t("common.filterPlaceholder")}
             />
           </label>
         </div>
         <div className="mt-5 flex flex-wrap gap-3">
           <ActionButton
-            label="Retry retryable failures"
+            label={t("failures.button.retryFailures")}
             busy={pendingAction === "retry-failures"}
             onClick={() => {
-              if (!window.confirm("Retry the latest retryable failed pipelines now?")) {
+              if (!window.confirm(t("failures.confirm.retryFailures"))) {
                 return;
               }
 
@@ -707,25 +791,25 @@ function FailuresPage() {
         ) : null}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">clusters</p>
-              <h3 className="text-xl font-semibold">Failure Groups</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("failures.eyebrow.clusters")}</p>
+              <h3 className="text-xl font-semibold">{t("dashboard.title.failureGroups")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{failureGroupItems.length} groups</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.groups", { count: failureGroupItems.length })}</span>
           </div>
           <FailureGroupList items={failureGroupItems} />
         </div>
 
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">items</p>
-              <h3 className="text-xl font-semibold">Failure Queue</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("failures.eyebrow.items")}</p>
+              <h3 className="text-xl font-semibold">{t("failures.title.queue")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{failureQueueItems.length} items</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.items", { count: failureQueueItems.length })}</span>
           </div>
           <FailureQueueList
             items={failureQueueItems}
@@ -741,21 +825,22 @@ function FailuresPage() {
         </div>
       </section>
 
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">audits</p>
-            <h3 className="text-xl font-semibold">Recent Recovery Actions</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.audits")}</p>
+            <h3 className="text-xl font-semibold">{t("failures.title.recoveryActions")}</h3>
           </div>
-          <span className="text-sm text-[var(--muted)]">{auditItems.length} rows</span>
+          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: auditItems.length })}</span>
         </div>
-        <AuditList items={auditItems} emptyText="No recovery actions recorded yet." />
+        <AuditList items={auditItems} emptyText={t("failures.empty.recoveryActions")} />
       </section>
     </div>
   );
 }
 
 function HealthPage() {
+  const { t } = useUiText();
   const queryClient = useQueryClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -790,51 +875,51 @@ function HealthPage() {
 
     const response = await postJson<ActionResponse>(targetPath, body);
     if (!response.ok) {
-      setActionMessage(`Action failed: ${response.errorMessage || "unknown error"}`);
+      setActionMessage(t("failures.actionFailed", { message: response.errorMessage || t("common.unknown") }));
       setPendingAction(null);
       await refreshQueries(queryClient);
       return;
     }
 
-    setActionMessage(`Action accepted with audit #${response.auditId}`);
+    setActionMessage(t("failures.actionAccepted", { auditId: response.auditId }));
     setPendingAction(null);
     await refreshQueries(queryClient);
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title="Attention" value={snapshot?.attentionCount ?? 0} tone={(snapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral"} />
-        <MetricCard title="Critical" value={snapshot?.criticalCount ?? 0} tone="danger" />
-        <MetricCard title="Warnings" value={snapshot?.warningCount ?? 0} tone="neutral" />
-        <MetricCard title="Stalled Runs" value={snapshot?.staleRunningCount ?? 0} tone="accent" />
+        <MetricCard title={t("health.metric.attention")} value={snapshot?.attentionCount ?? 0} tone={(snapshot?.criticalCount ?? 0) > 0 ? "danger" : "neutral"} />
+        <MetricCard title={t("health.metric.critical")} value={snapshot?.criticalCount ?? 0} tone="danger" />
+        <MetricCard title={t("health.metric.warnings")} value={snapshot?.warningCount ?? 0} tone="neutral" />
+        <MetricCard title={t("health.metric.stalled")} value={snapshot?.staleRunningCount ?? 0} tone="accent" />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">scheduler</p>
-            <h2 className="text-2xl font-semibold">Daemon Health</h2>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.scheduler")}</p>
+            <h2 className="text-[1.65rem] font-semibold tracking-[-0.03em]">{t("health.title.daemonHealth")}</h2>
           </div>
           <SchedulerStatusCard status={scheduler} />
         </div>
 
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">attention</p>
-            <h2 className="text-2xl font-semibold">Attention Queue</h2>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.attention")}</p>
+            <h2 className="text-[1.65rem] font-semibold tracking-[-0.03em]">{t("health.title.attentionQueue")}</h2>
           </div>
           <HealthWatchCard snapshot={snapshot} items={attentionItems} />
         </div>
       </section>
 
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">recovery</p>
-            <h3 className="text-xl font-semibold">Zombie Recovery Candidates</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.recovery")}</p>
+            <h3 className="text-xl font-semibold">{t("health.title.recoveryCandidates")}</h3>
           </div>
-          <span className="text-sm text-[var(--muted)]">{recoveryItems.length} rows</span>
+          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: recoveryItems.length })}</span>
         </div>
         {actionMessage ? (
           <div className="mb-4 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm text-[var(--muted)]">
@@ -849,7 +934,7 @@ function HealthPage() {
               return;
             }
 
-            if (!window.confirm(`Recover zombie pipeline ${item.bvid} now? This will mark the stale run failed and queue a retry.`)) {
+            if (!window.confirm(t("health.confirm.recover", { bvid: item.bvid }))) {
               return;
             }
 
@@ -865,7 +950,7 @@ function HealthPage() {
               return;
             }
 
-            if (!window.confirm(`Cancel stale pipeline ${item.bvid} now?`)) {
+            if (!window.confirm(t("health.confirm.cancel", { bvid: item.bvid }))) {
               return;
             }
 
@@ -876,26 +961,32 @@ function HealthPage() {
         />
       </section>
 
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">running</p>
-            <h3 className="text-xl font-semibold">Active Pipelines</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("health.eyebrow.running")}</p>
+            <h3 className="text-xl font-semibold">{t("dashboard.title.activePipelines")}</h3>
           </div>
-          <span className="text-sm text-[var(--muted)]">{activeItems.length} rows</span>
+          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: activeItems.length })}</span>
         </div>
-        <RunTable items={activeItems} emptyText="No active pipelines right now." />
+        <RunTable items={activeItems} emptyText={t("dashboard.empty.active")} />
       </section>
     </div>
   );
 }
 
 function SettingsPage() {
+  const { locale, t, formatDateTime } = useUiText();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ManagedSettings | null>(null);
   const [pendingSave, setPendingSave] = useState(false);
   const [pendingRollbackId, setPendingRollbackId] = useState<number | null>(null);
   const [pendingRestart, setPendingRestart] = useState(false);
+  const [pendingLoginStart, setPendingLoginStart] = useState(false);
+  const [pendingLoginCancel, setPendingLoginCancel] = useState(false);
+  const [loginSessionId, setLoginSessionId] = useState<string | null>(null);
+  const [loginAuthFile, setLoginAuthFile] = useState("");
+  const [loginCookieFile, setLoginCookieFile] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const settingsQuery = useQuery({
     queryKey: ["settings"],
@@ -911,6 +1002,15 @@ function SettingsPage() {
     queryFn: async () => fetchJson<{ ok: true; status: SchedulerStatus }>("/api/scheduler/status"),
     refetchInterval: 5000,
   });
+  const loginSessionQuery = useQuery({
+    queryKey: ["settings", "bili-login", loginSessionId],
+    enabled: Boolean(loginSessionId),
+    queryFn: async () => fetchJson<{ ok: true; session: BiliLoginSession }>(`/api/auth/bili-tv-login/${encodeURIComponent(String(loginSessionId))}`),
+    refetchInterval(query) {
+      const session = query.state.data?.session;
+      return session && (session.status === "pending" || session.status === "scanned") ? 2000 : false;
+    },
+  });
 
   useEffect(() => {
     if (!settingsQuery.data?.settings) {
@@ -920,11 +1020,17 @@ function SettingsPage() {
     setDraft(settingsQuery.data.settings);
   }, [settingsQuery.data?.settings]);
 
-  const definitions = settingsQuery.data?.definitions ?? [];
-  const schedule = settingsQuery.data?.schedule ?? null;
+  const definitions = (settingsQuery.data?.definitions ?? []).map((item) => localizeManagedSettingDefinition(locale, item));
+  const schedule = settingsQuery.data?.schedule
+    ? {
+      ...settingsQuery.data.schedule,
+      tasks: settingsQuery.data.schedule.tasks.map((item) => localizeSchedulerTask(locale, item)),
+    }
+    : null;
   const settings = settingsQuery.data?.settings ?? null;
   const configHistory = historyQuery.data?.items ?? [];
   const scheduler = schedulerQuery.data?.status ?? null;
+  const loginSession = loginSessionQuery.data?.session ?? null;
   const dirty = draft && settings ? JSON.stringify(draft) !== JSON.stringify(settings) : false;
   const pendingRestartAudit = configHistory.find((item) => item.restartRequiredKeys.length > 0);
   const schedulerRestartPending = isSchedulerRestartPending(scheduler, pendingRestartAudit);
@@ -945,7 +1051,7 @@ function SettingsPage() {
 
     if (!response.ok) {
       setPendingSave(false);
-      setMessage(`Save failed: ${response.errorMessage || "unknown error"}`);
+      setMessage(t("settings.message.saveFailed", { message: response.errorMessage || t("common.unknown") }));
       return;
     }
 
@@ -954,8 +1060,12 @@ function SettingsPage() {
     setPendingSave(false);
     setMessage(
       changedKeys.length > 0
-        ? `Saved ${changedKeys.length} setting(s) with audit #${response.auditId}${restartKeys.length > 0 ? ". Some changes require scheduler restart." : ""}`
-        : `No effective change detected. Audit #${response.auditId}`,
+        ? t("settings.message.saved", {
+          count: changedKeys.length,
+          auditId: response.auditId,
+          restartNote: restartKeys.length > 0 ? t("settings.message.restartNote") : "",
+        })
+        : t("settings.message.noChanges", { auditId: response.auditId }),
     );
     await Promise.all([
       refreshQueries(queryClient),
@@ -982,12 +1092,12 @@ function SettingsPage() {
 
     if (!response.ok) {
       setPendingRollbackId(null);
-      setMessage(`Rollback failed: ${response.errorMessage || "unknown error"}`);
+      setMessage(t("settings.message.rollbackFailed", { message: response.errorMessage || t("common.unknown") }));
       return;
     }
 
     setPendingRollbackId(null);
-    setMessage(`Rolled back using audit #${item.id}. New audit #${response.auditId}.`);
+    setMessage(t("settings.message.rolledBack", { sourceAuditId: item.id, newAuditId: response.auditId }));
     await Promise.all([
       refreshQueries(queryClient),
       queryClient.invalidateQueries({
@@ -1012,33 +1122,77 @@ function SettingsPage() {
 
     setPendingRestart(false);
     if (!response.ok) {
-      setMessage(`Scheduler restart request failed: ${response.errorMessage || "unknown error"}`);
+      setMessage(t("settings.message.restartFailed", { message: response.errorMessage || t("common.unknown") }));
       return;
     }
 
     const ownerPid = typeof response.result?.ownerPid === "number" ? response.result.ownerPid : null;
-    setMessage(`Restart signal sent with audit #${response.auditId}${ownerPid ? ` to pid ${ownerPid}` : ""}. The scheduler should come back under its supervisor.`);
+    setMessage(t("settings.message.restartSent", {
+      auditId: response.auditId,
+      suffix: ownerPid ? t("settings.message.pidSuffix", { pid: ownerPid }) : "",
+    }));
     await refreshQueries(queryClient);
   }
 
+  async function startBiliLogin() {
+    setPendingLoginStart(true);
+    setMessage(null);
+    const response = await postJson<{ ok: boolean; session?: BiliLoginSession; message?: string }>("/api/auth/bili-tv-login/start", {
+      authFile: loginAuthFile.trim() || undefined,
+      cookieFile: loginCookieFile.trim() || undefined,
+    });
+    setPendingLoginStart(false);
+
+    if (!response.ok || !response.session) {
+      setMessage(t("settings.message.loginStartFailed", { message: response.message || t("common.unknown") }));
+      return;
+    }
+
+    setLoginSessionId(response.session.id);
+    setMessage(t("settings.message.loginStarted"));
+    await queryClient.invalidateQueries({
+      queryKey: ["settings", "bili-login", response.session.id],
+    });
+  }
+
+  async function cancelBiliLogin() {
+    if (!loginSessionId) {
+      return;
+    }
+
+    setPendingLoginCancel(true);
+    setMessage(null);
+    const response = await postJson<{ ok: boolean; session?: BiliLoginSession; message?: string }>(`/api/auth/bili-tv-login/${encodeURIComponent(loginSessionId)}/cancel`, {});
+    setPendingLoginCancel(false);
+
+    if (!response.ok) {
+      setMessage(t("settings.message.loginCancelFailed", { message: response.message || t("common.unknown") }));
+      return;
+    }
+
+    setMessage(t("settings.message.loginCancelled"));
+    await queryClient.invalidateQueries({
+      queryKey: ["settings", "bili-login", loginSessionId],
+    });
+  }
+
   return (
-    <div className="flex flex-col gap-6">
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+    <div className="flex flex-col gap-4">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="max-w-3xl">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">phase 4</p>
-            <h2 className="mt-1 text-2xl font-semibold">Managed Runtime Settings</h2>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.phase")}</p>
+            <h2 className="mt-1 text-[1.65rem] font-semibold tracking-[-0.03em]">{t("settings.title.runtime")}</h2>
             <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-              Scheduler sweep parameters, summary model settings, and publish cooldown strategy now live in SQLite instead of scattered environment defaults.
-              Timezone and cron plan changes still require a scheduler restart; task parameters apply on the next matching run.
+              {t("settings.description")}
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-3">
             <ActionButton
-              label="Request scheduler restart"
+              label={t("settings.button.requestRestart")}
               busy={pendingRestart}
               onClick={() => {
-                if (!window.confirm("Send a restart signal to the running scheduler now? This expects the process to be managed by a supervisor.")) {
+                if (!window.confirm(t("settings.confirm.requestRestart"))) {
                   return;
                 }
 
@@ -1046,7 +1200,7 @@ function SettingsPage() {
               }}
             />
             <ActionButton
-              label="Reset draft"
+              label={t("settings.button.resetDraft")}
               busy={pendingSave || pendingRestart}
               onClick={() => {
                 if (settings) {
@@ -1056,7 +1210,7 @@ function SettingsPage() {
               }}
             />
             <ActionButton
-              label="Save settings"
+              label={t("settings.button.save")}
               busy={pendingSave || pendingRestart}
               onClick={() => {
                 void saveSettings();
@@ -1070,42 +1224,42 @@ function SettingsPage() {
           </div>
         ) : null}
         <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard title="Dirty Fields" value={dirty ? "yes" : "no"} tone={dirty ? "accent" : "neutral"} />
-          <MetricCard title="Cron Timezone" value={schedule?.timezone ?? "system"} tone="neutral" />
-          <MetricCard title="Config Audits" value={configHistory.length} tone="success" />
-          <MetricCard title="Restart Required" value={schedulerRestartPending ? "yes" : "no"} tone={schedulerRestartPending ? "danger" : "neutral"} />
+          <MetricCard title={t("settings.metric.dirtyFields")} value={dirty ? t("common.yes") : t("common.no")} tone={dirty ? "accent" : "neutral"} />
+          <MetricCard title={t("settings.metric.cronTimezone")} value={schedule?.timezone ?? t("common.system")} tone="neutral" />
+          <MetricCard title={t("settings.metric.configAudits")} value={configHistory.length} tone="success" />
+          <MetricCard title={t("settings.metric.restartRequired")} value={schedulerRestartPending ? t("common.yes") : t("common.no")} tone={schedulerRestartPending ? "danger" : "neutral"} />
         </div>
         <div className="mt-5 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="font-semibold">Restart state</p>
-              {schedulerRestartPending ? <span className="status-pill status-failed">pending</span> : <span className="status-pill status-succeeded">clear</span>}
+              <p className="font-semibold">{t("settings.title.restartState")}</p>
+              {schedulerRestartPending ? <span className="status-pill status-failed">{t("settings.restart.pending")}</span> : <span className="status-pill status-succeeded">{t("settings.restart.clear")}</span>}
             </div>
             <p className="mt-2 text-sm text-[var(--muted)]">
               {schedulerRestartPending
-                ? `Latest restart-scoped config audit is #${pendingRestartAudit?.id ?? "-"} and the current scheduler has not restarted after that change yet.`
-                : "No pending scheduler restart is detected from the current config history."}
+                ? t("settings.restart.pendingDescription", { auditId: pendingRestartAudit?.id ?? "-" })
+                : t("settings.restart.clearDescription")}
             </p>
           </div>
           <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="font-semibold">Running daemon</p>
-              {scheduler?.healthy ? <span className="status-pill status-succeeded">healthy</span> : <span className="status-pill status-waiting">{scheduler?.status || "unknown"}</span>}
+              <p className="font-semibold">{t("settings.title.runningDaemon")}</p>
+              {scheduler?.healthy ? <span className="status-pill status-succeeded">{t("common.healthy")}</span> : <span className="status-pill status-waiting">{scheduler?.status || t("common.unknown")}</span>}
             </div>
             <p className="mt-2 text-sm text-[var(--muted)]">
-              {scheduler?.pid ? `pid ${scheduler.pid}` : "No active scheduler pid is recorded."}
-              {scheduler?.mode ? ` · mode ${scheduler.mode}` : ""}
-              {scheduler?.startedAt ? ` · started ${formatDateTime(scheduler.startedAt)}` : ""}
+              {scheduler?.pid ? t("settings.daemon.pid", { pid: scheduler.pid }) : t("settings.daemon.noPid")}
+              {scheduler?.mode ? ` · ${t("settings.daemon.mode", { mode: scheduler.mode })}` : ""}
+              {scheduler?.startedAt ? ` · ${t("common.startedAt", { value: formatDateTime(scheduler.startedAt) })}` : ""}
             </p>
           </div>
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">scheduler</p>
-            <h3 className="text-xl font-semibold">Sweep Settings</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.scheduler")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.sweepSettings")}</h3>
           </div>
           <ManagedSettingsGroup
             definitions={definitions.filter((item) => item.group === "scheduler")}
@@ -1114,20 +1268,110 @@ function SettingsPage() {
           />
         </div>
 
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">cron</p>
-            <h3 className="text-xl font-semibold">Schedule Plan</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.cron")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.schedulePlan")}</h3>
           </div>
           <SchedulerPlanCard schedule={schedule} />
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-2">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">summary</p>
-            <h3 className="text-xl font-semibold">Inference Settings</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.auth")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.biliLogin")}</h3>
+          </div>
+          <p className="text-sm leading-6 text-[var(--muted)]">
+            {t("settings.auth.description")}
+          </p>
+          <div className="mt-4 grid gap-4">
+            <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
+              {t("settings.auth.authFileOverride")}
+              <input
+                value={loginAuthFile}
+                onChange={(event) => {
+                  setLoginAuthFile(event.target.value);
+                }}
+                className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+                placeholder={t("settings.auth.placeholder.authFile")}
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
+              {t("settings.auth.cookieFileOverride")}
+              <input
+                value={loginCookieFile}
+                onChange={(event) => {
+                  setLoginCookieFile(event.target.value);
+                }}
+                className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
+                placeholder={t("settings.auth.placeholder.cookieFile")}
+              />
+            </label>
+            <div className="flex flex-wrap gap-3">
+              <ActionButton
+                label={t("settings.auth.startSession")}
+                busy={pendingLoginStart}
+                onClick={() => {
+                  void startBiliLogin();
+                }}
+              />
+              {loginSession && (loginSession.status === "pending" || loginSession.status === "scanned") ? (
+                <ActionButton
+                  label={t("settings.auth.cancelSession")}
+                  busy={pendingLoginCancel}
+                  onClick={() => {
+                    void cancelBiliLogin();
+                  }}
+                />
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem]">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.session")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.currentSession")}</h3>
+          </div>
+          {loginSession ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <StatusPill status={loginSession.status} />
+                <span className="text-sm text-[var(--muted)]">{t("common.updatedAt", { value: formatDateTime(loginSession.updatedAt) })}</span>
+              </div>
+              <KeyValueCard label={t("settings.session.authFile")} value={loginSession.authFile} />
+              <KeyValueCard label={t("settings.session.cookieFile")} value={loginSession.cookieFile || "-"} />
+              <KeyValueCard label={t("settings.session.mid")} value={loginSession.mid ? String(loginSession.mid) : "-"} />
+              {loginSession.loginUrl ? (
+                <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
+                  {t("settings.session.loginUrl")}
+                  <textarea
+                    readOnly
+                    value={loginSession.loginUrl}
+                    rows={4}
+                    className="rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm leading-6 outline-none"
+                  />
+                </label>
+              ) : null}
+              {loginSession.errorMessage ? (
+                <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4 text-sm text-[var(--muted)]">
+                  {loginSession.errorMessage}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <EmptyState text={t("settings.session.empty")} />
+          )}
+        </div>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2">
+        <div className="glass-panel rounded-[1.6rem]">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.summary")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.inference")}</h3>
           </div>
           <ManagedSettingsGroup
             definitions={definitions.filter((item) => item.group === "summary")}
@@ -1136,10 +1380,10 @@ function SettingsPage() {
           />
         </div>
 
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">publish</p>
-            <h3 className="text-xl font-semibold">Cooldown Strategy</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.publish")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.cooldown")}</h3>
           </div>
           <ManagedSettingsGroup
             definitions={definitions.filter((item) => item.group === "publish")}
@@ -1149,19 +1393,19 @@ function SettingsPage() {
         </div>
       </section>
 
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">history</p>
-            <h3 className="text-xl font-semibold">Config History</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("settings.eyebrow.history")}</p>
+            <h3 className="text-xl font-semibold">{t("settings.title.configHistory")}</h3>
           </div>
-          <span className="text-sm text-[var(--muted)]">{configHistory.length} rows</span>
+          <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: configHistory.length })}</span>
         </div>
         <ConfigHistoryList
           items={configHistory}
           pendingRollbackId={pendingRollbackId}
           onRollback={(item) => {
-            if (!window.confirm(`Rollback settings to audit #${item.id}?`)) {
+            if (!window.confirm(t("settings.history.confirm.rollback", { id: item.id }))) {
               return;
             }
 
@@ -1182,8 +1426,10 @@ function ConfigHistoryList({
   pendingRollbackId: number | null;
   onRollback: (item: ConfigHistoryItem) => void;
 }) {
+  const { t, formatDateTime } = useUiText();
+
   if (items.length === 0) {
-    return <EmptyState text="No config changes recorded yet." />;
+    return <EmptyState text={t("settings.history.empty")} />;
   }
 
   return (
@@ -1194,16 +1440,16 @@ function ConfigHistoryList({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-semibold">#{item.id}</p>
-                {renderStatus(item.status)}
+                <StatusPill status={item.status} />
                 <span className="status-pill status-waiting">{item.action}</span>
-                {item.restartRequiredKeys.length > 0 ? <span className="status-pill status-failed">restart</span> : null}
+                {item.restartRequiredKeys.length > 0 ? <span className="status-pill status-failed">{t("managedSettings.restart")}</span> : null}
               </div>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                {item.reason || "update"} 路 {item.triggerSource || "web"} 路 {formatDateTime(item.createdAt)}
-                {typeof item.restoredFromAuditId === "number" ? ` 路 restored from #${item.restoredFromAuditId}` : ""}
+                {t(`settings.history.reason.${item.reason || "update"}`)} · {item.triggerSource || t("common.web")} · {formatDateTime(item.createdAt)}
+                {typeof item.restoredFromAuditId === "number" ? ` · ${t("settings.history.restoredFrom", { id: item.restoredFromAuditId })}` : ""}
               </p>
               <p className="mt-3 text-sm text-[var(--muted)]">
-                {item.changedKeys.length > 0 ? item.changedKeys.join(", ") : "No effective key changes"}
+                {item.changedKeys.length > 0 ? item.changedKeys.join(", ") : t("settings.history.changedKeys.empty")}
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
@@ -1215,7 +1461,7 @@ function ConfigHistoryList({
                 }}
                 className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-wait disabled:opacity-60"
               >
-                {pendingRollbackId === item.id ? "Rolling back..." : "Rollback"}
+                {pendingRollbackId === item.id ? t("settings.history.button.rollingBack") : t("settings.history.button.rollback")}
               </button>
             </div>
           </div>
@@ -1226,6 +1472,7 @@ function ConfigHistoryList({
 }
 
 function RunsPage() {
+  const { t } = useUiText();
   const pageSize = 25;
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(0);
@@ -1243,18 +1490,18 @@ function RunsPage() {
   const pageEnd = offset + items.length;
 
   return (
-    <div className="flex flex-col gap-6">
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+    <div className="flex flex-col gap-4">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">history</p>
-            <h2 className="mt-1 text-3xl font-semibold tracking-tight">Run History</h2>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("runs.eyebrow.history")}</p>
+            <h2 className="mt-1 text-[1.8rem] font-semibold tracking-[-0.03em]">{t("runs.title.history")}</h2>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--muted)]">
-              Browse the complete pipeline run log instead of only the recent dashboard slice.
+              {t("runs.description")}
             </p>
           </div>
           <label className="flex min-w-[220px] flex-col gap-2 text-sm text-[var(--muted)]">
-            Status filter
+            {t("runs.filter.status")}
             <select
               value={statusFilter}
               onChange={(event) => {
@@ -1263,28 +1510,28 @@ function RunsPage() {
               }}
               className="rounded-2xl border border-[var(--line)] bg-white/75 px-4 py-3 outline-none transition focus:border-[var(--accent)]"
             >
-              <option value="all">All statuses</option>
-              <option value="running">Running</option>
-              <option value="succeeded">Succeeded</option>
-              <option value="failed">Failed</option>
-              <option value="cancelled">Cancelled</option>
+              <option value="all">{t("runs.filter.all")}</option>
+              <option value="running">{t("status.running")}</option>
+              <option value="succeeded">{t("status.succeeded")}</option>
+              <option value="failed">{t("status.failed")}</option>
+              <option value="cancelled">{t("status.cancelled")}</option>
             </select>
           </label>
         </div>
       </section>
 
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="glass-panel rounded-[1.6rem]">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">runs</p>
-            <h3 className="text-xl font-semibold">All Pipeline Runs</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.runs")}</p>
+            <h3 className="text-xl font-semibold">{t("runs.title.allRuns")}</h3>
           </div>
           <span className="text-sm text-[var(--muted)]">
             {pageStart}-{pageEnd} / {total}
           </span>
         </div>
 
-        <RunTable items={items} emptyText="No runs match the current filter." />
+        <RunTable items={items} emptyText={t("runs.empty.filtered")} />
 
         <PaginationControls
           className="mt-4"
@@ -1305,10 +1552,13 @@ function RunsPage() {
 }
 
 function PipelineDetailPage() {
+  const { t, formatDateTime } = useUiText();
   const params = useParams();
   const queryClient = useQueryClient();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [importSummaryText, setImportSummaryText] = useState("");
+  const [importSummarySource, setImportSummarySource] = useState<string | null>(null);
   const [runPage, setRunPage] = useState(0);
   const [eventPage, setEventPage] = useState(0);
   const bvid = String(params.bvid ?? "").trim();
@@ -1318,6 +1568,8 @@ function PipelineDetailPage() {
   useEffect(() => {
     setRunPage(0);
     setEventPage(0);
+    setImportSummaryText("");
+    setImportSummarySource(null);
   }, [bvid]);
 
   const detailQuery = useQuery({
@@ -1358,52 +1610,59 @@ function PipelineDetailPage() {
 
     const response = await postJson<ActionResponse>(targetPath, body);
     if (!response.ok) {
-      setActionMessage(`Action failed: ${response.errorMessage || "unknown error"}`);
+      setActionMessage(t("pipeline.actionFailed", { message: response.errorMessage || t("common.unknown") }));
       setPendingAction(null);
       await refreshQueries(queryClient, bvid);
       return;
     }
 
-    setActionMessage(`Action accepted with audit #${response.auditId}`);
+    setActionMessage(t("pipeline.actionAccepted", { auditId: response.auditId }));
     setPendingAction(null);
     await refreshQueries(queryClient, bvid);
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+    <div className="flex flex-col gap-4">
+      <section className="glass-panel rounded-[1.6rem]">
         <Link to="/" className="text-sm font-medium text-[var(--muted)] transition hover:text-[var(--accent)]">
-          ← Back to dashboard
+          {t("common.backToDashboard")}
         </Link>
         <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{video?.bvid || bvid}</p>
-            <h2 className="mt-2 text-3xl font-semibold tracking-tight">{video?.title || "Pipeline detail"}</h2>
+            <h2 className="mt-2 text-[1.95rem] font-semibold tracking-[-0.04em]">{video?.title || t("pipeline.title.fallback")}</h2>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--muted)]">
-              {detail?.latestRun?.lastMessage || detail?.latestRun?.lastErrorMessage || "Inspect the latest run, page-level state, and recovery actions for this video."}
+              {detail?.latestRun?.lastMessage || detail?.latestRun?.lastErrorMessage || t("pipeline.description.fallback")}
             </p>
           </div>
           <div className="grid min-w-[260px] gap-3 sm:grid-cols-2">
-            <KeyValueCard label="Latest status" valueNode={renderStatus(detail?.latestRun?.runStatus || "unknown")} />
-            <KeyValueCard label="Current stage" value={detail?.latestRun?.currentStage || "-"} />
-            <KeyValueCard label="Latest update" value={formatDateTime(detail?.latestRun?.updatedAt)} />
-            <KeyValueCard label="Rebuild flag" value={video?.publish_needs_rebuild ? video.publish_rebuild_reason || "yes" : "no"} />
+            <KeyValueCard label={t("pipeline.label.latestStatus")} valueNode={<StatusPill status={detail?.latestRun?.runStatus || "unknown"} />} />
+            <KeyValueCard label={t("pipeline.label.currentStage")} value={detail?.latestRun?.currentStage || "-"} />
+            <KeyValueCard label={t("pipeline.label.latestUpdate")} value={formatDateTime(detail?.latestRun?.updatedAt)} />
+            <KeyValueCard label={t("pipeline.label.rebuildFlag")} value={video?.publish_needs_rebuild ? video.publish_rebuild_reason || t("common.yes") : t("common.no")} />
           </div>
         </div>
 
         <div className="mt-5 flex flex-wrap gap-3">
           <ActionButton
-            label="Retry pipeline"
+            label={t("pipeline.button.syncVideo")}
+            busy={pendingAction === "sync-video"}
+            onClick={() => {
+              void runAction("sync-video", `/api/actions/pipeline/${encodeURIComponent(bvid)}/sync`, {});
+            }}
+          />
+          <ActionButton
+            label={t("pipeline.button.retry")}
             busy={pendingAction === "retry"}
             onClick={() => {
               void runAction("retry", `/api/actions/pipeline/${encodeURIComponent(bvid)}/retry`, {});
             }}
           />
           <ActionButton
-            label="Recover zombie"
+            label={t("pipeline.button.recoverZombie")}
             busy={pendingAction === "recover-zombie"}
             onClick={() => {
-              if (!window.confirm("Recover this pipeline if it is stale without a live lock? This will mark the stale run failed and queue a retry.")) {
+              if (!window.confirm(t("pipeline.confirm.recoverZombie"))) {
                 return;
               }
 
@@ -1417,10 +1676,10 @@ function PipelineDetailPage() {
           />
           {detail?.latestRun?.runStatus === "running" ? (
             <ActionButton
-              label="Cancel run"
+              label={t("pipeline.button.cancelRun")}
               busy={pendingAction === "cancel"}
               onClick={() => {
-                if (!window.confirm("Cancel the running pipeline now?")) {
+                if (!window.confirm(t("pipeline.confirm.cancelRun"))) {
                   return;
                 }
 
@@ -1431,10 +1690,10 @@ function PipelineDetailPage() {
             />
           ) : null}
           <ActionButton
-            label="Publish now"
+            label={t("pipeline.button.publishNow")}
             busy={pendingAction === "publish"}
             onClick={() => {
-              if (!window.confirm("Run publish for this video now?")) {
+              if (!window.confirm(t("pipeline.confirm.publishNow"))) {
                 return;
               }
 
@@ -1444,10 +1703,10 @@ function PipelineDetailPage() {
             }}
           />
           <ActionButton
-            label="Mark rebuild"
+            label={t("pipeline.button.markRebuild")}
             busy={pendingAction === "rebuild"}
             onClick={() => {
-              if (!window.confirm("Mark this video for publish thread rebuild?")) {
+              if (!window.confirm(t("pipeline.confirm.markRebuild"))) {
                 return;
               }
 
@@ -1465,24 +1724,104 @@ function PipelineDetailPage() {
         ) : null}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
+        <div className="glass-panel rounded-[1.6rem]">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.manual")}</p>
+            <h3 className="text-xl font-semibold">{t("pipeline.title.importSummary")}</h3>
+          </div>
+          <p className="text-sm leading-6 text-[var(--muted)]">
+            {t("pipeline.importSummary.description")}
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]">
+              {t("pipeline.importSummary.loadFile")}
+              <input
+                type="file"
+                accept=".md,.txt,text/markdown,text/plain"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  if (!file) {
+                    return;
+                  }
+
+                  void file.text().then((content) => {
+                    setImportSummaryText(content);
+                    setImportSummarySource(file.name);
+                  });
+                }}
+              />
+            </label>
+            <ActionButton
+              label={t("pipeline.importSummary.button")}
+              busy={pendingAction === "import-summary"}
+              onClick={() => {
+                if (!importSummaryText.trim()) {
+                  setActionMessage(t("pipeline.importSummary.failed"));
+                  return;
+                }
+
+                void runAction("import-summary", `/api/actions/pipeline/${encodeURIComponent(bvid)}/import-summary`, {
+                  summaryText: importSummaryText,
+                });
+              }}
+            />
+          </div>
+          {importSummarySource ? (
+            <p className="mt-3 text-sm text-[var(--muted)]">{t("pipeline.importSummary.loadedFile", { name: importSummarySource })}</p>
+          ) : null}
+          <textarea
+            value={importSummaryText}
+            onChange={(event) => {
+              setImportSummaryText(event.target.value);
+              if (importSummarySource) {
+                setImportSummarySource(t("pipeline.importSummary.editedInBrowser"));
+              }
+            }}
+            rows={12}
+            className="mt-4 w-full rounded-[1.2rem] border border-[var(--line)] bg-white/75 px-4 py-3 text-sm leading-6 outline-none transition focus:border-[var(--accent)]"
+            placeholder={"<1P>\n00:00 ...\n\n<2P>\n00:00 ..."}
+          />
+        </div>
+
+        <div className="glass-panel rounded-[1.6rem]">
+          <div className="mb-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.repair")}</p>
+            <h3 className="text-xl font-semibold">{t("pipeline.title.repairNotes")}</h3>
+          </div>
+          <div className="flex flex-col gap-3 text-sm leading-6 text-[var(--muted)]">
+            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+              {t("pipeline.repair.syncVideo")}
+            </div>
+            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+              {t("pipeline.repair.importSummary")}
+            </div>
+            <div className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+              {t("pipeline.repair.validation")}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">parts</p>
-              <h3 className="text-xl font-semibold">Page Status</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.parts")}</p>
+              <h3 className="text-xl font-semibold">{t("pipeline.title.pageStatus")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{detail?.parts.length ?? 0} pages</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.pages", { count: detail?.parts.length ?? 0 })}</span>
           </div>
           <div className="table-shell">
             <table>
               <thead>
                 <tr>
-                  <th>Page</th>
-                  <th>Title</th>
-                  <th>Summary</th>
-                  <th>Publish</th>
-                  <th>Updated</th>
+                  <th>{t("pipeline.table.page")}</th>
+                  <th>{t("pipeline.table.title")}</th>
+                  <th>{t("pipeline.table.summary")}</th>
+                  <th>{t("pipeline.table.publish")}</th>
+                  <th>{t("pipeline.table.updated")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1490,8 +1829,8 @@ function PipelineDetailPage() {
                   <tr key={part.id}>
                     <td className="font-semibold">P{part.page_no}</td>
                     <td>{part.part_title}</td>
-                    <td>{part.summary_text_processed || part.summary_text ? "ready" : "pending"}</td>
-                    <td>{Number(part.published) === 1 ? "published" : "pending"}</td>
+                    <td>{part.summary_text_processed || part.summary_text ? t("pipeline.pageStatus.ready") : t("pipeline.pageStatus.pending")}</td>
+                    <td>{Number(part.published) === 1 ? t("pipeline.pageStatus.published") : t("pipeline.pageStatus.pending")}</td>
                     <td>{formatDateTime(part.updated_at)}</td>
                   </tr>
                 ))}
@@ -1500,26 +1839,26 @@ function PipelineDetailPage() {
           </div>
         </div>
 
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">runs</p>
-              <h3 className="text-xl font-semibold">Run History</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.runs")}</p>
+              <h3 className="text-xl font-semibold">{t("pipeline.title.runHistory")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{runsQuery.data?.total ?? detail?.recentRuns.length ?? 0} runs</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.runs", { count: runsQuery.data?.total ?? detail?.recentRuns.length ?? 0 })}</span>
           </div>
           {runItems.length === 0 ? (
-            <EmptyState text="No runs recorded for this pipeline yet." />
+            <EmptyState text={t("pipeline.empty.runs")} />
           ) : (
             <div className="flex flex-col gap-3">
               {runItems.map((run) => (
                 <div key={run.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/70 px-4 py-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="font-semibold">{run.currentStage || run.currentScope || "pipeline"}</p>
+                      <p className="font-semibold">{run.currentStage || run.currentScope || t("pipeline.stage.pipeline")}</p>
                       <p className="mt-1 text-sm text-[var(--muted)]">{formatDateTime(run.updatedAt)}</p>
                     </div>
-                    {renderStatus(run.runStatus)}
+                    <StatusPill status={run.runStatus} />
                   </div>
                   <p className="mt-3 text-sm text-[var(--muted)]">{run.lastErrorMessage || run.lastMessage || "-"}</p>
                 </div>
@@ -1542,23 +1881,23 @@ function PipelineDetailPage() {
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">timeline</p>
-              <h3 className="text-xl font-semibold">Event Timeline</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("pipeline.eyebrow.timeline")}</p>
+              <h3 className="text-xl font-semibold">{t("pipeline.title.timeline")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{eventsQuery.data?.total ?? detail?.recentEvents.length ?? 0} events</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.events", { count: eventsQuery.data?.total ?? detail?.recentEvents.length ?? 0 })}</span>
           </div>
           {eventItems.length === 0 ? (
-            <EmptyState text="No events recorded for this pipeline yet." />
+            <EmptyState text={t("pipeline.empty.timeline")} />
           ) : (
             <div className="timeline flex flex-col gap-4">
               {eventItems.map((event) => (
                 <div key={event.id} className="timeline-item rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
                   <div className="flex flex-wrap items-center gap-3">
-                    {renderStatus(event.status)}
+                    <StatusPill status={event.status} />
                     <span className="text-sm font-semibold">{event.scope}/{event.action}</span>
                     <span className="text-sm text-[var(--muted)]">{formatDateTime(event.createdAt)}</span>
                     {event.pageNo ? <span className="text-sm text-[var(--muted)]">P{event.pageNo}</span> : null}
@@ -1583,15 +1922,15 @@ function PipelineDetailPage() {
           />
         </div>
 
-        <div className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="glass-panel rounded-[1.6rem]">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">audits</p>
-              <h3 className="text-xl font-semibold">Recent Manual Actions</h3>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">{t("dashboard.eyebrow.audits")}</p>
+              <h3 className="text-xl font-semibold">{t("dashboard.title.manualActions")}</h3>
             </div>
-            <span className="text-sm text-[var(--muted)]">{auditItems.length} rows</span>
+            <span className="text-sm text-[var(--muted)]">{t("common.rows", { count: auditItems.length })}</span>
           </div>
-          <AuditList items={auditItems} emptyText="No manual actions recorded for this video." />
+          <AuditList items={auditItems} emptyText={t("pipeline.empty.audits")} />
         </div>
       </section>
     </div>
@@ -1599,19 +1938,21 @@ function PipelineDetailPage() {
 }
 
 function SchedulerStatusCard({ status }: { status: SchedulerStatus | null }) {
+  const { t, formatDateTime, formatDuration } = useUiText();
+
   if (!status) {
-    return <EmptyState text="Scheduler status is not available yet." />;
+    return <EmptyState text={t("scheduler.empty.status")} />;
   }
 
   return (
     <div className="flex flex-col gap-3">
-      <KeyValueCard label="State" valueNode={renderStatus(status.healthy ? "running" : status.status)} />
-      <KeyValueCard label="Current tasks" value={status.currentTasks.length > 0 ? status.currentTasks.join(", ") : "idle"} />
-      <KeyValueCard label="Last heartbeat" value={formatDateTime(status.lastHeartbeatAt)} />
-      <KeyValueCard label="Heartbeat age" value={formatDuration(status.heartbeatAgeMs)} />
-      <KeyValueCard label="Last retry sweep" value={formatDateTime(status.taskTimes["retry-failures"] ?? null)} />
-      <KeyValueCard label="Concurrency" value={status.summaryConcurrency ? String(status.summaryConcurrency) : "-"} />
-      <KeyValueCard label="Last error" value={status.lastError || "-"} />
+      <KeyValueCard label={t("scheduler.label.state")} valueNode={<StatusPill status={status.healthy ? "running" : status.status} />} />
+      <KeyValueCard label={t("scheduler.label.currentTasks")} value={status.currentTasks.length > 0 ? status.currentTasks.join(", ") : t("common.idle")} />
+      <KeyValueCard label={t("scheduler.label.lastHeartbeat")} value={formatDateTime(status.lastHeartbeatAt)} />
+      <KeyValueCard label={t("scheduler.label.heartbeatAge")} value={formatDuration(status.heartbeatAgeMs)} />
+      <KeyValueCard label={t("scheduler.label.lastRetrySweep")} value={formatDateTime(status.taskTimes["retry-failures"] ?? null)} />
+      <KeyValueCard label={t("scheduler.label.concurrency")} value={status.summaryConcurrency ? String(status.summaryConcurrency) : "-"} />
+      <KeyValueCard label={t("scheduler.label.lastError")} value={status.lastError || "-"} />
     </div>
   );
 }
@@ -1623,18 +1964,20 @@ function HealthWatchCard({
   snapshot: DashboardHealthSnapshot | null;
   items: AttentionItem[];
 }) {
+  const { t, formatDateTime, formatDuration } = useUiText();
+
   if (!snapshot) {
-    return <EmptyState text="Operational health snapshot is not available yet." />;
+    return <EmptyState text={t("healthWatch.empty.snapshot")} />;
   }
 
   return (
     <div className="flex flex-col gap-3">
-      <KeyValueCard label="Critical" value={String(snapshot.criticalCount)} />
-      <KeyValueCard label="Warnings" value={String(snapshot.warningCount)} />
-      <KeyValueCard label="Stalled runs" value={String(snapshot.staleRunningCount)} />
-      <KeyValueCard label="Heartbeat age" value={formatDuration(snapshot.schedulerHeartbeatAgeMs)} />
+      <KeyValueCard label={t("healthWatch.label.critical")} value={String(snapshot.criticalCount)} />
+      <KeyValueCard label={t("healthWatch.label.warnings")} value={String(snapshot.warningCount)} />
+      <KeyValueCard label={t("healthWatch.label.stalled")} value={String(snapshot.staleRunningCount)} />
+      <KeyValueCard label={t("healthWatch.label.heartbeatAge")} value={formatDuration(snapshot.schedulerHeartbeatAgeMs)} />
       {items.length === 0 ? (
-        <EmptyState text="No attention items right now." />
+        <EmptyState text={t("healthWatch.empty.items")} />
       ) : (
         items.map((item) => (
           <div key={`${item.kind}:${item.runId || item.updatedAt || item.title}`} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
@@ -1646,7 +1989,7 @@ function HealthWatchCard({
                   {item.bvid ? ` · ${item.bvid}` : ""}
                 </p>
               </div>
-              {renderSeverity(item.severity)}
+              <SeverityPill severity={item.severity} />
             </div>
             <p className="mt-3 text-sm text-[var(--muted)]">{item.message}</p>
             <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.updatedAt)}</p>
@@ -1664,6 +2007,8 @@ function AuditList({
   items: ActionAudit[];
   emptyText: string;
 }) {
+  const { t, formatDateTime } = useUiText();
+
   if (items.length === 0) {
     return <EmptyState text={emptyText} />;
   }
@@ -1676,13 +2021,13 @@ function AuditList({
             <div>
               <p className="font-semibold">{item.action}</p>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                {item.bvid || item.scope} · audit #{item.id}
+                {item.bvid || item.scope} · {t("audit.label.audit", { id: item.id })}
               </p>
             </div>
-            {renderStatus(item.status)}
+            <StatusPill status={item.status} />
           </div>
           <p className="mt-3 text-sm text-[var(--muted)]">
-            {item.errorMessage || describeAuditResult(item.result) || "No result details"}
+            {item.errorMessage || describeAuditResult(item.result, t, formatDateTime) || t("common.noResultDetails")}
           </p>
           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.createdAt)}</p>
         </div>
@@ -1692,8 +2037,10 @@ function AuditList({
 }
 
 function FailureGroupList({ items }: { items: FailureGroupItem[] }) {
+  const { t, formatDateTime } = useUiText();
+
   if (items.length === 0) {
-    return <EmptyState text="No repeated failures detected in the recent window." />;
+    return <EmptyState text={t("audit.empty.failureGroups")} />;
   }
 
   return (
@@ -1703,10 +2050,10 @@ function FailureGroupList({ items }: { items: FailureGroupItem[] }) {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate font-semibold">{item.failedStep || item.failureCategory}</p>
-              <p className="mt-1 text-sm text-[var(--muted)]">{item.failureCategory} · {item.count} runs</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">{item.failureCategory} · {t("common.runs", { count: item.count })}</p>
             </div>
             <div className="flex items-center gap-2">
-              {renderResolution(item.resolution)}
+              <ResolutionPill resolution={item.resolution} />
               <span className="rounded-full bg-[var(--panel-soft)] px-3 py-1 text-xs font-semibold text-[var(--muted)]">
                 x{item.count}
               </span>
@@ -1731,8 +2078,10 @@ function RecoveryCandidateList({
   onRecover: (item: RecoveryCandidateItem) => void;
   onCancel: (item: RecoveryCandidateItem) => void;
 }) {
+  const { t, formatDuration } = useUiText();
+
   if (items.length === 0) {
-    return <EmptyState text="No stale or zombie pipeline candidates right now." />;
+    return <EmptyState text={t("audit.empty.recoveryCandidates")} />;
   }
 
   return (
@@ -1743,18 +2092,18 @@ function RecoveryCandidateList({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-semibold">{item.videoTitle || item.bvid || item.runId}</p>
-                {renderStatus(item.runStatus)}
+                <StatusPill status={item.runStatus} />
                 <span className="status-pill status-waiting">{item.recoveryState}</span>
               </div>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                {item.bvid || "-"} 路 stale for {formatDuration(item.staleForMs)} 路 {item.currentStage || "-"}
+                {t("audit.text.stale", { bvid: item.bvid || "-", duration: formatDuration(item.staleForMs), stage: item.currentStage || "-" })}
               </p>
               <p className="mt-3 text-sm text-[var(--muted)]">{item.recoveryReason}</p>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               {item.recommendedAction === "cancel" ? (
                 <ActionButton
-                  label="Cancel stale run"
+                  label={t("audit.button.cancelStale")}
                   busy={pendingAction === `cancel-${item.bvid}`}
                   onClick={() => {
                     onCancel(item);
@@ -1762,7 +2111,7 @@ function RecoveryCandidateList({
                 />
               ) : (
                 <ActionButton
-                  label="Recover zombie"
+                  label={t("pipeline.button.recoverZombie")}
                   busy={pendingAction === `recover-${item.bvid}`}
                   onClick={() => {
                     onRecover(item);
@@ -1773,7 +2122,7 @@ function RecoveryCandidateList({
                 to={`/pipeline/${encodeURIComponent(item.bvid ?? "")}`}
                 className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
               >
-                Open detail
+                {t("audit.button.openDetail")}
               </Link>
             </div>
           </div>
@@ -1792,8 +2141,10 @@ function FailureQueueList({
   pendingAction: string | null;
   onRetry: (item: FailureQueueItem) => void;
 }) {
+  const { t, formatDateTime } = useUiText();
+
   if (items.length === 0) {
-    return <EmptyState text="No failed pipelines in the recent window." />;
+    return <EmptyState text={t("audit.empty.failureQueue")} />;
   }
 
   return (
@@ -1803,12 +2154,16 @@ function FailureQueueList({
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="font-semibold">{item.videoTitle || item.bvid || "Unknown video"}</p>
-                {renderStatus(item.runStatus)}
-                {renderResolution(item.resolution)}
+                <p className="font-semibold">{item.videoTitle || item.bvid || t("table.unknownVideo")}</p>
+                <StatusPill status={item.runStatus} />
+                <ResolutionPill resolution={item.resolution} />
               </div>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                {item.failedStep || item.currentStage || "failed"} · {item.failureCategory} · {formatDateTime(item.updatedAt)}
+                {t("audit.text.failure", {
+                  stage: item.failedStep || item.currentStage || t("status.failed"),
+                  category: item.failureCategory,
+                  updated: formatDateTime(item.updatedAt),
+                })}
               </p>
               <p className="mt-3 text-sm text-[var(--muted)]">{item.lastErrorMessage || item.lastMessage || item.resolutionReason}</p>
             </div>
@@ -1818,7 +2173,7 @@ function FailureQueueList({
                   to={`/pipeline/${encodeURIComponent(item.bvid)}`}
                   className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
                 >
-                  Inspect
+                  {t("audit.button.inspect")}
                 </Link>
               ) : null}
               {item.bvid && item.resolution === "retryable" ? (
@@ -1830,7 +2185,7 @@ function FailureQueueList({
                   }}
                   className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-wait disabled:opacity-60"
                 >
-                  {pendingAction === `retry-${item.bvid}` ? "Retrying..." : "Retry"}
+                  {pendingAction === `retry-${item.bvid}` ? t("audit.button.retrying") : t("audit.button.retry")}
                 </button>
               ) : null}
             </div>
@@ -1874,8 +2229,10 @@ function ManagedSettingsGroup({
   draft: ManagedSettings | null;
   onChange: Dispatch<SetStateAction<ManagedSettings | null>>;
 }) {
+  const { t } = useUiText();
+
   if (!draft) {
-    return <EmptyState text="Loading managed settings..." />;
+    return <EmptyState text={t("managedSettings.loading")} />;
   }
 
   return (
@@ -1920,13 +2277,13 @@ function ManagedSettingsGroup({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-semibold">{definition.label}</p>
-                  {definition.requiresRestart ? <span className="status-pill status-failed">restart</span> : <span className="status-pill status-succeeded">hot</span>}
+                  {definition.requiresRestart ? <span className="status-pill status-failed">{t("managedSettings.restart")}</span> : <span className="status-pill status-succeeded">{t("managedSettings.hot")}</span>}
                 </div>
                 <p className="mt-1 text-sm text-[var(--muted)]">{definition.description}</p>
               </div>
             </div>
             <div className="mt-4">{control}</div>
-            <p className="mt-3 text-xs leading-5 text-[var(--muted)]">Effective scope: {definition.effectiveScope}</p>
+            <p className="mt-3 text-xs leading-5 text-[var(--muted)]">{t("managedSettings.effectiveScope", { scope: definition.effectiveScope })}</p>
           </div>
         );
       })}
@@ -1935,8 +2292,10 @@ function ManagedSettingsGroup({
 }
 
 function SchedulerPlanCard({ schedule }: { schedule: SchedulerPlan | null }) {
+  const { t } = useUiText();
+
   if (!schedule) {
-    return <EmptyState text="No schedule information available." />;
+    return <EmptyState text={t("schedule.empty")} />;
   }
 
   return (
@@ -1984,6 +2343,8 @@ function ActionButton({
   busy: boolean;
   onClick: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <button
       type="button"
@@ -1991,7 +2352,7 @@ function ActionButton({
       onClick={onClick}
       className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-wait disabled:opacity-60"
     >
-      {busy ? "Working..." : label}
+      {busy ? t("common.working") : label}
     </button>
   );
 }
@@ -2009,6 +2370,8 @@ function PaginationControls({
   onPrevious: () => void;
   onNext: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className={`flex items-center justify-end gap-3 ${className}`.trim()}>
       <button
@@ -2017,7 +2380,7 @@ function PaginationControls({
         onClick={onPrevious}
         className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
       >
-        Previous
+        {t("pagination.previous")}
       </button>
       <button
         type="button"
@@ -2025,7 +2388,7 @@ function PaginationControls({
         onClick={onNext}
         className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
       >
-        Next
+        {t("pagination.next")}
       </button>
     </div>
   );
@@ -2038,6 +2401,8 @@ function RunTable({
   items: DashboardRunItem[];
   emptyText: string;
 }) {
+  const { t, formatDateTime } = useUiText();
+
   if (items.length === 0) {
     return <EmptyState text={emptyText} />;
   }
@@ -2047,11 +2412,11 @@ function RunTable({
       <table>
         <thead>
           <tr>
-            <th>Video</th>
-            <th>Stage</th>
-            <th>Latest message</th>
-            <th>Status</th>
-            <th>Updated</th>
+            <th>{t("table.video")}</th>
+            <th>{t("table.stage")}</th>
+            <th>{t("table.latestMessage")}</th>
+            <th>{t("table.status")}</th>
+            <th>{t("table.updated")}</th>
           </tr>
         </thead>
         <tbody>
@@ -2059,8 +2424,8 @@ function RunTable({
             <tr key={item.runId}>
               <td>
                 <Link to={`/pipeline/${encodeURIComponent(item.bvid ?? "")}`} className="group block">
-                  <div className="font-semibold transition group-hover:text-[var(--accent)]">{item.videoTitle || item.bvid || "Unknown video"}</div>
-                  <div className="mt-1 text-sm text-[var(--muted)]">{item.bvid || "-"} · {item.triggerSource || "cli"}</div>
+                  <div className="font-semibold transition group-hover:text-[var(--accent)]">{item.videoTitle || item.bvid || t("table.unknownVideo")}</div>
+                  <div className="mt-1 text-sm text-[var(--muted)]">{item.bvid || "-"} · {item.triggerSource || t("common.cli")}</div>
                 </Link>
               </td>
               <td>
@@ -2073,7 +2438,7 @@ function RunTable({
               <td className="max-w-[340px]">
                 <div className="line-clamp-2 text-sm text-[var(--muted)]">{item.lastErrorMessage || item.lastMessage || "-"}</div>
               </td>
-              <td>{renderStatus(item.runStatus)}</td>
+              <td><StatusPill status={item.runStatus} /></td>
               <td className="text-sm text-[var(--muted)]">{formatDateTime(item.updatedAt)}</td>
             </tr>
           ))}
@@ -2091,7 +2456,8 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function renderStatus(status: string) {
+function StatusPill({ status }: { status: string }) {
+  const { tOptional } = useI18n();
   const normalized = String(status || "unknown").toLowerCase();
   const className = normalized === "running"
     ? "status-running"
@@ -2105,10 +2471,11 @@ function renderStatus(status: string) {
           ? "status-waiting"
           : "status-skipped";
 
-  return <span className={`status-pill ${className}`}>{normalized}</span>;
+  return <span className={`status-pill ${className}`}>{tOptional(`status.${normalized}`) || normalized}</span>;
 }
 
-function renderResolution(resolution: FailureQueueItem["resolution"]) {
+function ResolutionPill({ resolution }: { resolution: FailureQueueItem["resolution"] }) {
+  const { tOptional } = useI18n();
   const normalized = String(resolution || "inspect").toLowerCase() as FailureQueueItem["resolution"];
   const className = normalized === "retryable"
     ? "status-running"
@@ -2116,13 +2483,14 @@ function renderResolution(resolution: FailureQueueItem["resolution"]) {
       ? "status-failed"
       : "status-waiting";
 
-  return <span className={`status-pill ${className}`}>{normalized}</span>;
+  return <span className={`status-pill ${className}`}>{tOptional(`resolution.${normalized}`) || normalized}</span>;
 }
 
-function renderSeverity(severity: AttentionItem["severity"]) {
+function SeverityPill({ severity }: { severity: AttentionItem["severity"] }) {
+  const { tOptional } = useI18n();
   const normalized = String(severity || "warning").toLowerCase();
   const className = normalized === "critical" ? "status-failed" : "status-waiting";
-  return <span className={`status-pill ${className}`}>{normalized}</span>;
+  return <span className={`status-pill ${className}`}>{tOptional(`severity.${normalized}`) || normalized}</span>;
 }
 
 function buildApiUrl(targetPath: string): string {
@@ -2437,7 +2805,7 @@ function normalizeBooleanInput(rawValue: string, fallback: boolean): boolean {
   return fallback;
 }
 
-function formatDateTime(value: string | null | undefined): string {
+function formatDateTime(value: string | null | undefined, locale: Locale = DEFAULT_LOCALE): string {
   if (!value) {
     return "-";
   }
@@ -2447,7 +2815,7 @@ function formatDateTime(value: string | null | undefined): string {
     return value;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(locale, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -2456,16 +2824,16 @@ function formatDateTime(value: string | null | undefined): string {
   }).format(candidate);
 }
 
-function formatDuration(value: number | null | undefined): string {
+function formatDuration(value: number | null | undefined, locale: Locale = DEFAULT_LOCALE): string {
   if (value === null || value === undefined) {
     return "-";
   }
 
   if (value < 1000) {
-    return `${value} ms`;
+    return translate(locale, "time.ms", { value });
   }
 
-  return `${(value / 1000).toFixed(1)} s`;
+  return translate(locale, "time.s", { value: (value / 1000).toFixed(1) });
 }
 
 function matchesRunFilter(item: DashboardRunItem, filter: string): boolean {
@@ -2484,13 +2852,29 @@ function matchesRunFilter(item: DashboardRunItem, filter: string): boolean {
   return haystack.includes(filter);
 }
 
-function describeAuditResult(result: unknown): string {
+function describeAuditResult(
+  result: unknown,
+  t: (key: string, vars?: Record<string, number | string>) => string,
+  formatDateTimeLocal: (value: string | null | undefined) => string,
+): string {
   if (!result || typeof result !== "object") {
     return "";
   }
 
   const payload = result as {
     ok?: unknown;
+    action?: unknown;
+    reason?: unknown;
+    authFile?: unknown;
+    updatedAt?: unknown;
+    checkedVideos?: unknown;
+    newGaps?: unknown;
+    notifiedGapCount?: unknown;
+    removedDirectories?: unknown;
+    missingDirectories?: unknown;
+    candidates?: unknown;
+    savedPages?: unknown;
+    parts?: unknown;
     marked?: unknown;
     uploads?: unknown;
     failures?: unknown;
@@ -2504,28 +2888,77 @@ function describeAuditResult(result: unknown): string {
     ownerPid?: unknown;
   };
 
+  if (typeof payload.notifiedGapCount === "number" || Array.isArray(payload.checkedVideos) || Array.isArray(payload.newGaps)) {
+    return t("audit.result.checked", {
+      checked: Array.isArray(payload.checkedVideos) ? payload.checkedVideos.length : "-",
+      gaps: Array.isArray(payload.newGaps) ? payload.newGaps.length : "-",
+      notified: String(payload.notifiedGapCount ?? "-"),
+    });
+  }
+
+  if (Array.isArray(payload.removedDirectories) || Array.isArray(payload.missingDirectories) || Array.isArray(payload.candidates)) {
+    return t("audit.result.removed", {
+      removed: Array.isArray(payload.removedDirectories) ? payload.removedDirectories.length : "-",
+      missing: Array.isArray(payload.missingDirectories) ? payload.missingDirectories.length : "-",
+      candidates: Array.isArray(payload.candidates) ? payload.candidates.length : "-",
+    });
+  }
+
+  if (Array.isArray(payload.savedPages)) {
+    return t("audit.result.savedPages", {
+      pages: payload.savedPages.join(", ") || "-",
+    });
+  }
+
+  if (Array.isArray(payload.parts)) {
+    return t("audit.result.syncedPages", { count: payload.parts.length });
+  }
+
+  if (payload.action === "skip-refresh") {
+    return t("audit.result.skipRefresh", { reason: String(payload.reason ?? "unknown") });
+  }
+
+  if (payload.action === "refresh") {
+    return t("audit.result.refreshedAuth", {
+      value: formatDateTimeLocal(typeof payload.updatedAt === "string" ? payload.updatedAt : null),
+    });
+  }
+
   if (payload.marked === true) {
-    return "Rebuild flag set.";
+    return t("audit.result.rebuildFlag");
   }
 
   if (typeof payload.uploads === "number" || typeof payload.failures === "number" || typeof payload.runs === "number") {
-    return `runs=${String(payload.runs ?? "-")}, uploads=${String(payload.uploads ?? "-")}, failures=${String(payload.failures ?? "-")}`;
+    return t("audit.result.publishStats", {
+      runs: String(payload.runs ?? "-"),
+      uploads: String(payload.uploads ?? "-"),
+      failures: String(payload.failures ?? "-"),
+    });
   }
 
   if (typeof payload.queued === "number") {
-    return `queued=${payload.queued}, failures=${String(payload.failures ?? "-")}`;
+    return t("audit.result.queuedStats", {
+      queued: payload.queued,
+      failures: String(payload.failures ?? "-"),
+    });
   }
 
   if (typeof payload.triggered === "number" || typeof payload.skipped === "number" || typeof payload.failed === "number") {
-    return `triggered=${String(payload.triggered ?? "-")}, skipped=${String(payload.skipped ?? "-")}, failed=${String(payload.failed ?? "-")}`;
+    return t("audit.result.triggerStats", {
+      triggered: String(payload.triggered ?? "-"),
+      skipped: String(payload.skipped ?? "-"),
+      failed: String(payload.failed ?? "-"),
+    });
   }
 
   if (payload.signalSent === true) {
-    return `signal sent${typeof payload.ownerPid === "number" ? ` to pid ${payload.ownerPid}` : ""}`;
+    return t("audit.result.signalSent", {
+      suffix: typeof payload.ownerPid === "number" ? t("settings.message.pidSuffix", { pid: payload.ownerPid }) : "",
+    });
   }
 
   if (Array.isArray(payload.generatedPages)) {
-    return `generated pages: ${payload.generatedPages.length}`;
+    return t("audit.result.generatedPages", { count: payload.generatedPages.length });
   }
 
   return "";

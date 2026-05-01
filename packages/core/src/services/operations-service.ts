@@ -1,14 +1,21 @@
+import fs from "node:fs";
+import { createHash } from "node:crypto";
 import {
   getActivePipelineRunStateByBvid,
   getVideoByIdentity,
+  hasPreferredSummaryText,
   insertPipelineEvent,
   insertOperationAudit,
   listOperationAudits,
   markVideoPublishRebuildNeeded,
   openDatabase,
+  savePartSummary,
   updateOperationAudit,
 } from "../../../../scripts/lib/db/index";
+import { createClient, readCookie } from "../../../../scripts/lib/bili/comment-utils";
+import { groupSummaryBlocksByPage, inspectSummaryPageMarkers, normalizeSummaryMarkers } from "../../../../scripts/lib/summary/format";
 import { terminateVideoPipelineLockOwner } from "../../../../scripts/lib/video/pipeline-lock";
+import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "../../../../scripts/lib/video/index";
 import { createDashboardService } from "./dashboard-service";
 import { createPipelineService } from "./pipeline-service";
 import { createPublishService } from "./publish-service";
@@ -32,6 +39,11 @@ export function createOperationsService({
   };
   runtime?: {
     terminateVideoPipelineLockOwner?: typeof terminateVideoPipelineLockOwner;
+    createClient?: typeof createClient;
+    readCookie?: typeof readCookie;
+    fetchVideoSnapshot?: typeof fetchVideoSnapshot;
+    syncVideoSnapshotToDb?: typeof syncVideoSnapshotToDb;
+    readFileSync?: typeof fs.readFileSync;
   };
 } = {}) {
   const db = openDatabase(dbPath);
@@ -51,6 +63,11 @@ export function createOperationsService({
     workRoot,
   });
   const terminatePipelineOwner = runtime?.terminateVideoPipelineLockOwner ?? terminateVideoPipelineLockOwner;
+  const createBiliClient = runtime?.createClient ?? createClient;
+  const readBiliCookie = runtime?.readCookie ?? readCookie;
+  const fetchSnapshot = runtime?.fetchVideoSnapshot ?? fetchVideoSnapshot;
+  const syncSnapshotToDb = runtime?.syncVideoSnapshotToDb ?? syncVideoSnapshotToDb;
+  const readFileSync = runtime?.readFileSync ?? fs.readFileSync;
 
   return {
     close() {
@@ -89,6 +106,259 @@ export function createOperationsService({
             summaryUsers,
             authFile,
             triggerSource,
+          });
+        },
+      });
+    },
+    async runGapCheck({
+      summaryUsers,
+      authFile,
+      cookieFile,
+      sinceHours,
+      gapThresholdSeconds,
+      timezone,
+    }: {
+      summaryUsers?: unknown;
+      authFile?: string;
+      cookieFile?: string | null;
+      sinceHours?: number;
+      gapThresholdSeconds?: number;
+      timezone?: string | null;
+    } = {}) {
+      return executeAuditedOperation(db, {
+        action: "gap-check",
+        scope: "scheduler",
+        triggerSource,
+        request: {
+          summaryUsers: normalizeText(summaryUsers),
+          authFile: normalizeText(authFile),
+          cookieFile: normalizeText(cookieFile),
+          sinceHours: normalizePositiveInteger(sinceHours),
+          gapThresholdSeconds: normalizePositiveInteger(gapThresholdSeconds),
+          timezone: normalizeText(timezone),
+        },
+        run() {
+          return schedulerControlService.runGapCheck({
+            summaryUsers,
+            authFile,
+            cookieFile,
+            sinceHours,
+            gapThresholdSeconds,
+            timezone,
+          });
+        },
+      });
+    },
+    async syncVideoState({
+      bvid,
+      aid,
+      oid,
+      url,
+      authFile,
+      cookieFile,
+    }: {
+      bvid?: string;
+      aid?: number;
+      oid?: number;
+      url?: string;
+      authFile?: string;
+      cookieFile?: string | null;
+    } = {}) {
+      return executeAuditedOperation(db, {
+        action: "sync-video-state",
+        scope: "pipeline",
+        bvid: normalizeText(bvid),
+        triggerSource,
+        request: {
+          bvid: normalizeText(bvid),
+          aid: normalizePositiveInteger(aid),
+          oid: normalizePositiveInteger(oid),
+          url: normalizeText(url),
+          authFile: normalizeText(authFile),
+          cookieFile: normalizeText(cookieFile),
+        },
+        async run() {
+          const args = {
+            bvid,
+            aid,
+            oid,
+            url,
+            "auth-file": authFile,
+            "cookie-file": cookieFile ?? undefined,
+          };
+          const cookie = readBiliCookie(args);
+          const client = createBiliClient(cookie);
+          const snapshot = await fetchSnapshot(client, args);
+          const state = syncSnapshotToDb(db, snapshot);
+
+          return {
+            video: {
+              id: state.video.id,
+              bvid: state.video.bvid,
+              aid: state.video.aid,
+              title: state.video.title,
+              pageCount: state.video.page_count,
+              rootCommentRpid: state.video.root_comment_rpid,
+              topCommentRpid: state.video.top_comment_rpid,
+              publishNeedsRebuild: Boolean(state.video.publish_needs_rebuild),
+              publishRebuildReason: state.video.publish_rebuild_reason ?? null,
+            },
+            parts: state.parts.map((part) => ({
+              pageNo: part.page_no,
+              cid: part.cid,
+              partTitle: part.part_title,
+              durationSec: part.duration_sec,
+              hasSummary: hasPreferredSummaryText(part),
+              published: Boolean(part.published),
+            })),
+            pendingSummaryPages: state.pendingSummaryParts.map((part) => part.page_no),
+            pendingPublishPages: state.pendingPublishParts.map((part) => part.page_no),
+            changeSet: state.changeSet,
+          };
+        },
+      });
+    },
+    async importSummary({
+      bvid,
+      aid,
+      oid,
+      url,
+      authFile,
+      cookieFile,
+      summaryText,
+      summaryFile = null,
+    }: {
+      bvid?: string;
+      aid?: number;
+      oid?: number;
+      url?: string;
+      authFile?: string;
+      cookieFile?: string | null;
+      summaryText?: string | null;
+      summaryFile?: string | null;
+    } = {}) {
+      return executeAuditedOperation(db, {
+        action: "import-summary",
+        scope: "pipeline",
+        bvid: normalizeText(bvid),
+        triggerSource,
+        request: {
+          bvid: normalizeText(bvid),
+          aid: normalizePositiveInteger(aid),
+          oid: normalizePositiveInteger(oid),
+          url: normalizeText(url),
+          authFile: normalizeText(authFile),
+          cookieFile: normalizeText(cookieFile),
+          summaryFile: normalizeText(summaryFile),
+          summaryTextLength: typeof summaryText === "string" ? summaryText.length : 0,
+        },
+        async run() {
+          const args = {
+            bvid,
+            aid,
+            oid,
+            url,
+            "auth-file": authFile,
+            "cookie-file": cookieFile ?? undefined,
+          };
+          const cookie = readBiliCookie(args);
+          const client = createBiliClient(cookie);
+          const snapshot = await fetchSnapshot(client, args);
+          const state = syncSnapshotToDb(db, snapshot);
+
+          const rawSummaryText = typeof summaryText === "string" && summaryText.trim()
+            ? summaryText
+            : normalizeText(summaryFile)
+              ? String(readFileSync(String(summaryFile), "utf8"))
+              : "";
+          if (!rawSummaryText.trim()) {
+            throw new Error("Summary content is required");
+          }
+
+          const normalizedSummaryText = normalizeSummaryMarkers(rawSummaryText);
+          const pageInspection = inspectSummaryPageMarkers(
+            normalizedSummaryText,
+            state.parts.map((part) => part.page_no),
+          );
+          if (pageInspection.duplicatePages.length > 0 || pageInspection.invalidPages.length > 0) {
+            throw new Error(`Summary page markers are invalid. duplicate=${pageInspection.duplicatePages.join(",") || "-"}, invalid=${pageInspection.invalidPages.join(",") || "-"}`);
+          }
+
+          const pageGroups = groupSummaryBlocksByPage(normalizedSummaryText);
+          if (pageGroups.length === 0) {
+            throw new Error("No page markers found in summary content");
+          }
+
+          const savedPages = [];
+          for (const group of pageGroups) {
+            const saved = savePartSummary(db, state.video.id, group.page, {
+              summaryText: group.text,
+              summaryHash: createHash("sha1").update(group.text).digest("hex"),
+            });
+
+            if (saved) {
+              savedPages.push(group.page);
+            }
+          }
+
+          return {
+            video: {
+              id: state.video.id,
+              bvid: state.video.bvid,
+              aid: state.video.aid,
+              title: state.video.title,
+            },
+            savedPages,
+          };
+        },
+      });
+    },
+    async refreshAuth({
+      authFile,
+      cookieFile,
+      refreshDays,
+      force = false,
+    }: {
+      authFile?: string;
+      cookieFile?: string | null;
+      refreshDays?: number;
+      force?: boolean;
+    } = {}) {
+      return executeAuditedOperation(db, {
+        action: "auth-refresh",
+        scope: "scheduler",
+        triggerSource,
+        request: {
+          authFile: normalizeText(authFile),
+          cookieFile: normalizeText(cookieFile),
+          refreshDays: normalizePositiveInteger(refreshDays),
+          force: Boolean(force),
+        },
+        run() {
+          return schedulerControlService.refreshAuth({
+            authFile,
+            cookieFile,
+            refreshDays,
+            force,
+          });
+        },
+      });
+    },
+    async cleanupWork({
+      cleanupDays,
+    }: {
+      cleanupDays?: number;
+    } = {}) {
+      return executeAuditedOperation(db, {
+        action: "cleanup-work",
+        scope: "scheduler",
+        triggerSource,
+        request: {
+          cleanupDays: normalizePositiveInteger(cleanupDays),
+        },
+        run() {
+          return schedulerControlService.cleanupOldWork({
+            olderThanDays: cleanupDays,
           });
         },
       });
@@ -856,6 +1126,11 @@ function ensureConfirmed(confirm: boolean, label: string) {
 function normalizeText(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function normalizePositiveInteger(value: unknown): number | null {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }
 
 function uniqueByBvid<T extends { bvid: string | null }>(items: T[]): T[] {

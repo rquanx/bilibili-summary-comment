@@ -2,17 +2,18 @@
 
 :root {
   color-scheme: light;
-  --bg: #f4efe7;
-  --panel: rgba(255, 252, 247, 0.82);
-  --panel-strong: #fffaf2;
-  --ink: #17212b;
-  --muted: #5f6b79;
-  --line: rgba(23, 33, 43, 0.12);
-  --accent: #bf4f24;
-  --accent-soft: #f3c9b7;
-  --danger: #b82d2d;
-  --success: #187a59;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --bg: #f5f5f7;
+  --panel: rgba(255, 255, 255, 0.74);
+  --panel-strong: rgba(255, 255, 255, 0.9);
+  --panel-soft: rgba(246, 247, 251, 0.92);
+  --ink: #101828;
+  --muted: #667085;
+  --line: rgba(15, 23, 42, 0.09);
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.14);
+  --danger: #d92d20;
+  --success: #067647;
+  font-family: "SF Pro Display", "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
 }
 
 html,
@@ -24,10 +25,12 @@ body,
 body {
   margin: 0;
   background:
-    radial-gradient(circle at top left, rgba(191, 79, 36, 0.18), transparent 30%),
-    radial-gradient(circle at top right, rgba(31, 111, 235, 0.12), transparent 30%),
-    linear-gradient(180deg, #f8f2ea 0%, #f0e4d5 100%);
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(15, 23, 42, 0.08), transparent 24%),
+    linear-gradient(180deg, #fbfbfd 0%, #f2f4f7 100%);
   color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a {
@@ -38,8 +41,17 @@ a {
 .glass-panel {
   background: var(--panel);
   border: 1px solid var(--line);
-  box-shadow: 0 24px 80px rgba(66, 46, 23, 0.08);
-  backdrop-filter: blur(24px);
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(28px);
+  padding: 1rem;
+}
+
+@media (min-width: 640px) {
+  .glass-panel {
+    padding: 1.15rem;
+  }
 }
 
 .status-pill {
@@ -47,19 +59,19 @@ a {
   align-items: center;
   gap: 0.4rem;
   border-radius: 999px;
-  padding: 0.2rem 0.75rem;
-  font-size: 0.75rem;
+  padding: 0.18rem 0.68rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
 
 .status-running {
-  background: rgba(31, 111, 235, 0.12);
-  color: #2357b9;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
 }
 
 .status-succeeded {
-  background: rgba(24, 122, 89, 0.14);
+  background: rgba(6, 118, 71, 0.14);
   color: var(--success);
 }
 
@@ -76,9 +88,9 @@ a {
 
 .table-shell {
   overflow: hidden;
-  border-radius: 1.2rem;
+  border-radius: 1rem;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.8);
 }
 
 .table-shell table {
@@ -88,14 +100,14 @@ a {
 
 .table-shell th,
 .table-shell td {
-  padding: 0.95rem 1rem;
+  padding: 0.78rem 0.9rem;
   border-bottom: 1px solid rgba(23, 33, 43, 0.08);
   text-align: left;
   vertical-align: top;
 }
 
 .table-shell th {
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
@@ -112,7 +124,7 @@ a {
 .timeline::before {
   content: "";
   position: absolute;
-  left: 0.75rem;
+  left: 0.68rem;
   top: 0.5rem;
   bottom: 0.5rem;
   width: 1px;
@@ -127,11 +139,42 @@ a {
 .timeline-item::before {
   content: "";
   position: absolute;
-  left: 0.42rem;
-  top: 0.75rem;
-  width: 0.7rem;
-  height: 0.7rem;
+  left: 0.38rem;
+  top: 0.72rem;
+  width: 0.62rem;
+  height: 0.62rem;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 6px rgba(191, 79, 36, 0.12);
+  box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.12);
+}
+
+#root button,
+#root input:not([type="file"]),
+#root select,
+#root textarea {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+#root button,
+#root a[class*="rounded-full"] {
+  letter-spacing: -0.01em;
+}
+
+#root input:not([type="file"]),
+#root select,
+#root textarea {
+  color: var(--ink);
+}
+
+#root input:not([type="file"])::placeholder,
+#root textarea::placeholder {
+  color: #98a2b3;
+}
+
+@media (max-width: 640px) {
+  .table-shell {
+    overflow-x: auto;
+  }
 }
