@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
 import type { Db, SchedulerStatusRecord } from "./types";
 
@@ -48,7 +49,7 @@ export function upsertSchedulerStatus(
   const now = new Date().toISOString();
 
   return withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       INSERT INTO scheduler_status (
         scheduler_key,
         status,
@@ -72,7 +73,29 @@ export function upsertSchedulerStatus(
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ${normalizeText(schedulerKey) ?? "main"},
+        ${requireText(status, "status")},
+        ${normalizeText(mode)},
+        ${normalizeText(timezone)},
+        ${normalizeInteger(pid)},
+        ${normalizeText(hostname)},
+        ${normalizeText(summaryUsers)},
+        ${normalizeInteger(summaryConcurrency)},
+        ${serializeCurrentTasks(currentTasks)},
+        ${normalizeText(lastSummaryAt)},
+        ${normalizeText(lastPublishAt)},
+        ${normalizeText(lastGapCheckAt)},
+        ${normalizeText(lastRetryFailuresAt)},
+        ${normalizeText(lastZombieRecoveryAt)},
+        ${normalizeText(lastRefreshAt)},
+        ${normalizeText(lastCleanupAt)},
+        ${normalizeText(lastError)},
+        ${normalizeText(startedAt)},
+        ${normalizeText(lastHeartbeatAt) ?? now},
+        ${now},
+        ${now}
+      )
       
       ON CONFLICT(scheduler_key) DO UPDATE SET
         status = excluded.status,
@@ -94,36 +117,18 @@ export function upsertSchedulerStatus(
         started_at = COALESCE(excluded.started_at, scheduler_status.started_at),
         last_heartbeat_at = COALESCE(excluded.last_heartbeat_at, scheduler_status.last_heartbeat_at),
         updated_at = excluded.updated_at
-    `).run(
-      normalizeText(schedulerKey) ?? "main",
-      requireText(status, "status"),
-      normalizeText(mode),
-      normalizeText(timezone),
-      normalizeInteger(pid),
-      normalizeText(hostname),
-      normalizeText(summaryUsers),
-      normalizeInteger(summaryConcurrency),
-      serializeCurrentTasks(currentTasks),
-      normalizeText(lastSummaryAt),
-      normalizeText(lastPublishAt),
-      normalizeText(lastGapCheckAt),
-      normalizeText(lastRetryFailuresAt),
-      normalizeText(lastZombieRecoveryAt),
-      normalizeText(lastRefreshAt),
-      normalizeText(lastCleanupAt),
-      normalizeText(lastError),
-      normalizeText(startedAt),
-      normalizeText(lastHeartbeatAt) ?? now,
-      now,
-      now,
-    );
+    `);
 
     return getSchedulerStatus(db, schedulerKey);
   });
 }
 
 export function getSchedulerStatus(db: Db, schedulerKey = "main"): SchedulerStatusRecord | null {
-  return (db.prepare("SELECT * FROM scheduler_status WHERE scheduler_key = ?").get(normalizeText(schedulerKey) ?? "main") as unknown as SchedulerStatusRecord | undefined) ?? null;
+  return db.get<SchedulerStatusRecord>(sql`
+    SELECT *
+    FROM scheduler_status
+    WHERE scheduler_key = ${normalizeText(schedulerKey) ?? "main"}
+  `) ?? null;
 }
 
 function serializeCurrentTasks(currentTasks: string[] | null): string | null {

@@ -1,5 +1,6 @@
 import path from "node:path";
-import { withDatabaseWriteLock } from "./database";
+import { sql } from "drizzle-orm";
+import { runInTransaction, withDatabaseWriteLock } from "./database";
 import type {
   Db,
   VideoIdentity,
@@ -12,29 +13,45 @@ import { getPreferredSummaryText, normalizeStoredSummaryText } from "./summary-t
 
 export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): VideoRecord | null {
   if (bvid) {
-    const row = db.prepare("SELECT * FROM videos WHERE bvid = ?").get(bvid) as unknown as VideoRecord | undefined;
+    const row = db.get<VideoRecord>(sql`
+      SELECT *
+      FROM videos
+      WHERE bvid = ${bvid}
+    `);
     if (row) {
       return row;
     }
   }
 
   if (aid !== null && aid !== undefined) {
-    return (db.prepare("SELECT * FROM videos WHERE aid = ?").get(aid) as unknown as VideoRecord | undefined) ?? null;
+    return db.get<VideoRecord>(sql`
+      SELECT *
+      FROM videos
+      WHERE aid = ${aid}
+    `) ?? null;
   }
 
   return null;
 }
 
 export function getVideoById(db: Db, videoId: number): VideoRecord | null {
-  return (db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) as unknown as VideoRecord | undefined) ?? null;
+  return db.get<VideoRecord>(sql`
+    SELECT *
+    FROM videos
+    WHERE id = ${videoId}
+  `) ?? null;
 }
 
 export function listVideos(db: Db): VideoRecord[] {
-  return db.prepare("SELECT * FROM videos ORDER BY updated_at DESC, id DESC").all() as unknown as VideoRecord[];
+  return db.all<VideoRecord>(sql`
+    SELECT *
+    FROM videos
+    ORDER BY updated_at DESC, id DESC
+  `);
 }
 
 export function listVideosPendingPublish(db: Db): VideoRecord[] {
-  return db.prepare(`
+  return db.all<VideoRecord>(sql`
     SELECT v.*
     FROM videos v
     WHERE v.publish_needs_rebuild = 1
@@ -53,22 +70,22 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
       CASE WHEN v.publish_needs_rebuild = 1 THEN 1 ELSE 0 END ASC,
       COALESCE(v.last_scan_at, v.updated_at, v.created_at) ASC,
       v.id ASC
-  `).all() as unknown as VideoRecord[];
+  `);
 }
 
 export function listVideosOlderThan(db: Db, cutoffIso: string): VideoRecord[] {
-  return db.prepare(`
+  return db.all<VideoRecord>(sql`
     SELECT *
     FROM videos
-    WHERE COALESCE(last_scan_at, updated_at, created_at) < ?
+    WHERE COALESCE(last_scan_at, updated_at, created_at) < ${cutoffIso}
     ORDER BY COALESCE(last_scan_at, updated_at, created_at) ASC, id ASC
-  `).all(cutoffIso) as unknown as VideoRecord[];
+  `);
 }
 
 export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       INSERT INTO videos (
         bvid,
         aid,
@@ -84,7 +101,21 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ${video.bvid},
+        ${video.aid},
+        ${video.title},
+        ${video.ownerMid ?? null},
+        ${video.ownerName ?? null},
+        ${video.ownerDirName ?? null},
+        ${video.workDirName ?? null},
+        ${video.pageCount},
+        ${video.rootCommentRpid ?? null},
+        ${video.topCommentRpid ?? null},
+        ${now},
+        ${now},
+        ${now}
+      )
       ON CONFLICT(bvid) DO UPDATE SET
         aid = excluded.aid,
         title = excluded.title,
@@ -95,24 +126,15 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         page_count = excluded.page_count,
         updated_at = excluded.updated_at,
         last_scan_at = excluded.last_scan_at
-    `).run(
-      video.bvid,
-      video.aid,
-      video.title,
-      video.ownerMid ?? null,
-      video.ownerName ?? null,
-      video.ownerDirName ?? null,
-      video.workDirName ?? null,
-      video.pageCount,
-      video.rootCommentRpid ?? null,
-      video.topCommentRpid ?? null,
-      now,
-      now,
-      now,
-    );
+    `);
   });
 
-  return getVideoByIdentity(db, { bvid: video.bvid, aid: video.aid });
+  const saved = getVideoByIdentity(db, { bvid: video.bvid, aid: video.aid });
+  if (!saved) {
+    throw new Error(`Failed to upsert video ${video.bvid}`);
+  }
+
+  return saved;
 }
 
 export function replaceVideoSubtitlePathPrefix(db: Db, videoId: number, fromPrefix: string, toPrefix: string) {
@@ -120,38 +142,30 @@ export function replaceVideoSubtitlePathPrefix(db: Db, videoId: number, fromPref
   const resolvedToPrefix = path.resolve(toPrefix);
   const rows = listAllVideoParts(db, videoId);
   const now = new Date().toISOString();
-  const update = db.prepare(`
-    UPDATE video_parts
-    SET subtitle_path = ?,
-        updated_at = ?
-    WHERE id = ?
-  `);
 
-  withDatabaseWriteLock(db, () => {
-    db.exec("BEGIN");
-    try {
-      for (const row of rows) {
-        const currentSubtitlePath = String(row.subtitle_path ?? "").trim();
-        if (!currentSubtitlePath) {
-          continue;
-        }
-
-        const resolvedSubtitlePath = path.resolve(currentSubtitlePath);
-        if (
-          resolvedSubtitlePath !== resolvedFromPrefix
-          && !resolvedSubtitlePath.startsWith(`${resolvedFromPrefix}${path.sep}`)
-        ) {
-          continue;
-        }
-
-        const relativeSubtitlePath = path.relative(resolvedFromPrefix, resolvedSubtitlePath);
-        const nextSubtitlePath = path.resolve(resolvedToPrefix, relativeSubtitlePath);
-        update.run(nextSubtitlePath, now, row.id);
+  runInTransaction(db, () => {
+    for (const row of rows) {
+      const currentSubtitlePath = String(row.subtitle_path ?? "").trim();
+      if (!currentSubtitlePath) {
+        continue;
       }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+
+      const resolvedSubtitlePath = path.resolve(currentSubtitlePath);
+      if (
+        resolvedSubtitlePath !== resolvedFromPrefix
+        && !resolvedSubtitlePath.startsWith(`${resolvedFromPrefix}${path.sep}`)
+      ) {
+        continue;
+      }
+
+      const relativeSubtitlePath = path.relative(resolvedFromPrefix, resolvedSubtitlePath);
+      const nextSubtitlePath = path.resolve(resolvedToPrefix, relativeSubtitlePath);
+      db.run(sql`
+        UPDATE video_parts
+        SET subtitle_path = ${nextSubtitlePath},
+            updated_at = ${now}
+        WHERE id = ${row.id}
+      `);
     }
   });
 }
@@ -163,52 +177,52 @@ export function updateVideoCommentThread(
 ): VideoRecord | null {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE videos
-      SET root_comment_rpid = ?,
-          top_comment_rpid = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(rootCommentRpid, topCommentRpid, now, videoId);
+      SET root_comment_rpid = ${rootCommentRpid},
+          top_comment_rpid = ${topCommentRpid},
+          updated_at = ${now}
+      WHERE id = ${videoId}
+    `);
   });
 
-  return (db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) as unknown as VideoRecord | undefined) ?? null;
+  return getVideoById(db, videoId);
 }
 
 export function markVideoPublishRebuildNeeded(db: Db, videoId: number, reason: string | null | undefined): VideoRecord | null {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE videos
       SET publish_needs_rebuild = 1,
-          publish_rebuild_reason = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(String(reason ?? "").trim() || "structural-part-change", now, videoId);
+          publish_rebuild_reason = ${String(reason ?? "").trim() || "structural-part-change"},
+          updated_at = ${now}
+      WHERE id = ${videoId}
+    `);
   });
 
-  return (db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) as unknown as VideoRecord | undefined) ?? null;
+  return getVideoById(db, videoId);
 }
 
 export function clearVideoPublishRebuildNeeded(db: Db, videoId: number): VideoRecord | null {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE videos
       SET publish_needs_rebuild = 0,
           publish_rebuild_reason = NULL,
-          updated_at = ?
-      WHERE id = ?
-    `).run(now, videoId);
+          updated_at = ${now}
+      WHERE id = ${videoId}
+    `);
   });
 
-  return (db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId) as unknown as VideoRecord | undefined) ?? null;
+  return getVideoById(db, videoId);
 }
 
 export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord | null {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       INSERT INTO video_parts (
         video_id,
         page_no,
@@ -229,7 +243,26 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ${part.videoId},
+        ${part.pageNo},
+        ${part.cid},
+        ${part.partTitle},
+        ${part.durationSec},
+        ${part.subtitlePath ?? null},
+        ${part.subtitleSource ?? null},
+        ${part.subtitleLang ?? null},
+        ${part.summaryText ?? null},
+        ${normalizeStoredSummaryText(part.processedSummaryText)},
+        ${part.summaryHash ?? null},
+        ${part.published ? 1 : 0},
+        ${part.publishedCommentRpid ?? null},
+        ${part.publishedAt ?? null},
+        ${part.isDeleted ? 1 : 0},
+        ${part.deletedAt ?? null},
+        ${now},
+        ${now}
+      )
       ON CONFLICT(video_id, cid) DO UPDATE SET
         page_no = excluded.page_no,
         part_title = excluded.part_title,
@@ -246,85 +279,68 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         is_deleted = excluded.is_deleted,
         deleted_at = excluded.deleted_at,
         updated_at = excluded.updated_at
-    `).run(
-      part.videoId,
-      part.pageNo,
-      part.cid,
-      part.partTitle,
-      part.durationSec,
-      part.subtitlePath ?? null,
-      part.subtitleSource ?? null,
-      part.subtitleLang ?? null,
-      part.summaryText ?? null,
-      normalizeStoredSummaryText(part.processedSummaryText),
-      part.summaryHash ?? null,
-      part.published ? 1 : 0,
-      part.publishedCommentRpid ?? null,
-      part.publishedAt ?? null,
-      part.isDeleted ? 1 : 0,
-      part.deletedAt ?? null,
-      now,
-      now,
-    );
+    `);
   });
 
   return getVideoPartByCid(db, part.videoId, part.cid);
 }
 
 export function listVideoParts(db: Db, videoId: number): VideoPartRecord[] {
-  return db.prepare(`
+  return db.all<VideoPartRecord>(sql`
     SELECT *
     FROM video_parts
-    WHERE video_id = ?
+    WHERE video_id = ${videoId}
       AND is_deleted = 0
     ORDER BY page_no ASC, id ASC
-  `).all(videoId) as unknown as VideoPartRecord[];
+  `);
 }
 
 export function listAllVideoParts(db: Db, videoId: number): VideoPartRecord[] {
-  return db.prepare(`
+  return db.all<VideoPartRecord>(sql`
     SELECT *
     FROM video_parts
-    WHERE video_id = ?
+    WHERE video_id = ${videoId}
     ORDER BY is_deleted ASC, page_no ASC, id ASC
-  `).all(videoId) as unknown as VideoPartRecord[];
+  `);
 }
 
 export function getVideoPartByCid(db: Db, videoId: number, cid: number): VideoPartRecord | null {
-  return ((db.prepare(`
+  return db.get<VideoPartRecord>(sql`
     SELECT *
     FROM video_parts
-    WHERE video_id = ?
-      AND cid = ?
+    WHERE video_id = ${videoId}
+      AND cid = ${cid}
     LIMIT 1
-  `).get(videoId, cid) as unknown as VideoPartRecord | undefined) ?? null);
+  `) ?? null;
 }
 
 export function getActiveVideoPartByPageNo(db: Db, videoId: number, pageNo: number): VideoPartRecord | null {
-  return ((db.prepare(`
+  return db.get<VideoPartRecord>(sql`
     SELECT *
     FROM video_parts
-    WHERE video_id = ?
-      AND page_no = ?
+    WHERE video_id = ${videoId}
+      AND page_no = ${pageNo}
       AND is_deleted = 0
     LIMIT 1
-  `).get(videoId, pageNo) as unknown as VideoPartRecord | undefined) ?? null);
+  `) ?? null;
 }
 
 export function listPendingSummaryParts(db: Db, videoId: number): VideoPartRecord[] {
-  return db.prepare(`
-    SELECT * FROM video_parts
-    WHERE video_id = ?
+  return db.all<VideoPartRecord>(sql`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ${videoId}
       AND is_deleted = 0
       AND (summary_text IS NULL OR TRIM(summary_text) = '')
     ORDER BY page_no ASC
-  `).all(videoId) as unknown as VideoPartRecord[];
+  `);
 }
 
 export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecord[] {
-  return db.prepare(`
-    SELECT * FROM video_parts
-    WHERE video_id = ?
+  return db.all<VideoPartRecord>(sql`
+    SELECT *
+    FROM video_parts
+    WHERE video_id = ${videoId}
       AND is_deleted = 0
       AND (
         (summary_text_processed IS NOT NULL AND TRIM(summary_text_processed) <> '')
@@ -332,7 +348,7 @@ export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecor
       )
       AND published = 0
     ORDER BY page_no ASC
-  `).all(videoId) as unknown as VideoPartRecord[];
+  `);
 }
 
 export function savePartSummary(
@@ -352,43 +368,31 @@ export function savePartSummary(
   const now = new Date().toISOString();
   const normalizedProcessedSummaryText = normalizeStoredSummaryText(processedSummaryText);
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE video_parts
-      SET summary_text = ?,
+      SET summary_text = ${summaryText},
           summary_text_processed = CASE
-            WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN ?
-            ELSE COALESCE(?, summary_text_processed)
+            WHEN COALESCE(summary_hash, '') <> COALESCE(${summaryHash}, '') THEN ${normalizedProcessedSummaryText}
+            ELSE COALESCE(${normalizedProcessedSummaryText}, summary_text_processed)
           END,
-          summary_hash = ?,
+          summary_hash = ${summaryHash},
           published = CASE
-            WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN 0
+            WHEN COALESCE(summary_hash, '') <> COALESCE(${summaryHash}, '') THEN 0
             ELSE published
           END,
           published_comment_rpid = CASE
-            WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN NULL
+            WHEN COALESCE(summary_hash, '') <> COALESCE(${summaryHash}, '') THEN NULL
             ELSE published_comment_rpid
           END,
           published_at = CASE
-            WHEN COALESCE(summary_hash, '') <> COALESCE(?, '') THEN NULL
+            WHEN COALESCE(summary_hash, '') <> COALESCE(${summaryHash}, '') THEN NULL
             ELSE published_at
           END,
-          updated_at = ?
-      WHERE video_id = ?
-        AND page_no = ?
+          updated_at = ${now}
+      WHERE video_id = ${videoId}
+        AND page_no = ${pageNo}
         AND is_deleted = 0
-    `).run(
-      summaryText,
-      summaryHash,
-      normalizedProcessedSummaryText,
-      normalizedProcessedSummaryText,
-      summaryHash,
-      summaryHash,
-      summaryHash,
-      summaryHash,
-      now,
-      videoId,
-      pageNo,
-    );
+    `);
   });
 
   return getActiveVideoPartByPageNo(db, videoId, pageNo);
@@ -403,14 +407,14 @@ export function savePartProcessedSummary(
   const now = new Date().toISOString();
   const normalizedProcessedSummaryText = normalizeStoredSummaryText(processedSummaryText);
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE video_parts
-      SET summary_text_processed = ?,
-          updated_at = ?
-      WHERE video_id = ?
-        AND page_no = ?
+      SET summary_text_processed = ${normalizedProcessedSummaryText},
+          updated_at = ${now}
+      WHERE video_id = ${videoId}
+        AND page_no = ${pageNo}
         AND is_deleted = 0
-    `).run(normalizedProcessedSummaryText, now, videoId, pageNo);
+    `);
   });
 
   return getActiveVideoPartByPageNo(db, videoId, pageNo);
@@ -424,16 +428,16 @@ export function savePartSubtitle(
 ): VideoPartRecord | null {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE video_parts
-      SET subtitle_path = ?,
-          subtitle_source = ?,
-          subtitle_lang = ?,
-          updated_at = ?
-      WHERE video_id = ?
-        AND page_no = ?
+      SET subtitle_path = ${subtitlePath},
+          subtitle_source = ${subtitleSource},
+          subtitle_lang = ${subtitleLang},
+          updated_at = ${now}
+      WHERE video_id = ${videoId}
+        AND page_no = ${pageNo}
         AND is_deleted = 0
-    `).run(subtitlePath, subtitleSource, subtitleLang, now, videoId, pageNo);
+    `);
   });
 
   return getActiveVideoPartByPageNo(db, videoId, pageNo);
@@ -445,27 +449,18 @@ export function markPartsPublished(db: Db, videoId: number, pageNos: number[], p
   }
 
   const now = new Date().toISOString();
-  const update = db.prepare(`
-    UPDATE video_parts
-    SET published = 1,
-        published_comment_rpid = COALESCE(?, published_comment_rpid),
-        published_at = ?,
-        updated_at = ?
-    WHERE video_id = ?
-      AND page_no = ?
-      AND is_deleted = 0
-  `);
-
-  withDatabaseWriteLock(db, () => {
-    db.exec("BEGIN");
-    try {
-      for (const pageNo of pageNos) {
-        update.run(publishedCommentRpid ?? null, now, now, videoId, pageNo);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+  runInTransaction(db, () => {
+    for (const pageNo of pageNos) {
+      db.run(sql`
+        UPDATE video_parts
+        SET published = 1,
+            published_comment_rpid = COALESCE(${publishedCommentRpid ?? null}, published_comment_rpid),
+            published_at = ${now},
+            updated_at = ${now}
+        WHERE video_id = ${videoId}
+          AND page_no = ${pageNo}
+          AND is_deleted = 0
+      `);
     }
   });
 }
@@ -473,14 +468,14 @@ export function markPartsPublished(db: Db, videoId: number, pageNos: number[], p
 export function resetPublishedStateForVideo(db: Db, videoId: number) {
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE video_parts
       SET published = 0,
           published_comment_rpid = NULL,
           published_at = NULL,
-          updated_at = ?
-      WHERE video_id = ?
-    `).run(now, videoId);
+          updated_at = ${now}
+      WHERE video_id = ${videoId}
+    `);
   });
 }
 

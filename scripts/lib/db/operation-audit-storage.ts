@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
 import type { Db, OperationAuditInsert, OperationAuditRecord } from "./types";
 
@@ -5,7 +6,7 @@ export function insertOperationAudit(db: Db, audit: OperationAuditInsert): Opera
   const now = new Date().toISOString();
 
   return withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       INSERT INTO operation_audits (
         action,
         scope,
@@ -19,20 +20,20 @@ export function insertOperationAudit(db: Db, audit: OperationAuditInsert): Opera
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      requireText(audit.action, "action"),
-      requireText(audit.scope, "scope"),
-      normalizeText(audit.triggerSource) ?? "web",
-      normalizeText(audit.bvid),
-      normalizeText(audit.runId),
-      serializeJson(audit.request),
-      normalizeText(audit.status) ?? "started",
-      null,
-      null,
-      now,
-      now,
-    );
+      VALUES (
+        ${requireText(audit.action, "action")},
+        ${requireText(audit.scope, "scope")},
+        ${normalizeText(audit.triggerSource) ?? "web"},
+        ${normalizeText(audit.bvid)},
+        ${normalizeText(audit.runId)},
+        ${serializeJson(audit.request)},
+        ${normalizeText(audit.status) ?? "started"},
+        ${null},
+        ${null},
+        ${now},
+        ${now}
+      )
+    `);
 
     return getLastInsertedOperationAudit(db);
   });
@@ -56,29 +57,26 @@ export function updateOperationAudit(
   const now = new Date().toISOString();
 
   return withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    db.run(sql`
       UPDATE operation_audits
-      SET status = ?,
-          run_id = COALESCE(?, run_id),
-          result_json = ?,
-          error_message = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(
-      requireText(status, "status"),
-      normalizeText(runId),
-      serializeJson(result),
-      normalizeText(errorMessage),
-      now,
-      normalizeInteger(auditId),
-    );
+      SET status = ${requireText(status, "status")},
+          run_id = COALESCE(${normalizeText(runId)}, run_id),
+          result_json = ${serializeJson(result)},
+          error_message = ${normalizeText(errorMessage)},
+          updated_at = ${now}
+      WHERE id = ${normalizeInteger(auditId)}
+    `);
 
     return getOperationAuditById(db, auditId);
   });
 }
 
 export function getOperationAuditById(db: Db, auditId: number): OperationAuditRecord | null {
-  return (db.prepare("SELECT * FROM operation_audits WHERE id = ?").get(normalizeInteger(auditId)) as unknown as OperationAuditRecord | undefined) ?? null;
+  return db.get<OperationAuditRecord>(sql`
+    SELECT *
+    FROM operation_audits
+    WHERE id = ${normalizeInteger(auditId)}
+  `) ?? null;
 }
 
 export function listOperationAudits(
@@ -91,21 +89,26 @@ export function listOperationAudits(
     limit?: number;
   } = {},
 ): OperationAuditRecord[] {
-  return db.prepare(`
+  return db.all<OperationAuditRecord>(sql`
     SELECT *
     FROM operation_audits
-    WHERE (? IS NULL OR bvid = ?)
+    WHERE (${normalizeText(bvid)} IS NULL OR bvid = ${normalizeText(bvid)})
     ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(
-    normalizeText(bvid),
-    normalizeText(bvid),
-    Math.max(1, Number(limit) || 50),
-  ) as unknown as OperationAuditRecord[];
+    LIMIT ${Math.max(1, Number(limit) || 50)}
+  `);
 }
 
 function getLastInsertedOperationAudit(db: Db): OperationAuditRecord {
-  return db.prepare("SELECT * FROM operation_audits WHERE id = last_insert_rowid()").get() as unknown as OperationAuditRecord;
+  const record = db.get<OperationAuditRecord>(sql`
+    SELECT *
+    FROM operation_audits
+    WHERE id = last_insert_rowid()
+  `);
+  if (!record) {
+    throw new Error("Failed to load inserted operation audit");
+  }
+
+  return record;
 }
 
 function serializeJson(payload: unknown): string | null {

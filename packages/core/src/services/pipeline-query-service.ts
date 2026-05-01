@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   listVideoParts,
   listVideos,
@@ -175,24 +176,20 @@ function listRuns(
     bvid: string | null;
   },
 ): DashboardRunItem[] {
-  const { whereClause, params } = buildRunFilter({
+  const whereClause = buildRunFilter({
     statuses,
     bvid,
   });
 
-  return db.prepare(`
+  return db.all<PipelineRunStateRecord>(sql`
     SELECT state.*
     FROM pipeline_run_state state
     JOIN pipeline_runs runs ON runs.run_id = state.run_id
     ${whereClause}
     ORDER BY state.updated_at DESC, state.latest_event_id DESC
-    LIMIT ?
-    OFFSET ?
-  `).all(
-    ...params,
-    normalizeLimit(limit, 50, 200),
-    normalizeOffset(offset),
-  ).map((row: any) => mapRunStateToItem(row as PipelineRunStateRecord));
+    LIMIT ${normalizeLimit(limit, 50, 200)}
+    OFFSET ${normalizeOffset(offset)}
+  `).map((row) => mapRunStateToItem(row));
 }
 
 function countRuns(
@@ -205,18 +202,18 @@ function countRuns(
     bvid: string | null;
   },
 ): number {
-  const { whereClause, params } = buildRunFilter({
+  const whereClause = buildRunFilter({
     statuses,
     bvid,
   });
 
   return Number(
-    ((db.prepare(`
+    (db.get<{ count?: number }>(sql`
       SELECT COUNT(*) AS count
       FROM pipeline_run_state state
       JOIN pipeline_runs runs ON runs.run_id = state.run_id
       ${whereClause}
-    `).get(...params) as { count?: number } | undefined)?.count) ?? 0,
+    `)?.count) ?? 0,
   );
 }
 
@@ -227,27 +224,21 @@ function buildRunFilter({
   statuses: string[] | null;
   bvid: string | null;
 }) {
-  const clauses: string[] = [];
-  const params: Array<string> = [];
+  const clauses = [];
   const safeStatuses = Array.isArray(statuses)
     ? [...new Set(statuses.map((item) => normalizeText(item)).filter((item): item is string => Boolean(item)))]
     : [];
   const safeBvid = normalizeText(bvid);
 
   if (safeStatuses.length > 0) {
-    clauses.push(`runs.status IN (${safeStatuses.map(() => "?").join(", ")})`);
-    params.push(...safeStatuses);
+    clauses.push(sql`runs.status IN (${sql.join(safeStatuses.map((item) => sql`${item}`), sql`, `)})`);
   }
 
   if (safeBvid) {
-    clauses.push("state.bvid = ?");
-    params.push(safeBvid);
+    clauses.push(sql`state.bvid = ${safeBvid}`);
   }
 
-  return {
-    whereClause: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
-    params,
-  };
+  return clauses.length > 0 ? sql`WHERE ${sql.join(clauses, sql` AND `)}` : sql``;
 }
 
 function listEvents(
@@ -264,22 +255,29 @@ function listEvents(
     offset: number;
   },
 ): PipelineEventItem[] {
-  return db.prepare(`
+  return db.all<{
+    id: number;
+    run_id: string | null;
+    bvid: string | null;
+    video_title: string | null;
+    page_no: number | null;
+    cid: number | null;
+    part_title: string | null;
+    scope: string;
+    action: string;
+    status: string;
+    message: string | null;
+    details_json: string | null;
+    created_at: string;
+  }>(sql`
     SELECT *
     FROM pipeline_events
-    WHERE (? IS NULL OR bvid = ?)
-      AND (? IS NULL OR created_at >= ?)
+    WHERE (${normalizeText(bvid)} IS NULL OR bvid = ${normalizeText(bvid)})
+      AND (${normalizeText(sinceIso)} IS NULL OR created_at >= ${normalizeText(sinceIso)})
     ORDER BY created_at DESC, id DESC
-    LIMIT ?
-    OFFSET ?
-  `).all(
-    normalizeText(bvid),
-    normalizeText(bvid),
-    normalizeText(sinceIso),
-    normalizeText(sinceIso),
-    normalizeLimit(limit, 100, 500),
-    normalizeOffset(offset),
-  ).map((row: any) => mapPipelineEvent(row));
+    LIMIT ${normalizeLimit(limit, 100, 500)}
+    OFFSET ${normalizeOffset(offset)}
+  `).map((row) => mapPipelineEvent(row));
 }
 
 function countEvents(
@@ -293,17 +291,12 @@ function countEvents(
   },
 ): number {
   return Number(
-    ((db.prepare(`
+    (db.get<{ count?: number }>(sql`
       SELECT COUNT(*) AS count
       FROM pipeline_events
-      WHERE (? IS NULL OR bvid = ?)
-        AND (? IS NULL OR created_at >= ?)
-    `).get(
-      normalizeText(bvid),
-      normalizeText(bvid),
-      normalizeText(sinceIso),
-      normalizeText(sinceIso),
-    ) as { count?: number } | undefined)?.count) ?? 0,
+      WHERE (${normalizeText(bvid)} IS NULL OR bvid = ${normalizeText(bvid)})
+        AND (${normalizeText(sinceIso)} IS NULL OR created_at >= ${normalizeText(sinceIso)})
+    `)?.count) ?? 0,
   );
 }
 

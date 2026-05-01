@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   getSchedulerStatus,
   getPipelineRunStateById,
@@ -312,19 +313,28 @@ function listEventsAfterId(
     limit: number;
   },
 ) {
-  return db.prepare(`
+  return db.all<{
+    id: number;
+    run_id: string | null;
+    bvid: string | null;
+    video_title: string | null;
+    page_no: number | null;
+    cid: number | null;
+    part_title: string | null;
+    scope: string;
+    action: string;
+    status: string;
+    message: string | null;
+    details_json: string | null;
+    created_at: string;
+  }>(sql`
     SELECT *
     FROM pipeline_events
-    WHERE id > ?
-      AND (? IS NULL OR bvid = ?)
+    WHERE id > ${Math.max(0, Number(afterId) || 0)}
+      AND (${bvid} IS NULL OR bvid = ${bvid})
     ORDER BY id ASC
-    LIMIT ?
-  `).all(
-    Math.max(0, Number(afterId) || 0),
-    bvid,
-    bvid,
-    Math.max(1, Number(limit) || 100),
-  ).map((event: any) => ({
+    LIMIT ${Math.max(1, Number(limit) || 100)}
+  `).map((event) => ({
     id: event.id,
     runId: event.run_id,
     bvid: event.bvid,
@@ -343,25 +353,32 @@ function listEventsAfterId(
 
 function getDashboardSummary(db: Db): DashboardSummary {
   const activeCount = Number(
-    ((db.prepare("SELECT COUNT(*) AS count FROM pipeline_runs WHERE status = 'running'").get() as { count?: number } | undefined)?.count) ?? 0,
+    (db.get<{ count?: number }>(sql`
+      SELECT COUNT(*) AS count
+      FROM pipeline_runs
+      WHERE status = 'running'
+    `)?.count) ?? 0,
   );
   const succeededCount24h = Number(
-    ((db.prepare(`
+    (db.get<{ count?: number }>(sql`
       SELECT COUNT(*) AS count
       FROM pipeline_runs
       WHERE status = 'succeeded'
-        AND updated_at >= ?
-    `).get(getRecentIsoHours(24)) as { count?: number } | undefined)?.count) ?? 0,
+        AND updated_at >= ${getRecentIsoHours(24)}
+    `)?.count) ?? 0,
   );
   const failedCount24h = Number(
-    ((db.prepare(`
+    (db.get<{ count?: number }>(sql`
       SELECT COUNT(*) AS count
       FROM pipeline_runs
       WHERE status = 'failed'
-        AND updated_at >= ?
-    `).get(getRecentIsoHours(24)) as { count?: number } | undefined)?.count) ?? 0,
+        AND updated_at >= ${getRecentIsoHours(24)}
+    `)?.count) ?? 0,
   );
-  const latestUpdatedAt = ((db.prepare("SELECT MAX(updated_at) AS updated_at FROM pipeline_run_state").get() as { updated_at?: string } | undefined)?.updated_at) ?? null;
+  const latestUpdatedAt = db.get<{ updated_at?: string }>(sql`
+    SELECT MAX(updated_at) AS updated_at
+    FROM pipeline_run_state
+  `)?.updated_at ?? null;
 
   return {
     activeCount,

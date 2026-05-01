@@ -1,3 +1,5 @@
+import { sql } from "drizzle-orm";
+import { runInTransaction } from "./database";
 import type {
   Db,
   PipelineEventInput,
@@ -8,15 +10,17 @@ import type {
 
 export function syncPipelineRunReadModels(db: Db) {
   const latestEventId = Number(
-    ((db.prepare("SELECT MAX(latest_event_id) AS latest_event_id FROM pipeline_run_state").get() as { latest_event_id?: number } | undefined)
-      ?.latest_event_id) ?? 0,
+    (db.get<{ latest_event_id?: number }>(sql`
+      SELECT MAX(latest_event_id) AS latest_event_id
+      FROM pipeline_run_state
+    `)?.latest_event_id) ?? 0,
   );
-  const pendingEvents = db.prepare(`
+  const pendingEvents = db.all<PipelineEventRecord>(sql`
     SELECT *
     FROM pipeline_events
-    WHERE id > ?
+    WHERE id > ${latestEventId}
     ORDER BY id ASC
-  `).all(latestEventId) as unknown as PipelineEventRecord[];
+  `);
   const runCache = new Map<string, PipelineRunRecord>();
   const stateCache = new Map<string, PipelineRunStateRecord>();
 
@@ -24,19 +28,14 @@ export function syncPipelineRunReadModels(db: Db) {
     return;
   }
 
-  db.exec("BEGIN");
-  try {
+  runInTransaction(db, () => {
     for (const event of pendingEvents) {
       applyPipelineRunStateMutation(db, event, null, {
         runCache,
         stateCache,
       });
     }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 export function upsertPipelineRunStateFromEvent(
@@ -80,7 +79,7 @@ function applyPipelineRunStateMutation(
     ? normalizeText(eventRecord.message) ?? existingState?.last_error_message ?? null
     : existingState?.last_error_message ?? null;
 
-  db.prepare(`
+  db.run(sql`
     INSERT INTO pipeline_runs (
       run_id,
       video_id,
@@ -93,7 +92,18 @@ function applyPipelineRunStateMutation(
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (
+      ${runId},
+      ${normalizeInteger(eventRecord.video_id)},
+      ${normalizeText(eventRecord.bvid)},
+      ${normalizeText(eventRecord.video_title)},
+      ${nextTriggerSource},
+      ${nextRunStatus},
+      ${nextStartedAt},
+      ${nextFinishedAt},
+      ${existingRun?.created_at ?? createdAt},
+      ${createdAt}
+    )
     ON CONFLICT(run_id) DO UPDATE SET
       video_id = COALESCE(excluded.video_id, pipeline_runs.video_id),
       bvid = COALESCE(excluded.bvid, pipeline_runs.bvid),
@@ -103,20 +113,9 @@ function applyPipelineRunStateMutation(
       started_at = COALESCE(pipeline_runs.started_at, excluded.started_at),
       finished_at = excluded.finished_at,
       updated_at = excluded.updated_at
-  `).run(
-    runId,
-    normalizeInteger(eventRecord.video_id),
-    normalizeText(eventRecord.bvid),
-    normalizeText(eventRecord.video_title),
-    nextTriggerSource,
-    nextRunStatus,
-    nextStartedAt,
-    nextFinishedAt,
-    existingRun?.created_at ?? createdAt,
-    createdAt,
-  );
+  `);
 
-  db.prepare(`
+  db.run(sql`
     INSERT INTO pipeline_run_state (
       run_id,
       latest_event_id,
@@ -144,7 +143,33 @@ function applyPipelineRunStateMutation(
       finished_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (
+      ${runId},
+      ${eventRecord.id},
+      ${normalizeInteger(eventRecord.video_id)},
+      ${normalizeText(eventRecord.bvid)},
+      ${normalizeText(eventRecord.video_title)},
+      ${nextTriggerSource},
+      ${nextRunStatus},
+      ${normalizeText(eventRecord.scope)},
+      ${normalizeText(eventRecord.action)},
+      ${normalizeText(eventRecord.status)},
+      ${nextStage},
+      ${normalizeInteger(eventRecord.page_no)},
+      ${normalizeInteger(eventRecord.cid)},
+      ${normalizeText(eventRecord.part_title)},
+      ${normalizeText(eventRecord.message)},
+      ${nextLastErrorMessage},
+      ${nextFailedScope},
+      ${nextFailedAction},
+      ${nextFailedStep},
+      ${nextLogPath},
+      ${nextSummaryPath},
+      ${nextPendingSummaryPath},
+      ${nextStartedAt},
+      ${nextFinishedAt},
+      ${createdAt}
+    )
     ON CONFLICT(run_id) DO UPDATE SET
       latest_event_id = excluded.latest_event_id,
       video_id = COALESCE(excluded.video_id, pipeline_run_state.video_id),
@@ -170,33 +195,7 @@ function applyPipelineRunStateMutation(
       started_at = COALESCE(pipeline_run_state.started_at, excluded.started_at),
       finished_at = excluded.finished_at,
       updated_at = excluded.updated_at
-  `).run(
-    runId,
-    eventRecord.id,
-    normalizeInteger(eventRecord.video_id),
-    normalizeText(eventRecord.bvid),
-    normalizeText(eventRecord.video_title),
-    nextTriggerSource,
-    nextRunStatus,
-    normalizeText(eventRecord.scope),
-    normalizeText(eventRecord.action),
-    normalizeText(eventRecord.status),
-    nextStage,
-    normalizeInteger(eventRecord.page_no),
-    normalizeInteger(eventRecord.cid),
-    normalizeText(eventRecord.part_title),
-    normalizeText(eventRecord.message),
-    nextLastErrorMessage,
-    nextFailedScope,
-    nextFailedAction,
-    nextFailedStep,
-    nextLogPath,
-    nextSummaryPath,
-    nextPendingSummaryPath,
-    nextStartedAt,
-    nextFinishedAt,
-    createdAt,
-  );
+  `);
 
   const nextRun: PipelineRunRecord = {
     run_id: runId,
@@ -249,34 +248,42 @@ function applyPipelineRunStateMutation(
 }
 
 export function getPipelineRunById(db: Db, runId: string): PipelineRunRecord | null {
-  return (db.prepare("SELECT * FROM pipeline_runs WHERE run_id = ?").get(runId) as unknown as PipelineRunRecord | undefined) ?? null;
+  return db.get<PipelineRunRecord>(sql`
+    SELECT *
+    FROM pipeline_runs
+    WHERE run_id = ${runId}
+  `) ?? null;
 }
 
 export function getPipelineRunStateById(db: Db, runId: string): PipelineRunStateRecord | null {
-  return (db.prepare("SELECT * FROM pipeline_run_state WHERE run_id = ?").get(runId) as unknown as PipelineRunStateRecord | undefined) ?? null;
+  return db.get<PipelineRunStateRecord>(sql`
+    SELECT *
+    FROM pipeline_run_state
+    WHERE run_id = ${runId}
+  `) ?? null;
 }
 
 export function getActivePipelineRunStateByBvid(db: Db, bvid: string): PipelineRunStateRecord | null {
-  return (db.prepare(`
+  return db.get<PipelineRunStateRecord>(sql`
     SELECT state.*
     FROM pipeline_run_state state
     JOIN pipeline_runs runs ON runs.run_id = state.run_id
     WHERE runs.status = 'running'
-      AND state.bvid = ?
+      AND state.bvid = ${normalizeText(bvid)}
     ORDER BY state.updated_at DESC, state.latest_event_id DESC
     LIMIT 1
-  `).get(normalizeText(bvid)) as unknown as PipelineRunStateRecord | undefined) ?? null;
+  `) ?? null;
 }
 
 export function listActivePipelineRunStates(db: Db, limit = 50): PipelineRunStateRecord[] {
-  return db.prepare(`
+  return db.all<PipelineRunStateRecord>(sql`
     SELECT state.*
     FROM pipeline_run_state state
     JOIN pipeline_runs runs ON runs.run_id = state.run_id
     WHERE runs.status = 'running'
     ORDER BY state.updated_at DESC, state.latest_event_id DESC
-    LIMIT ?
-  `).all(Math.max(1, Number(limit) || 50)) as unknown as PipelineRunStateRecord[];
+    LIMIT ${Math.max(1, Number(limit) || 50)}
+  `);
 }
 
 export function listRecentPipelineRunStates(
@@ -292,26 +299,18 @@ export function listRecentPipelineRunStates(
   const safeStatuses = Array.isArray(statuses)
     ? [...new Set(statuses.map((item) => normalizeText(item)).filter(Boolean))]
     : [];
-  const query = safeStatuses.length > 0
-    ? `
-      SELECT state.*
-      FROM pipeline_run_state state
-      JOIN pipeline_runs runs ON runs.run_id = state.run_id
-      WHERE runs.status IN (${safeStatuses.map(() => "?").join(", ")})
-      ORDER BY state.updated_at DESC, state.latest_event_id DESC
-      LIMIT ?
-    `
-    : `
-      SELECT state.*
-      FROM pipeline_run_state state
-      ORDER BY state.updated_at DESC, state.latest_event_id DESC
-      LIMIT ?
-    `;
-  const params = safeStatuses.length > 0
-    ? [...safeStatuses, Math.max(1, Number(limit) || 50)]
-    : [Math.max(1, Number(limit) || 50)];
+  const whereClause = safeStatuses.length > 0
+    ? sql`WHERE runs.status IN (${sql.join(safeStatuses.map((status) => sql`${status}`), sql`, `)})`
+    : sql``;
 
-  return db.prepare(query).all(...params) as unknown as PipelineRunStateRecord[];
+  return db.all<PipelineRunStateRecord>(sql`
+    SELECT state.*
+    FROM pipeline_run_state state
+    JOIN pipeline_runs runs ON runs.run_id = state.run_id
+    ${whereClause}
+    ORDER BY state.updated_at DESC, state.latest_event_id DESC
+    LIMIT ${Math.max(1, Number(limit) || 50)}
+  `);
 }
 
 function deriveRunStatus(previousStatus: string | null | undefined, eventRecord: PipelineEventRecord): string {

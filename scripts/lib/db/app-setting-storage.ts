@@ -1,19 +1,20 @@
+import { sql } from "drizzle-orm";
 import type { AppSettingRecord, Db } from "./types";
 
 export function listAppSettings(db: Db): AppSettingRecord[] {
-  return db.prepare(`
+  return db.all<AppSettingRecord>(sql`
     SELECT *
     FROM app_settings
     ORDER BY setting_key ASC
-  `).all() as unknown as AppSettingRecord[];
+  `);
 }
 
 export function getAppSettingByKey(db: Db, settingKey: string): AppSettingRecord | null {
-  return (db.prepare(`
+  return db.get<AppSettingRecord>(sql`
     SELECT *
     FROM app_settings
-    WHERE setting_key = ?
-  `).get(normalizeText(settingKey)) as unknown as AppSettingRecord | undefined) ?? null;
+    WHERE setting_key = ${normalizeText(settingKey)}
+  `) ?? null;
 }
 
 export function upsertAppSetting(
@@ -27,23 +28,18 @@ export function upsertAppSetting(
   },
 ): AppSettingRecord | null {
   const now = new Date().toISOString();
-  db.prepare(`
+  db.run(sql`
     INSERT INTO app_settings (
       setting_key,
       value_json,
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?)
+    VALUES (${normalizeText(settingKey)}, ${JSON.stringify(value ?? null)}, ${now}, ${now})
     ON CONFLICT(setting_key) DO UPDATE SET
       value_json = excluded.value_json,
       updated_at = excluded.updated_at
-  `).run(
-    normalizeText(settingKey),
-    JSON.stringify(value ?? null),
-    now,
-    now,
-  );
+  `);
 
   return getAppSettingByKey(db, settingKey);
 }

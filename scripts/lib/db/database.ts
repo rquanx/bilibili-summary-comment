@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrateDatabase } from "./migrations";
 import { syncPipelineRunReadModels } from "./pipeline-run-storage";
+import { schema } from "./schema";
+import type { Db, DbClient } from "./types";
 
 const DB_PATH_SYMBOL = Symbol.for("video-pipeline.dbPath");
 const DB_WRITE_LOCK_RETRY_MS = 100;
@@ -11,47 +14,72 @@ const DB_WRITE_LOCK_TIMEOUT_MS = 60_000;
 const DB_WRITE_LOCK_STALE_MS = 30 * 60_000;
 const activeWriteLocks = new Map<string, { depth: number; release: () => void }>();
 
-type DbWithPath = DatabaseSync & {
+type DbWithPath = {
   [DB_PATH_SYMBOL]?: string;
 };
 
-export function openDatabase(databasePath: string): DatabaseSync {
+export function openDatabase(databasePath: string): Db {
   const resolvedPath = path.resolve(databasePath);
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
 
-  const db = new DatabaseSync(resolvedPath) as DbWithPath;
+  const client = new Database(resolvedPath) as DbClient & DbWithPath;
+  Object.defineProperty(client, DB_PATH_SYMBOL, {
+    value: resolvedPath,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  const db = drizzle(client, { schema }) as Db & DbWithPath;
   Object.defineProperty(db, DB_PATH_SYMBOL, {
     value: resolvedPath,
     configurable: false,
     enumerable: false,
     writable: false,
   });
+  Object.defineProperties(db, {
+    close: {
+      value: client.close.bind(client),
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    },
+    exec: {
+      value: client.exec.bind(client),
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    },
+    pragma: {
+      value: client.pragma.bind(client),
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    },
+    prepare: {
+      value: client.prepare.bind(client),
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    },
+  });
 
   withDatabaseWriteLock(db, () => {
-    db.exec("PRAGMA journal_mode = WAL;");
-    db.exec("PRAGMA busy_timeout = 5000;");
-    db.exec("PRAGMA foreign_keys = ON;");
-    migrateDatabase(db);
+    client.pragma("journal_mode = WAL");
+    client.pragma("busy_timeout = 5000");
+    client.pragma("foreign_keys = ON");
+    migrateDatabase(client);
     syncPipelineRunReadModels(db);
   });
   return db;
 }
 
-export function runInTransaction<T>(db: Pick<DatabaseSync, "exec">, work: () => T): T {
+export function runInTransaction<T>(db: Db, work: () => T): T {
   return withDatabaseWriteLock(db, () => {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const result = work();
-      db.exec("COMMIT");
-      return result;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    return db.$client.transaction(work).immediate();
   });
 }
 
-export function withDatabaseWriteLock<T>(dbOrPath: Pick<DatabaseSync, "exec"> | string, work: () => T): T {
+export function withDatabaseWriteLock<T>(dbOrPath: Db | DbClient | string, work: () => T): T {
   const resolvedPath = resolveDatabasePath(dbOrPath);
   const active = activeWriteLocks.get(resolvedPath);
   if (active) {
@@ -91,7 +119,7 @@ function releaseActiveWriteLock(resolvedPath: string) {
   active.release();
 }
 
-function resolveDatabasePath(dbOrPath: Pick<DatabaseSync, "exec"> | string): string {
+function resolveDatabasePath(dbOrPath: Db | DbClient | string): string {
   if (typeof dbOrPath === "string") {
     return path.resolve(dbOrPath);
   }
@@ -99,6 +127,11 @@ function resolveDatabasePath(dbOrPath: Pick<DatabaseSync, "exec"> | string): str
   const resolvedPath = (dbOrPath as DbWithPath)[DB_PATH_SYMBOL];
   if (typeof resolvedPath === "string" && resolvedPath) {
     return resolvedPath;
+  }
+
+  const clientPath = ((dbOrPath as Db).$client as DbWithPath | undefined)?.[DB_PATH_SYMBOL];
+  if (typeof clientPath === "string" && clientPath) {
+    return clientPath;
   }
 
   throw new Error("Database write lock requires a database opened via openDatabase().");
