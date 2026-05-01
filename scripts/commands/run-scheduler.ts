@@ -155,6 +155,11 @@ await runCli({
           summaryLogger.progress(message);
           writeConsole(`[summary] ${message}`);
         },
+        onPipelineSucceeded({ upload }) {
+          const label = upload.title || upload.bvid || "untitled";
+          log(`Summary pipeline completed for ${upload.bvid} (${label}); requesting immediate publish sweep`);
+          void publishRunner();
+        },
       });
       summaryLogger.info("Summary sweep finished", {
         uploads: result.uploads.length,
@@ -383,14 +388,6 @@ await runCli({
           failureDetails: [message],
           message,
         };
-      },
-      onAfterSuccess(result) {
-        if ((result?.uploads ?? 0) <= 0) {
-          return;
-        }
-
-        log("Summary sweep finished with recent uploads; requesting immediate publish sweep");
-        void publishRunner();
       },
     });
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);

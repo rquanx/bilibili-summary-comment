@@ -50,6 +50,10 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
   publish?: boolean;
   maxConcurrent?: number;
   logger?: FileLogger | null;
+  onPipelineSucceeded?: (payload: {
+    upload: RecentUpload;
+    result: PipelineProcessResult;
+  }) => void | Promise<void>;
   collectRecentUploadsImpl?: (options: CollectRecentUploadsOptions) => Promise<CollectedUploadsResult>;
   runPipelinesWithConcurrencyImpl?: (
     options: Parameters<typeof runPipelinesWithConcurrency<RecentUpload, PipelineProcessResult>>[0],
@@ -167,6 +171,7 @@ export async function syncSummaryUsersRecentVideos({
   maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
   logger = null,
   onLog = () => {},
+  onPipelineSucceeded = undefined,
   collectRecentUploadsImpl = collectRecentUploadsFromUsers,
   runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
   runPipelineForBvidImpl = runPipelineForBvid,
@@ -210,7 +215,7 @@ export async function syncSummaryUsersRecentVideos({
     },
     async runUpload(upload) {
       onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"}) [user ${upload.mid}]`);
-      return runPipelineForBvidImpl({
+      const result = await runPipelineForBvidImpl({
         authFile: upload.authFile ?? null,
         cookieFile: null,
         dbPath,
@@ -224,6 +229,19 @@ export async function syncSummaryUsersRecentVideos({
           mid: upload.mid,
         }) ?? null,
       });
+
+      if (onPipelineSucceeded) {
+        void Promise.resolve(onPipelineSucceeded({
+          upload,
+          result,
+        })).catch((error) => {
+          onLog(
+            `Post-pipeline success hook failed for ${upload.bvid}: ${formatErrorMessage(error)}`,
+          );
+        });
+      }
+
+      return result;
     },
   });
 

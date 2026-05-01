@@ -180,6 +180,88 @@ test("syncSummaryUsersRecentVideos forwards publish=false to pipeline runs", asy
   assert.deepEqual(observedPublishFlags, [false]);
 });
 
+test("syncSummaryUsersRecentVideos triggers a per-pipeline success hook after each successful run", async () => {
+  const observedPayloads: Array<{
+    bvid: string;
+    title: string;
+    ok: boolean;
+    generatedPages: number[];
+  }> = [];
+
+  await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    publish: false,
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BVHOOK1",
+          aid: 1,
+          title: "Hook One",
+          authFile: "D:\\repo\\.auth\\bili-auth_1.json",
+          createdAtUnix: 200,
+          createdAt: new Date(200 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BVHOOK2",
+          aid: 2,
+          title: "Hook Two",
+          authFile: "D:\\repo\\.auth\\bili-auth_1.json",
+          createdAtUnix: 100,
+          createdAt: new Date(100 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    async runPipelinesWithConcurrencyImpl(options) {
+      const runs = [];
+      for (const upload of options.uploads ?? []) {
+        runs.push({
+          upload,
+          result: await options.runUpload?.(upload),
+        });
+      }
+
+      return {
+        runs: runs as any,
+        failures: [],
+      };
+    },
+    async runPipelineForBvidImpl(options) {
+      return {
+        ok: true,
+        generatedPages: [String(options.bvid).endsWith("1") ? 1 : 2],
+      };
+    },
+    onPipelineSucceeded({ upload, result }) {
+      observedPayloads.push({
+        bvid: upload.bvid,
+        title: upload.title,
+        ok: Boolean(result.ok),
+        generatedPages: Array.isArray(result.generatedPages) ? result.generatedPages.map((item) => Number(item)) : [],
+      });
+    },
+  });
+
+  assert.deepEqual(observedPayloads, [
+    {
+      bvid: "BVHOOK1",
+      title: "Hook One",
+      ok: true,
+      generatedPages: [1],
+    },
+    {
+      bvid: "BVHOOK2",
+      title: "Hook Two",
+      ok: true,
+      generatedPages: [2],
+    },
+  ]);
+});
+
 test("syncSummaryUsersRecentVideos keeps same-user title variants and queues earliest variants first for reuse", async () => {
   const logMessages: string[] = [];
   const scheduledUploads: Array<{ bvid: string; title: string }> = [];
