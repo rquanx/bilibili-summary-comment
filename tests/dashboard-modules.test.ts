@@ -951,6 +951,11 @@ test("config service persists managed settings and runtime resolvers consume dat
         summary: {
           model: "gpt-config-test",
           promptConfigPath: "config/custom-prompts.json",
+          promptConfigContent: JSON.stringify({
+            defaults: {
+              extraRules: ["db managed rule"],
+            },
+          }),
         },
         publish: {
           appendCooldownMinMs: 1000,
@@ -994,6 +999,7 @@ test("config service persists managed settings and runtime resolvers consume dat
     });
     assert.equal(summaryConfig.model, "gpt-config-test");
     assert.equal(summaryConfig.promptConfigPath, "config/custom-prompts.json");
+    assert.match(String(summaryConfig.promptConfigContent), /db managed rule/u);
     assert.equal(summaryConfig.apiKey, "key-123");
 
     const auditDb = openDatabase(dbPath);
@@ -1351,6 +1357,7 @@ test("api exposes retry-failure batch action route", async () => {
                 apiBaseUrl: "https://api.openai.com/v1",
                 apiFormat: "auto",
                 promptConfigPath: "config/summary-prompts.json",
+                promptConfigContent: null,
               },
               publish: {
                 appendCooldownMinMs: 15000,
@@ -1571,6 +1578,7 @@ test("api exposes cancel action and maps running-pipeline conflicts to 409", asy
                 apiBaseUrl: "https://api.openai.com/v1",
                 apiFormat: "auto",
                 promptConfigPath: "config/summary-prompts.json",
+                promptConfigContent: null,
               },
               publish: {
                 appendCooldownMinMs: 15000,

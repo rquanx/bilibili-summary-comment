@@ -25,6 +25,7 @@ const summaryPromptConfigSchema = z.object({
 });
 
 export type SummaryPromptConfigFile = z.infer<typeof summaryPromptConfigSchema>;
+export { summaryPromptConfigSchema };
 
 export interface ResolvedSummaryPromptProfile {
   ownerMid: number | null;
@@ -35,6 +36,7 @@ export interface ResolvedSummaryPromptProfile {
 
 interface LoadSummaryPromptConfigOptions {
   promptConfigPath?: string | null;
+  promptConfigContent?: string | null;
   repoRoot?: string;
   existsSync?: typeof fs.existsSync;
   readFileSync?: typeof fs.readFileSync;
@@ -42,6 +44,15 @@ interface LoadSummaryPromptConfigOptions {
 
 interface ResolveSummaryPromptProfileOptions extends LoadSummaryPromptConfigOptions {
   ownerMid?: number | null;
+}
+
+export function parseSummaryPromptConfigContent(value: unknown): SummaryPromptConfigFile {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return summaryPromptConfigSchema.parse({});
+  }
+
+  return summaryPromptConfigSchema.parse(JSON.parse(normalized));
 }
 
 export function resolveSummaryPromptConfigPath(
@@ -62,10 +73,16 @@ export function resolveSummaryPromptConfigPath(
 
 export function loadSummaryPromptConfig({
   promptConfigPath = "config/summary-prompts.json",
+  promptConfigContent = null,
   repoRoot = getRepoRoot(),
   existsSync = fs.existsSync,
   readFileSync = fs.readFileSync,
 }: LoadSummaryPromptConfigOptions = {}): SummaryPromptConfigFile {
+  const normalizedPromptConfigContent = String(promptConfigContent ?? "").trim();
+  if (normalizedPromptConfigContent) {
+    return parseSummaryPromptConfigContent(normalizedPromptConfigContent);
+  }
+
   const resolvedConfigPath = resolveSummaryPromptConfigPath(promptConfigPath, {
     repoRoot,
   });
@@ -81,12 +98,14 @@ export function loadSummaryPromptConfig({
 export function resolveSummaryPromptProfile({
   ownerMid = null,
   promptConfigPath = "config/summary-prompts.json",
+  promptConfigContent = null,
   repoRoot = getRepoRoot(),
   existsSync = fs.existsSync,
   readFileSync = fs.readFileSync,
 }: ResolveSummaryPromptProfileOptions = {}): ResolvedSummaryPromptProfile {
   const config = loadSummaryPromptConfig({
     promptConfigPath,
+    promptConfigContent,
     repoRoot,
     existsSync,
     readFileSync,

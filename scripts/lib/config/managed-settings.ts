@@ -3,6 +3,7 @@ import cron from "node-cron";
 import { DEFAULT_AUTH_FILE } from "../bili/auth";
 import { listAppSettings, openDatabase } from "../db/index";
 import type { AppSettingRecord } from "../db/index";
+import { parseSummaryPromptConfigContent } from "../summary/prompt-config";
 
 const DEFAULT_GAP_CHECK_SINCE_HOURS = 24;
 const DEFAULT_GAP_THRESHOLD_SECONDS = 5;
@@ -71,6 +72,27 @@ const managedSummarySettingsSchema = z.object({
   apiBaseUrl: z.string().trim().url().transform((value) => value.replace(/\/+$/, "")),
   apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
   promptConfigPath: nullableTrimmedStringSchema,
+  promptConfigContent: z.union([z.string(), z.null()]).transform((value, context) => {
+    if (value === null) {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      parseSummaryPromptConfigContent(normalized);
+      return normalized;
+    } catch (error) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : "invalid summary prompt config content",
+      });
+      return z.NEVER;
+    }
+  }),
 });
 
 const managedPublishSettingsSchema = z.object({
@@ -368,6 +390,16 @@ const settingDefinitions: SettingDefinition[] = [
     effectiveScope: "applies to the next pipeline child process",
   },
   {
+    key: "summary.promptConfigContent",
+    group: "summary",
+    path: ["summary", "promptConfigContent"],
+    label: "Prompt Config Content",
+    description: "Optional managed JSON content for prompt presets and per-user prompt rules. When set, it overrides the prompt config path.",
+    input: "textarea",
+    requiresRestart: false,
+    effectiveScope: "applies to the next pipeline child process",
+  },
+  {
     key: "publish.appendCooldownMinMs",
     group: "publish",
     path: ["publish", "appendCooldownMinMs"],
@@ -479,6 +511,7 @@ export function buildDefaultManagedSettings(env: Record<string, string | undefin
       apiBaseUrl: env.SUMMARY_API_BASE_URL ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
       apiFormat: env.SUMMARY_API_FORMAT ?? env.OPENAI_API_FORMAT ?? "auto",
       promptConfigPath: normalizeOptionalString(env.SUMMARY_PROMPT_CONFIG ?? "config/summary-prompts.json"),
+      promptConfigContent: normalizeOptionalString(env.SUMMARY_PROMPT_CONFIG_CONTENT),
     },
     publish: {
       appendCooldownMinMs: env.PUBLISH_APPEND_COOLDOWN_MIN_MS ?? DEFAULT_PUBLISH_APPEND_COOLDOWN_MIN_MS,

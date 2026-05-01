@@ -119,6 +119,7 @@ export function writePartPromptArtifact({
   subtitlePath = null,
   promptProfile = null,
   promptConfigPath,
+  promptConfigContent,
   ownerMid = null,
   workRoot = "work",
 }: {
@@ -135,6 +136,7 @@ export function writePartPromptArtifact({
     extraRules?: string[] | null;
   } | null;
   promptConfigPath?: string | null;
+  promptConfigContent?: string | null;
   ownerMid?: number | null;
   workRoot?: string;
 }): string | null {
@@ -153,6 +155,7 @@ export function writePartPromptArtifact({
   const resolvedPromptProfile = promptProfile ?? resolveSummaryPromptProfile({
     ownerMid: ownerMid ?? video.owner_mid ?? null,
     promptConfigPath,
+    promptConfigContent,
   });
   const partPromptPath = path.join(workDir, `prompt-p${String(pageNo).padStart(2, "0")}.md`);
   const promptArtifact = buildPartPromptArtifact({
@@ -174,6 +177,7 @@ export function writeSummaryArtifacts(
   workRoot = "work",
   options: {
     promptConfigPath?: string | null;
+    promptConfigContent?: string | null;
   } = {},
 ): SummaryArtifacts {
   const workDir = ensureVideoWorkDir({
@@ -217,6 +221,7 @@ export function writeSummaryArtifacts(
       video,
       workRoot,
       promptConfigPath: options.promptConfigPath,
+      promptConfigContent: options.promptConfigContent,
     });
   } else {
     cleanupPerPageArtifacts(workDir, activeParts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
@@ -251,11 +256,13 @@ function rewritePerPagePromptViews(
     video,
     workRoot,
     promptConfigPath,
+    promptConfigContent,
   }: {
     db: Db;
     video: VideoRecord;
     workRoot: string;
     promptConfigPath?: string | null;
+    promptConfigContent?: string | null;
   },
 ) {
   for (const part of parts) {
@@ -267,6 +274,7 @@ function rewritePerPagePromptViews(
       durationSec: part.duration_sec,
       subtitlePath: part.subtitle_path,
       promptConfigPath,
+      promptConfigContent,
       ownerMid: video.owner_mid,
       workRoot,
     });

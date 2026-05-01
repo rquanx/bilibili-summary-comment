@@ -27,8 +27,13 @@ import {
 import { resolveVideoWorkDir } from "../scripts/lib/shared/work-paths";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-config-resolve-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
   const config = resolveSummaryConfig(
     {
+      db: dbPath,
       model: "gpt-test",
       "api-base-url": "https://example.com/v1/",
       "api-format": "OPENAI-CHAT",
@@ -44,6 +49,50 @@ test("resolveSummaryConfig normalizes args and env values", () => {
   assert.equal(config.apiBaseUrl, "https://example.com/v1");
   assert.equal(config.apiFormat, "openai-chat");
   assert.equal(config.promptConfigPath, "config/custom-prompts.json");
+  assert.equal(config.promptConfigContent, null);
+
+  db.close?.();
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test("resolveSummaryPromptProfile prefers managed inline config content over file path", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-prompt-inline-config-"));
+  const promptConfigPath = path.join(tempRoot, "summary-prompts.json");
+  fs.writeFileSync(promptConfigPath, JSON.stringify({
+    defaults: {
+      extraRules: ["file rule"],
+    },
+  }, null, 2));
+
+  try {
+    const profile = resolveSummaryPromptProfile({
+      ownerMid: 3690976520440286,
+      promptConfigPath,
+      promptConfigContent: JSON.stringify({
+        defaults: {
+          extraRules: ["inline default"],
+        },
+        presets: {
+          knowledge: {
+            displayName: "知识主播",
+            extraRules: ["inline preset"],
+          },
+        },
+        users: {
+          "3690976520440286": {
+            preset: "knowledge",
+            extraRules: ["inline user"],
+          },
+        },
+      }),
+    });
+
+    assert.equal(profile.displayName, "知识主播");
+    assert.equal(profile.preset, "knowledge");
+    assert.deepEqual(profile.extraRules, ["inline default", "inline preset", "inline user"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("resolveSummaryApiTarget infers responses endpoint in auto mode", () => {

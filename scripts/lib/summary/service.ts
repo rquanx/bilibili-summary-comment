@@ -101,6 +101,7 @@ export async function summarizePartFromSubtitle({
   apiBaseUrl,
   apiFormat,
   promptConfigPath = null,
+  promptConfigContent = null,
   ownerMid = null,
   ownerName = null,
   workRoot = "work",
@@ -135,6 +136,7 @@ export async function summarizePartFromSubtitle({
     const promptProfile = resolveSummaryPromptProfile({
       ownerMid,
       promptConfigPath,
+      promptConfigContent,
     });
     const video = getVideoById(db, videoId) ?? {
       id: videoId,
@@ -155,6 +157,7 @@ export async function summarizePartFromSubtitle({
       subtitlePath,
       promptProfile,
       promptConfigPath,
+      promptConfigContent,
       ownerMid,
       workRoot,
     });

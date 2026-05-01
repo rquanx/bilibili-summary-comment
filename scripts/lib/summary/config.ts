@@ -7,6 +7,7 @@ const summaryConfigSchema = z.object({
   apiBaseUrl: z.string().trim().url(),
   apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
   promptConfigPath: z.string().trim().min(1).nullable(),
+  promptConfigContent: z.string().trim().min(1).nullable(),
 });
 
 type SummaryConfig = z.infer<typeof summaryConfigSchema>;
@@ -38,6 +39,9 @@ export function resolveSummaryConfig(args: SummaryConfigArgs = {}, env = process
     ),
     promptConfigPath: normalizeOptionalSummaryPromptConfigPath(
       args["prompt-config"] ?? managed.summary.promptConfigPath,
+    ),
+    promptConfigContent: normalizeOptionalSummaryPromptConfigPath(
+      managed.summary.promptConfigContent,
     ),
   });
 }

@@ -189,6 +189,7 @@ type ManagedSettings = {
     apiBaseUrl: string;
     apiFormat: "auto" | "responses" | "openai-chat" | "anthropic-messages";
     promptConfigPath: string | null;
+    promptConfigContent: string | null;
   };
   publish: {
     appendCooldownMinMs: number;
@@ -1855,6 +1856,8 @@ function getManagedSettingValue(settings: ManagedSettings, key: string): string 
       return settings.summary.apiFormat;
     case "summary.promptConfigPath":
       return settings.summary.promptConfigPath;
+    case "summary.promptConfigContent":
+      return settings.summary.promptConfigContent;
     case "publish.appendCooldownMinMs":
       return settings.publish.appendCooldownMinMs;
     case "publish.appendCooldownMaxMs":
@@ -1956,6 +1959,9 @@ function updateManagedSettingValue(
       return next;
     case "summary.promptConfigPath":
       next.summary.promptConfigPath = nullableValue;
+      return next;
+    case "summary.promptConfigContent":
+      next.summary.promptConfigContent = nullableValue;
       return next;
     case "publish.appendCooldownMinMs":
       next.publish.appendCooldownMinMs = normalizeNumericInput(rawValue, current.publish.appendCooldownMinMs);

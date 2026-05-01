@@ -67,6 +67,7 @@ export async function runGenerationStage({
             durationSec: part.duration_sec,
             subtitlePath: part.subtitle_path,
             promptConfigPath: summaryConfig.promptConfigPath,
+            promptConfigContent: summaryConfig.promptConfigContent,
             ownerMid: summaryOwnerMid,
             workRoot,
           });
@@ -202,6 +203,7 @@ export async function runGenerationStage({
         apiBaseUrl: summaryConfig.apiBaseUrl,
         apiFormat: summaryConfig.apiFormat,
         promptConfigPath: summaryConfig.promptConfigPath,
+        promptConfigContent: summaryConfig.promptConfigContent,
         ownerMid: summaryOwnerMid,
         ownerName: summaryOwnerName,
         workRoot,
@@ -261,6 +263,7 @@ export async function runGenerationStage({
   try {
     artifacts = writeSummaryArtifactsImpl(db, video, workRoot, {
       promptConfigPath: summaryConfig.promptConfigPath,
+      promptConfigContent: summaryConfig.promptConfigContent,
     });
   } catch (error) {
     progress?.error(`Artifact write blocked: ${formatBlockingErrorDetail(error)}`);

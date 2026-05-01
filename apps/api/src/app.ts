@@ -94,6 +94,7 @@ const settingsBodySchema = z.object({
     apiBaseUrl: z.string().trim().url().optional(),
     apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]).optional(),
     promptConfigPath: z.string().trim().nullable().optional(),
+    promptConfigContent: z.string().trim().nullable().optional(),
   }).optional(),
   publish: z.object({
     appendCooldownMinMs: z.coerce.number().int().min(1).optional(),
