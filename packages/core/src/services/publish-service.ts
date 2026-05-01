@@ -9,6 +9,7 @@ export function createPublishService({
   workRoot?: string;
 } = {}) {
   return {
+    close() {},
     runPendingSweep({
       summaryUsers,
       authFile,

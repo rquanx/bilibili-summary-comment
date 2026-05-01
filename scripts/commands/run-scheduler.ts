@@ -9,24 +9,19 @@ import {
   runCli,
 } from "../lib/cli/tools";
 import {
-  getLastAuthUpdateAt,
-  loadBiliAuthBundle,
-  refreshBiliCookie,
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "../lib/bili/auth";
 import { createCoalescedRunner } from "../lib/scheduler/coalesced-runner";
-import {
-  cleanupOldWorkDirectories,
-  runPendingVideoPublishSweep,
-  runRecentVideoGapCheck,
-  syncSummaryUsersRecentVideos,
-} from "../lib/scheduler/index";
 import { openDatabase, upsertSchedulerStatus } from "../lib/db/index";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../lib/shared/logger";
 import type { LogLevel } from "../lib/shared/logger";
 import { formatEast8Time } from "../lib/shared/time";
-import { createOperationsService } from "../../packages/core/src/index";
+import {
+  createOperationsService,
+  createPublishService,
+  createSchedulerControlService,
+} from "../../packages/core/src/index";
 
 const command = addWorkRootOption(
   addDatabaseOption(
@@ -69,6 +64,14 @@ await runCli({
       dbPath: runtimeConfig.dbPath,
       workRoot: runtimeConfig.workRoot,
       triggerSource: "scheduler",
+    });
+    const publishService = createPublishService({
+      dbPath: runtimeConfig.dbPath,
+      workRoot: runtimeConfig.workRoot,
+    });
+    const schedulerControlService = createSchedulerControlService({
+      dbPath: runtimeConfig.dbPath,
+      workRoot: runtimeConfig.workRoot,
     });
     const schedulerStartedAt = new Date().toISOString();
     let schedulerHeartbeat: NodeJS.Timeout | null = null;
@@ -194,36 +197,23 @@ await runCli({
 
     async function runRefreshTask({ force = false } = {}) {
       runtimeConfig = readSchedulerConfig();
-      const bundle = loadBiliAuthBundle(runtimeConfig.authFile);
-      if (!bundle) {
-        log(`Skip cookie refresh: auth file not found at ${runtimeConfig.authFile}`);
-        return {
-          action: "skip-refresh",
-          reason: "auth-file-missing",
-        };
-      }
-
-      const lastUpdatedAt = getLastAuthUpdateAt(bundle);
-      const refreshDue = force || isOlderThanDays(lastUpdatedAt, runtimeConfig.refreshDays);
-      if (!refreshDue) {
-        log(`Skip cookie refresh: auth bundle is newer than ${runtimeConfig.refreshDays} days`);
-        return {
-          action: "skip-refresh",
-          reason: "not-due",
-          lastUpdatedAt,
-        };
-      }
-
-      log("Refreshing Bilibili cookie via TV refresh token");
-      const result = await refreshBiliCookie({
+      const result = await schedulerControlService.refreshAuth({
         authFile: runtimeConfig.authFile,
-        cookieFile: runtimeConfig.cookieFile,
+        cookieFile: runtimeConfig.cookieFile ?? undefined,
+        refreshDays: runtimeConfig.refreshDays,
+        force,
       });
-      log(`Cookie refresh completed: ${result.bundle.updatedAt}`);
-      return {
-        action: "refresh",
-        updatedAt: result.bundle.updatedAt,
-      };
+      if (result.action === "skip-refresh") {
+        if (result.reason === "auth-file-missing") {
+          log(`Skip cookie refresh: auth file not found at ${runtimeConfig.authFile}`);
+        } else {
+          log(`Skip cookie refresh: auth bundle is newer than ${runtimeConfig.refreshDays} days`);
+        }
+        return result;
+      }
+
+      log(`Cookie refresh completed: ${result.updatedAt}`);
+      return result;
     }
 
     async function runSummaryTask() {
@@ -246,17 +236,15 @@ await runCli({
       log(`[summary] run log: ${summaryLogger.filePath}`);
       summaryLogger.progress("Scanning SUMMARY_USERS recent uploads");
       writeConsole("Scanning SUMMARY_USERS recent uploads");
-      const result = await syncSummaryUsersRecentVideos({
+      const result = await schedulerControlService.runSummarySweep({
         summaryUsers: runtimeConfig.summaryUsers,
         authFile: runtimeConfig.authFile,
         cookieFile: runtimeConfig.cookieFile ?? undefined,
         sinceHours: runtimeConfig.summarySinceHours,
         maxConcurrent: runtimeConfig.summaryConcurrency,
-        dbPath: runtimeConfig.dbPath,
-        workRoot: runtimeConfig.workRoot,
         logDay,
         logGroup,
-        publish: false,
+        triggerSource: "scheduler",
         logger: summaryLogger,
         onLog(message) {
           summaryLogger.progress(message);
@@ -312,13 +300,12 @@ await runCli({
       log(`[publish] run log: ${publishLogger.filePath}`);
       publishLogger.progress("Scanning queued video publish tasks");
       writeConsole("Scanning queued video publish tasks");
-      const result = await runPendingVideoPublishSweep({
+      const result = await publishService.runPendingSweep({
         summaryUsers: runtimeConfig.summaryUsers,
         authFile: runtimeConfig.authFile,
-        dbPath: runtimeConfig.dbPath,
-        workRoot: runtimeConfig.workRoot,
         logDay,
         logGroup,
+        triggerSource: "scheduler",
         logger: publishLogger,
         onLog(message) {
           publishLogger.progress(message);
@@ -368,9 +355,7 @@ await runCli({
       }
 
       log("Cleaning old work directories");
-      const result = await cleanupOldWorkDirectories({
-        dbPath: runtimeConfig.dbPath,
-        workRoot: runtimeConfig.workRoot,
+      const result = await schedulerControlService.cleanupOldWork({
         olderThanDays: runtimeConfig.cleanupDays,
         onLog(message) {
           log(`[cleanup] ${message}`);
@@ -386,12 +371,10 @@ await runCli({
     async function runGapCheckTask() {
       runtimeConfig = readSchedulerConfig();
       log("Checking recent uploads for missing video gaps");
-      const result = await runRecentVideoGapCheck({
+      const result = await schedulerControlService.runGapCheck({
         summaryUsers: runtimeConfig.summaryUsers,
         authFile: runtimeConfig.authFile,
         cookieFile: runtimeConfig.cookieFile ?? undefined,
-        dbPath: runtimeConfig.dbPath,
-        workRoot: runtimeConfig.workRoot,
         sinceHours: runtimeConfig.gapCheckSinceHours,
         gapThresholdSeconds: runtimeConfig.gapThresholdSeconds,
         timezone: runtimeConfig.timezone ?? null,
@@ -571,6 +554,8 @@ await runCli({
         currentTasks: [],
       });
       operationsService.close();
+      publishService.close?.();
+      schedulerControlService.close?.();
       schedulerStatusDb.close?.();
       return {
         ok: true,
@@ -613,6 +598,8 @@ await runCli({
         currentTasks: [],
       });
       operationsService.close();
+      publishService.close?.();
+      schedulerControlService.close?.();
       schedulerStatusDb.close?.();
     });
 
@@ -632,19 +619,6 @@ await runCli({
 
 function buildCronOptions(timezone) {
   return timezone ? { timezone } : undefined;
-}
-
-function isOlderThanDays(timestamp, days) {
-  if (!timestamp) {
-    return true;
-  }
-
-  const createdAt = new Date(timestamp);
-  if (Number.isNaN(createdAt.getTime())) {
-    return true;
-  }
-
-  return Date.now() - createdAt.getTime() >= Math.max(1, Number(days) || 30) * 24 * 3600 * 1000;
 }
 
 async function runOnce(target, runners) {

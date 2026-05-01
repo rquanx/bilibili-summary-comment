@@ -54,6 +54,16 @@ type FailureGroupItem = {
   latestUpdatedAt: string;
 };
 
+type RecoveryCandidateItem = DashboardRunItem & {
+  staleForMs: number;
+  lockExists: boolean;
+  lockStale: boolean;
+  lockPath: string;
+  recoveryState: "missing-lock" | "orphaned-lock" | "stalled";
+  recoveryReason: string;
+  recommendedAction: "retry-now" | "cancel" | "inspect";
+};
+
 type AttentionItem = {
   kind: "scheduler-missing" | "scheduler-heartbeat" | "scheduler-status" | "stalled-run";
   severity: "warning" | "critical";
@@ -715,6 +725,9 @@ function FailuresPage() {
 }
 
 function HealthPage() {
+  const queryClient = useQueryClient();
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const healthQuery = useQuery({
     queryKey: ["dashboard", "health", "page"],
     queryFn: async () => fetchJson<{ ok: true; snapshot: DashboardHealthSnapshot; items: AttentionItem[] }>("/api/dashboard/health?attentionLimit=20"),
@@ -728,11 +741,34 @@ function HealthPage() {
     queryKey: ["dashboard", "active-pipelines", "health-page"],
     queryFn: async () => fetchJson<{ ok: true; items: DashboardRunItem[] }>("/api/dashboard/active-pipelines?limit=100"),
   });
+  const recoveryQuery = useQuery({
+    queryKey: ["dashboard", "recovery-candidates"],
+    queryFn: async () => fetchJson<{ ok: true; items: RecoveryCandidateItem[] }>("/api/dashboard/recovery-candidates?limit=20"),
+    refetchInterval: 5000,
+  });
 
   const snapshot = healthQuery.data?.snapshot ?? null;
   const attentionItems = healthQuery.data?.items ?? [];
   const scheduler = schedulerQuery.data?.status ?? null;
   const activeItems = activeQuery.data?.items ?? [];
+  const recoveryItems = recoveryQuery.data?.items ?? [];
+
+  async function runAction(actionKey: string, targetPath: string, body: Record<string, unknown>) {
+    setPendingAction(actionKey);
+    setActionMessage(null);
+
+    const response = await postJson<ActionResponse>(targetPath, body);
+    if (!response.ok) {
+      setActionMessage(`Action failed: ${response.errorMessage || "unknown error"}`);
+      setPendingAction(null);
+      await refreshQueries(queryClient);
+      return;
+    }
+
+    setActionMessage(`Action accepted with audit #${response.auditId}`);
+    setPendingAction(null);
+    await refreshQueries(queryClient);
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -759,6 +795,54 @@ function HealthPage() {
           </div>
           <HealthWatchCard snapshot={snapshot} items={attentionItems} />
         </div>
+      </section>
+
+      <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">recovery</p>
+            <h3 className="text-xl font-semibold">Zombie Recovery Candidates</h3>
+          </div>
+          <span className="text-sm text-[var(--muted)]">{recoveryItems.length} rows</span>
+        </div>
+        {actionMessage ? (
+          <div className="mb-4 rounded-2xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm text-[var(--muted)]">
+            {actionMessage}
+          </div>
+        ) : null}
+        <RecoveryCandidateList
+          items={recoveryItems}
+          pendingAction={pendingAction}
+          onRecover={(item) => {
+            if (!item.bvid) {
+              return;
+            }
+
+            if (!window.confirm(`Recover zombie pipeline ${item.bvid} now? This will mark the stale run failed and queue a retry.`)) {
+              return;
+            }
+
+            void runAction(`recover-${item.bvid}`, `/api/actions/pipeline/${encodeURIComponent(item.bvid)}/recover-zombie`, {
+              confirm: true,
+              retry: true,
+              staleMs: 15 * 60 * 1000,
+              reason: "health-page-zombie-recovery",
+            });
+          }}
+          onCancel={(item) => {
+            if (!item.bvid) {
+              return;
+            }
+
+            if (!window.confirm(`Cancel stale pipeline ${item.bvid} now?`)) {
+              return;
+            }
+
+            void runAction(`cancel-${item.bvid}`, `/api/actions/pipeline/${encodeURIComponent(item.bvid)}/cancel`, {
+              reason: "health-page-stale-cancel",
+            });
+          }}
+        />
       </section>
 
       <section className="glass-panel rounded-[1.6rem] p-5 sm:p-6">
@@ -1180,6 +1264,22 @@ function PipelineDetailPage() {
               void runAction("retry", `/api/actions/pipeline/${encodeURIComponent(bvid)}/retry`, {});
             }}
           />
+          <ActionButton
+            label="Recover zombie"
+            busy={pendingAction === "recover-zombie"}
+            onClick={() => {
+              if (!window.confirm("Recover this pipeline if it is stale without a live lock? This will mark the stale run failed and queue a retry.")) {
+                return;
+              }
+
+              void runAction("recover-zombie", `/api/actions/pipeline/${encodeURIComponent(bvid)}/recover-zombie`, {
+                confirm: true,
+                retry: true,
+                staleMs: 15 * 60 * 1000,
+                reason: "detail-zombie-recovery",
+              });
+            }}
+          />
           {detail?.latestRun?.runStatus === "running" ? (
             <ActionButton
               label="Cancel run"
@@ -1441,6 +1541,69 @@ function FailureGroupList({ items }: { items: FailureGroupItem[] }) {
           </div>
           <p className="mt-3 text-sm text-[var(--muted)]">{item.latestMessage || item.resolutionReason}</p>
           <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted)]">{formatDateTime(item.latestUpdatedAt)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RecoveryCandidateList({
+  items,
+  pendingAction,
+  onRecover,
+  onCancel,
+}: {
+  items: RecoveryCandidateItem[];
+  pendingAction: string | null;
+  onRecover: (item: RecoveryCandidateItem) => void;
+  onCancel: (item: RecoveryCandidateItem) => void;
+}) {
+  if (items.length === 0) {
+    return <EmptyState text="No stale or zombie pipeline candidates right now." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {items.map((item) => (
+        <div key={item.runId} className="rounded-[1.2rem] border border-[var(--line)] bg-white/72 px-4 py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="font-semibold">{item.videoTitle || item.bvid || item.runId}</p>
+                {renderStatus(item.runStatus)}
+                <span className="status-pill status-waiting">{item.recoveryState}</span>
+              </div>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                {item.bvid || "-"} 路 stale for {formatDuration(item.staleForMs)} 路 {item.currentStage || "-"}
+              </p>
+              <p className="mt-3 text-sm text-[var(--muted)]">{item.recoveryReason}</p>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {item.recommendedAction === "cancel" ? (
+                <ActionButton
+                  label="Cancel stale run"
+                  busy={pendingAction === `cancel-${item.bvid}`}
+                  onClick={() => {
+                    onCancel(item);
+                  }}
+                />
+              ) : (
+                <ActionButton
+                  label="Recover zombie"
+                  busy={pendingAction === `recover-${item.bvid}`}
+                  onClick={() => {
+                    onRecover(item);
+                  }}
+                />
+              )}
+              <Link
+                to={`/pipeline/${encodeURIComponent(item.bvid ?? "")}`}
+                className="rounded-full border border-[var(--line)] bg-white/80 px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
+              >
+                Open detail
+              </Link>
+            </div>
+          </div>
         </div>
       ))}
     </div>

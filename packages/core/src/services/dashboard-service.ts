@@ -8,6 +8,7 @@ import {
   listVideos,
   openDatabase,
 } from "../../../../scripts/lib/db/index";
+import { getVideoPipelineLockSnapshot } from "../../../../scripts/lib/video/pipeline-lock";
 import type { Db, PipelineRunStateRecord, SchedulerStatusRecord, VideoPartRecord, VideoRecord } from "../../../../scripts/lib/db/index";
 
 export interface DashboardSummary {
@@ -85,6 +86,16 @@ export interface DashboardHealthSnapshot {
   schedulerHeartbeatAgeMs: number | null;
 }
 
+export interface RecoveryCandidateItem extends DashboardRunItem {
+  staleForMs: number;
+  lockExists: boolean;
+  lockStale: boolean;
+  lockPath: string;
+  recoveryState: "missing-lock" | "orphaned-lock" | "stalled";
+  recoveryReason: string;
+  recommendedAction: "retry-now" | "cancel" | "inspect";
+}
+
 export interface PipelineDetail {
   video: VideoRecord | null;
   parts: VideoPartRecord[];
@@ -95,8 +106,10 @@ export interface PipelineDetail {
 
 export function createDashboardService({
   dbPath = "work/pipeline.sqlite3",
+  workRoot = "work",
 }: {
   dbPath?: string;
+  workRoot?: string;
 } = {}) {
   const db = openDatabase(dbPath);
 
@@ -241,6 +254,32 @@ export function createDashboardService({
 
           return right.latestUpdatedAt.localeCompare(left.latestUpdatedAt);
         })
+        .slice(0, Math.max(1, Number(limit) || 20));
+    },
+    listRecoveryCandidates({
+      limit = 20,
+      staleMs = 15 * 60 * 1000,
+      states = null,
+    }: {
+      limit?: number;
+      staleMs?: number;
+      states?: Array<RecoveryCandidateItem["recoveryState"]> | null;
+    } = {}): RecoveryCandidateItem[] {
+      const candidates = listActivePipelineRunStates(db, Math.max(50, Math.max(1, Number(limit) || 20) * 4))
+        .map(mapRunStateToItem)
+        .map((item) => mapRunStateToRecoveryCandidate(item, {
+          workRoot,
+          staleMs,
+        }))
+        .filter((item): item is RecoveryCandidateItem => item !== null);
+
+      if (!states || states.length === 0) {
+        return candidates.slice(0, Math.max(1, Number(limit) || 20));
+      }
+
+      const allowedStates = new Set(states);
+      return candidates
+        .filter((item) => allowedStates.has(item.recoveryState))
         .slice(0, Math.max(1, Number(limit) || 20));
     },
     getOperationalHealth({
@@ -437,6 +476,56 @@ function mapRunStateToFailureItem(item: DashboardRunItem): FailureQueueItem {
     resolution: failure.resolution,
     resolutionReason: failure.resolutionReason,
     failureSignature: failure.failureSignature,
+  };
+}
+
+function mapRunStateToRecoveryCandidate(
+  item: DashboardRunItem,
+  {
+    workRoot,
+    staleMs,
+  }: {
+    workRoot: string;
+    staleMs: number;
+  },
+): RecoveryCandidateItem | null {
+  const staleForMs = getAgeMs(item.updatedAt);
+  if (staleForMs === null || staleForMs <= staleMs) {
+    return null;
+  }
+
+  const bvid = normalizeText(item.bvid);
+  if (!bvid) {
+    return null;
+  }
+
+  const lock = getVideoPipelineLockSnapshot({
+    workRoot,
+    bvid,
+  });
+  const recoveryState = !lock.exists
+    ? "missing-lock"
+    : lock.stale
+      ? "orphaned-lock"
+      : "stalled";
+  const recoveryReason = recoveryState === "missing-lock"
+    ? "Run state is still marked running but the pipeline lock is missing."
+    : recoveryState === "orphaned-lock"
+      ? "Run state is still marked running but the pipeline lock is stale."
+      : "Run still holds a live lock but has stopped updating for too long.";
+  const recommendedAction = recoveryState === "stalled"
+    ? "cancel"
+    : "retry-now";
+
+  return {
+    ...item,
+    staleForMs,
+    lockExists: lock.exists,
+    lockStale: lock.stale,
+    lockPath: lock.lockPath,
+    recoveryState,
+    recoveryReason,
+    recommendedAction,
   };
 }
 

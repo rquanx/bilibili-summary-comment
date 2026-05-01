@@ -1,6 +1,7 @@
 import {
   getActivePipelineRunStateByBvid,
   getVideoByIdentity,
+  insertPipelineEvent,
   insertOperationAudit,
   listOperationAudits,
   markVideoPublishRebuildNeeded,
@@ -409,6 +410,92 @@ export function createOperationsService({
         },
       });
     },
+    async recoverZombiePipeline({
+      bvid,
+      staleMs = 15 * 60 * 1000,
+      confirm = false,
+      retry = true,
+      reason = "manual-zombie-recovery",
+    }: {
+      bvid: string;
+      staleMs?: number;
+      confirm?: boolean;
+      retry?: boolean;
+      reason?: string;
+    }) {
+      return executeAuditedOperation(db, {
+        action: "pipeline-recover-zombie",
+        scope: "pipeline",
+        bvid,
+        triggerSource,
+        request: {
+          bvid,
+          staleMs: Math.max(60_000, Number(staleMs) || 15 * 60 * 1000),
+          confirm: true,
+          retry: Boolean(retry),
+          reason: normalizeText(reason) ?? "manual-zombie-recovery",
+        },
+        async run() {
+          ensureConfirmed(confirm, "zombie pipeline recovery");
+          const activeRun = getActivePipelineRunStateByBvid(db, bvid);
+          if (!activeRun) {
+            throw new Error(`No running pipeline for ${bvid}`);
+          }
+
+          const candidate = findRecoveryCandidate(dashboardService, bvid, staleMs, ["missing-lock", "orphaned-lock"]);
+          if (!candidate) {
+            throw new Error(`No recoverable zombie pipeline found for ${bvid}`);
+          }
+
+          const syntheticEvent = insertPipelineEvent(db, {
+            runId: activeRun.run_id,
+            triggerSource,
+            videoId: activeRun.video_id,
+            bvid: activeRun.bvid,
+            videoTitle: activeRun.video_title,
+            pageNo: activeRun.current_page_no,
+            cid: activeRun.current_cid,
+            partTitle: activeRun.current_part_title,
+            scope: "pipeline",
+            action: "run",
+            status: "failed",
+            message: `Recovered zombie pipeline: ${candidate.recoveryReason}`,
+            details: {
+              failedScope: "pipeline",
+              failedAction: "stale-recovery",
+              failedStep: "pipeline/stale-recovery",
+              recoveryReason: normalizeText(reason) ?? "manual-zombie-recovery",
+              previousRunId: activeRun.run_id,
+              staleForMs: candidate.staleForMs,
+              lockExists: candidate.lockExists,
+              lockStale: candidate.lockStale,
+            },
+          });
+
+          let retryResult: unknown = null;
+          if (retry) {
+            retryResult = await pipelineService.runPipeline({
+              bvid,
+              publish: true,
+              forceSummary: false,
+              triggerSource,
+            });
+          }
+
+          return {
+            ok: true,
+            bvid,
+            previousRunId: activeRun.run_id,
+            recoveryState: candidate.recoveryState,
+            staleForMs: candidate.staleForMs,
+            syntheticEventId: syntheticEvent?.id ?? null,
+            retryQueued: retry ? isResultOk(retryResult) : false,
+            retryRunId: retry ? inferRunId(retryResult) : null,
+            retryResult,
+          };
+        },
+      });
+    },
   };
 }
 
@@ -626,6 +713,19 @@ function isWithinRecentHours(value: string, hours: number): boolean {
   const threshold = Date.now() - Math.max(1, Number(hours) || 1) * 3600 * 1000;
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) && timestamp >= threshold;
+}
+
+function findRecoveryCandidate(
+  dashboardService: ReturnType<typeof createDashboardService>,
+  bvid: string,
+  staleMs: number,
+  states: Array<"missing-lock" | "orphaned-lock" | "stalled">,
+) {
+  return dashboardService.listRecoveryCandidates({
+    limit: 200,
+    staleMs: Math.max(60_000, Number(staleMs) || 15 * 60 * 1000),
+    states,
+  }).find((item) => item.bvid === bvid) ?? null;
 }
 
 function ensurePipelineNotActive(db: ReturnType<typeof openDatabase>, bvid: string, actionLabel: string) {

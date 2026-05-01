@@ -642,6 +642,131 @@ test("operations service blocks duplicate retry and publish actions while a pipe
   }
 });
 
+test("dashboard service surfaces zombie recovery candidates and operations service can recover them", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-zombie-recovery-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1ZOMBIE",
+      aid: 60001,
+      title: "Zombie Video",
+      ownerMid: 321,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 19001,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+
+    insertPipelineEvent(db, {
+      runId: "run-zombie",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "Pipeline started",
+    });
+    insertPipelineEvent(db, {
+      runId: "run-zombie",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "subtitle",
+      action: "asr",
+      status: "started",
+      message: "ASR started",
+    });
+    const staleAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    db.prepare("UPDATE pipeline_runs SET updated_at = ? WHERE run_id = ?").run(staleAt, "run-zombie");
+    db.prepare("UPDATE pipeline_run_state SET updated_at = ? WHERE run_id = ?").run(staleAt, "run-zombie");
+
+    const dashboardService = createDashboardService({
+      dbPath,
+      workRoot: "work",
+    });
+
+    try {
+      const candidates = dashboardService.listRecoveryCandidates({
+        limit: 10,
+        staleMs: 15 * 60 * 1000,
+      });
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].bvid, "BV1ZOMBIE");
+      assert.equal(candidates[0].recoveryState, "missing-lock");
+      assert.equal(candidates[0].recommendedAction, "retry-now");
+    } finally {
+      dashboardService.close();
+    }
+
+    let retried = 0;
+    const service = createOperationsService({
+      dbPath,
+      workRoot: "work",
+      services: {
+        pipelineService: {
+          runPipeline() {
+            retried += 1;
+            return {
+              ok: true,
+              runId: "run-zombie-retry",
+            };
+          },
+          close() {},
+        } as any,
+      },
+    });
+
+    try {
+      const result = await service.recoverZombiePipeline({
+        bvid: "BV1ZOMBIE",
+        staleMs: 15 * 60 * 1000,
+        confirm: true,
+        retry: true,
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(retried, 1);
+      assert.equal((result.result as { recoveryState?: string }).recoveryState, "missing-lock");
+      assert.equal((result.result as { retryRunId?: string | null }).retryRunId, "run-zombie-retry");
+
+      const activeAfterRecovery = createDashboardService({
+        dbPath,
+        workRoot: "work",
+      });
+      try {
+        assert.equal(activeAfterRecovery.listActivePipelines().length, 0);
+        const recent = activeAfterRecovery.listRecentRuns({ limit: 5 });
+        assert.equal(recent.some((item) => item.runId === "run-zombie" && item.runStatus === "failed"), true);
+      } finally {
+        activeAfterRecovery.close();
+      }
+
+      const audits = service.listAudits({
+        bvid: "BV1ZOMBIE",
+        limit: 10,
+      });
+      assert.equal(audits.length, 1);
+      assert.equal(audits[0].action, "pipeline-recover-zombie");
+      assert.equal(audits[0].status, "succeeded");
+    } finally {
+      service.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("operations service retries only eligible retryable failures in batch mode", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-operations-retry-batch-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -1264,6 +1389,97 @@ test("api exposes action routes and scheduler status", async () => {
       });
       assert.equal(auditsResponse.statusCode, 200);
       assert.equal(auditsResponse.json().items.length >= 1, true);
+    } finally {
+      await app.close();
+    }
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("api exposes zombie recovery candidate and recovery action routes", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-zombie-api-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BV1ZAPI",
+      aid: 61001,
+      title: "Zombie API Video",
+      ownerMid: 998,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 19101,
+      partTitle: "P1",
+      durationSec: 10,
+      isDeleted: false,
+    });
+    insertPipelineEvent(db, {
+      runId: "run-zapi",
+      triggerSource: "scheduler",
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "pipeline",
+      action: "run",
+      status: "started",
+      message: "Pipeline started",
+    });
+    const staleAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    db.prepare("UPDATE pipeline_runs SET updated_at = ? WHERE run_id = ?").run(staleAt, "run-zapi");
+    db.prepare("UPDATE pipeline_run_state SET updated_at = ? WHERE run_id = ?").run(staleAt, "run-zapi");
+
+    const operationsService = createOperationsService({
+      dbPath,
+      workRoot: "work",
+      services: {
+        pipelineService: {
+          runPipeline() {
+            return {
+              ok: true,
+              runId: "run-zapi-retry",
+            };
+          },
+          close() {},
+        } as any,
+      },
+    });
+    const app = await buildApiServer({
+      dbPath,
+      logger: false,
+      webDistDir: path.join(tempRoot, "missing-web-dist"),
+      services: {
+        operationsService,
+      },
+    });
+
+    try {
+      const candidatesResponse = await app.inject({
+        method: "GET",
+        url: "/api/dashboard/recovery-candidates?limit=10&staleMs=900000",
+      });
+      assert.equal(candidatesResponse.statusCode, 200);
+      assert.equal(candidatesResponse.json().ok, true);
+      assert.equal(candidatesResponse.json().items.length, 1);
+      assert.equal(candidatesResponse.json().items[0].recoveryState, "missing-lock");
+
+      const recoverResponse = await app.inject({
+        method: "POST",
+        url: "/api/actions/pipeline/BV1ZAPI/recover-zombie",
+        payload: {
+          confirm: true,
+          retry: true,
+          staleMs: 15 * 60 * 1000,
+        },
+      });
+      assert.equal(recoverResponse.statusCode, 200);
+      assert.equal(recoverResponse.json().ok, true);
+      assert.equal(recoverResponse.json().result.retryRunId, "run-zapi-retry");
     } finally {
       await app.close();
     }

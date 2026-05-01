@@ -38,6 +38,12 @@ const dashboardHealthQuerySchema = z.object({
   runStaleMs: z.coerce.number().int().min(10_000).max(7 * 24 * 3600 * 1000).optional(),
 });
 
+const recoveryCandidatesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  staleMs: z.coerce.number().int().min(60_000).max(7 * 24 * 3600 * 1000).optional(),
+  state: z.string().trim().optional(),
+});
+
 const pipelineDetailParamsSchema = z.object({
   bvid: z.string().trim().min(1),
 });
@@ -59,6 +65,8 @@ const actionBodySchema = z.object({
   reason: z.string().trim().optional(),
   confirm: z.boolean().optional(),
   forceSummary: z.boolean().optional(),
+  staleMs: z.coerce.number().int().min(60_000).max(7 * 24 * 3600 * 1000).optional(),
+  retry: z.boolean().optional(),
 });
 
 const auditsQuerySchema = z.object({
@@ -231,6 +239,22 @@ export async function buildApiServer({
     };
   });
 
+  app.get("/api/dashboard/recovery-candidates", async (request) => {
+    const query = recoveryCandidatesQuerySchema.parse(request.query ?? {});
+    const states = query.state
+      ? query.state.split(",").map((item) => item.trim()).filter(Boolean) as Array<"missing-lock" | "orphaned-lock" | "stalled">
+      : null;
+
+    return {
+      ok: true,
+      items: dashboardService.listRecoveryCandidates({
+        limit: query.limit ?? 20,
+        staleMs: query.staleMs ?? 15 * 60 * 1000,
+        states,
+      }),
+    };
+  });
+
   app.get("/api/settings", async () => ({
     ok: true,
     ...configService.getConfig(),
@@ -363,6 +387,31 @@ export async function buildApiServer({
 
     if (!result.ok) {
       reply.code(String(result.errorMessage ?? "").includes("No running pipeline") ? 409 : 500);
+    }
+
+    return result;
+  });
+
+  app.post("/api/actions/pipeline/:bvid/recover-zombie", async (request, reply) => {
+    const params = pipelineDetailParamsSchema.parse(request.params ?? {});
+    const body = actionBodySchema.parse(request.body ?? {});
+    const result = await operationsService.recoverZombiePipeline({
+      bvid: params.bvid,
+      staleMs: body.staleMs ?? 15 * 60 * 1000,
+      confirm: Boolean(body.confirm),
+      retry: body.retry !== false,
+      reason: body.reason ?? "manual-zombie-recovery",
+    });
+
+    if (!result.ok) {
+      const errorMessage = String(result.errorMessage ?? "");
+      reply.code(
+        errorMessage.includes("Confirmation required")
+          ? 400
+          : errorMessage.includes("No running pipeline") || errorMessage.includes("No recoverable zombie pipeline")
+            ? 409
+            : 500,
+      );
     }
 
     return result;

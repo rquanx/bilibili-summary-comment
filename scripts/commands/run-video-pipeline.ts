@@ -7,7 +7,8 @@ import {
   createCliCommand,
   runCli,
 } from "../lib/cli/tools";
-import { printPipelineFailure, runVideoPipeline } from "../lib/video/pipeline-runner";
+import { printPipelineFailure } from "../lib/video/pipeline-runner";
+import { createPipelineService } from "../../packages/core/src/index";
 
 let activeEventLogger = null;
 
@@ -35,7 +36,11 @@ const command = addSummaryApiOptions(
 await runCli({
   command,
   async handler(args) {
-    return runVideoPipeline(args, {
+    const pipelineService = createPipelineService({
+      dbPath: String(args.db ?? "work/pipeline.sqlite3"),
+      workRoot: String(args["work-root"] ?? "work"),
+    });
+    return pipelineService.runPipelineDirect(args, {
       onEventLogger(eventLogger) {
         activeEventLogger = eventLogger;
       },

@@ -1,5 +1,7 @@
 import { runPipelineForBvid } from "../../../../scripts/lib/scheduler/pipeline-runner";
+import { runVideoPipeline } from "../../../../scripts/lib/video/pipeline-runner";
 import { resolveSchedulerConfig } from "../../../../scripts/lib/config/app-config";
+import type { PipelineEventLogger } from "../../../../scripts/lib/db/index";
 
 export function createPipelineService({
   dbPath = "work/pipeline.sqlite3",
@@ -9,6 +11,7 @@ export function createPipelineService({
   workRoot?: string;
 } = {}) {
   return {
+    close() {},
     runPipeline({
       bvid,
       authFile = null,
@@ -43,6 +46,22 @@ export function createPipelineService({
         logDay,
         logGroup,
         triggerSource,
+      });
+    },
+    runPipelineDirect(
+      args: Record<string, unknown>,
+      {
+        onEventLogger,
+      }: {
+        onEventLogger?: (eventLogger: PipelineEventLogger) => void;
+      } = {},
+    ) {
+      return runVideoPipeline({
+        ...args,
+        db: typeof args.db === "string" && args.db.trim() ? args.db : dbPath,
+        "work-root": typeof args["work-root"] === "string" && String(args["work-root"]).trim() ? String(args["work-root"]) : workRoot,
+      }, {
+        onEventLogger,
       });
     },
   };
