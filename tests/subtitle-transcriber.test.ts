@@ -283,3 +283,80 @@ test("transcribeWithRetries uses the local FasterWhisper binary directly when av
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("transcribeWithRetries retries direct FasterWhisper on CPU when CUDA output is not recoverable", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subtitle-direct-fw-cpu-fallback-"));
+  const audioPath = path.join(tempRoot, "audio.m4a");
+  const subtitlePath = path.join(tempRoot, "audio.srt");
+  const { progress, messages } = createProgressRecorder();
+  const directCalls: Array<{ command: string; args: string[] }> = [];
+
+  fs.writeFileSync(audioPath, "fake-audio", "utf8");
+
+  try {
+    await transcribeWithRetries({
+      audioPath,
+      subtitlePath,
+      asr: "faster-whisper",
+      bvid: "BVdirectCpuFallback",
+      videoTitle: "Direct FasterWhisper CPU Fallback Test",
+      cid: 4,
+      pageNo: 4,
+      partTitle: "P4",
+      workRoot: tempRoot,
+      venvPath: ".3.11",
+      progress,
+      eventLogger: null,
+      resolveLocalFasterWhisperConfigImpl: () => ({
+        exists: true,
+        modelName: "large-v3-turbo",
+        modelDir: "/models",
+        modelPath: "/models/faster-whisper-large-v3-turbo",
+      }),
+      resolveLocalFasterWhisperExecutableConfigImpl: () => ({
+        device: "cuda",
+        programPath: "/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl",
+        pathEntries: ["/opt/videocaptioner/bin/Faster-Whisper-XXL"],
+      }),
+      withTranscriptionQueueLockImpl: async (_options, callback) => callback(),
+      notifyTranscriptionFailureImpl: async () => {},
+      runTranscribeCommandImpl: async () => {
+        throw new Error("videocaptioner CLI should not be used when a direct FasterWhisper binary is available");
+      },
+      runDirectCommandImpl: async (command, args) => {
+        directCalls.push({ command, args });
+        const device = String(args[args.indexOf("-d") + 1] ?? "");
+
+        if (device === "cuda") {
+          const error = new Error("CUDA fail-fast before writing subtitle output") as Error & { code?: number };
+          error.code = 3221226505;
+          throw error;
+        }
+
+        fs.writeFileSync(subtitlePath, [
+          "1",
+          "00:00:00,000 --> 00:00:02,000",
+          "CPU fallback subtitle",
+          "",
+        ].join("\n"), "utf8");
+        return {
+          code: 0,
+          stdout: "",
+          stderr: "",
+        };
+      },
+    });
+
+    assert.equal(directCalls.length, 2);
+    assert.equal(directCalls[0]?.command, "/opt/videocaptioner/bin/Faster-Whisper-XXL/faster-whisper-xxl");
+    assert.equal(directCalls[0]?.args[directCalls[0].args.indexOf("-d") + 1], "cuda");
+    assert.ok(directCalls[0]?.args.includes("--compute_type"));
+    assert.equal(directCalls[1]?.args[directCalls[1].args.indexOf("-d") + 1], "cpu");
+    assert.ok(!directCalls[1]?.args.includes("--compute_type"));
+    assert.match(fs.readFileSync(subtitlePath, "utf8"), /CPU fallback subtitle/u);
+    assert.ok(messages.some((message) => message.includes("retrying once on CPU")));
+    assert.ok(messages.some((message) => message.includes("CPU fallback succeeded")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});

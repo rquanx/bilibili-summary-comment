@@ -146,30 +146,117 @@ export async function transcribeWithRetries({
                 },
               });
             } catch (error) {
-              if (!shouldRecoverDirectFasterWhisperCrash(error, subtitlePath)) {
+              if (shouldRecoverDirectFasterWhisperCrash(error, subtitlePath)) {
+                const recoveryMessage = [
+                  "Direct FasterWhisper exited with Windows fail-fast after writing subtitle output;",
+                  "reusing generated .srt file",
+                ].join(" ");
+                eventLogger?.log({
+                  scope: "subtitle",
+                  action: "asr-command",
+                  status: "recovered",
+                  pageNo,
+                  cid,
+                  partTitle,
+                  message: recoveryMessage,
+                  details: {
+                    engine,
+                    attempt,
+                    subtitlePath,
+                    exitCode: readCommandExitCode(error),
+                  },
+                });
+                progress?.logPartStage?.(pageNo, "Subtitle", recoveryMessage);
+              } else if (shouldTryDirectFasterWhisperCpuFallback(localFasterWhisperExecutable)) {
+                const cpuFallbackExecutableConfig = {
+                  ...localFasterWhisperExecutable,
+                  device: "cpu",
+                };
+                const cpuFallbackMessage = [
+                  "Direct FasterWhisper CUDA execution failed without recoverable subtitle output;",
+                  "retrying once on CPU",
+                ].join(" ");
+                eventLogger?.log({
+                  scope: "subtitle",
+                  action: "asr-command",
+                  status: "fallback",
+                  pageNo,
+                  cid,
+                  partTitle,
+                  message: cpuFallbackMessage,
+                  details: {
+                    engine,
+                    attempt,
+                    subtitlePath,
+                    exitCode: readCommandExitCode(error),
+                    fromDevice: localFasterWhisperExecutable.device,
+                    toDevice: cpuFallbackExecutableConfig.device,
+                  },
+                });
+                progress?.logPartStage?.(pageNo, "Subtitle", cpuFallbackMessage);
+
+                clearDirectFasterWhisperOutput({
+                  audioPath,
+                  subtitlePath,
+                });
+
+                const cpuFallbackArgs = buildDirectFasterWhisperArgs({
+                  audioPath,
+                  subtitlePath,
+                  localFasterWhisper,
+                  executableConfig: cpuFallbackExecutableConfig,
+                });
+
+                try {
+                  await runDirectCommandImpl(cpuFallbackExecutableConfig.programPath, cpuFallbackArgs, {
+                    env: buildDirectFasterWhisperEnv(cpuFallbackExecutableConfig),
+                    streamOutput: true,
+                    outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+                    logger: progress?.logger ?? null,
+                    logContext: {
+                      scope: "subtitle",
+                      action: "asr-command",
+                      bvid,
+                      pageNo,
+                      cid,
+                      partTitle,
+                      engine,
+                      attempt,
+                      fallbackDevice: cpuFallbackExecutableConfig.device,
+                    },
+                  });
+                } catch (cpuFallbackError) {
+                  const combinedError = new Error([
+                    `Direct FasterWhisper CPU fallback failed after CUDA error`,
+                    `(${formatErrorMessage(cpuFallbackError)}; original CUDA error: ${formatErrorMessage(error)})`,
+                  ].join(" "));
+                  const combinedExitCode = readCommandExitCode(cpuFallbackError) ?? readCommandExitCode(error);
+                  if (combinedExitCode !== null) {
+                    (combinedError as { code?: number | null }).code = combinedExitCode;
+                  }
+                  throw combinedError;
+                }
+
+                const cpuFallbackSucceededMessage = "Direct FasterWhisper CPU fallback succeeded";
+                eventLogger?.log({
+                  scope: "subtitle",
+                  action: "asr-command",
+                  status: "succeeded",
+                  pageNo,
+                  cid,
+                  partTitle,
+                  message: cpuFallbackSucceededMessage,
+                  details: {
+                    engine,
+                    attempt,
+                    subtitlePath,
+                    fallbackDevice: cpuFallbackExecutableConfig.device,
+                  },
+                });
+                progress?.logPartStage?.(pageNo, "Subtitle", cpuFallbackSucceededMessage);
+              } else {
                 throw error;
               }
-
-              const recoveryMessage = [
-                "Direct FasterWhisper exited with Windows fail-fast after writing subtitle output;",
-                "reusing generated .srt file",
-              ].join(" ");
-              eventLogger?.log({
-                scope: "subtitle",
-                action: "asr-command",
-                status: "recovered",
-                pageNo,
-                cid,
-                partTitle,
-                message: recoveryMessage,
-                details: {
-                  engine,
-                  attempt,
-                  subtitlePath,
-                  exitCode: readCommandExitCode(error),
-                },
-              });
-              progress?.logPartStage?.(pageNo, "Subtitle", recoveryMessage);
             }
             finalizeDirectFasterWhisperOutput({
               audioPath,
@@ -479,10 +566,11 @@ export function buildDirectFasterWhisperArgs({
     args.push("--vad_method", configuredVadMethod.replaceAll("-", "_"));
   }
 
+  const normalizedDevice = String(executableConfig.device ?? "").trim().toLowerCase();
   const resolvedComputeType = resolveDirectFasterWhisperComputeType({
     device: executableConfig.device,
   });
-  if (resolvedComputeType) {
+  if (resolvedComputeType && normalizedDevice !== "cpu") {
     args.push("--compute_type", resolvedComputeType);
   }
 
@@ -577,9 +665,44 @@ function shouldRecoverDirectFasterWhisperCrash(error: unknown, subtitlePath: str
   }
 }
 
+function shouldTryDirectFasterWhisperCpuFallback(
+  executableConfig: LocalFasterWhisperExecutableConfig | null,
+) {
+  const normalizedDevice = String(executableConfig?.device ?? "").trim().toLowerCase();
+  return Boolean(executableConfig?.programPath) && normalizedDevice !== "cpu";
+}
+
 function readCommandExitCode(error: unknown): number | null {
   const code = Number((error as { code?: unknown } | null | undefined)?.code);
   return Number.isFinite(code) ? code : null;
+}
+
+function getDirectFasterWhisperGeneratedSubtitlePath({
+  audioPath,
+  subtitlePath,
+}: {
+  audioPath: string;
+  subtitlePath: string;
+}) {
+  return path.join(path.dirname(subtitlePath), `${path.parse(audioPath).name}.srt`);
+}
+
+function clearDirectFasterWhisperOutput({
+  audioPath,
+  subtitlePath,
+}: {
+  audioPath: string;
+  subtitlePath: string;
+}) {
+  const generatedSubtitlePath = getDirectFasterWhisperGeneratedSubtitlePath({
+    audioPath,
+    subtitlePath,
+  });
+  const outputPaths = new Set([path.resolve(subtitlePath), path.resolve(generatedSubtitlePath)]);
+
+  for (const outputPath of outputPaths) {
+    fs.rmSync(outputPath, { force: true });
+  }
 }
 
 function finalizeDirectFasterWhisperOutput({
@@ -589,7 +712,10 @@ function finalizeDirectFasterWhisperOutput({
   audioPath: string;
   subtitlePath: string;
 }) {
-  const generatedSubtitlePath = path.join(path.dirname(subtitlePath), `${path.parse(audioPath).name}.srt`);
+  const generatedSubtitlePath = getDirectFasterWhisperGeneratedSubtitlePath({
+    audioPath,
+    subtitlePath,
+  });
   if (path.resolve(generatedSubtitlePath) === path.resolve(subtitlePath)) {
     return;
   }
