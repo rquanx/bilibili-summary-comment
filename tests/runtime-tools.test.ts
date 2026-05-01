@@ -6,13 +6,13 @@ import {
   getRepoRoot,
   runCommand,
   withSuppressedExperimentalWarning,
-} from "../scripts/lib/shared/runtime-tools";
+} from "../src/shared/runtime-tools";
 
 test("getRepoRoot resolves to the project root", () => {
   const repoRoot = getRepoRoot();
   const hasSchedulerEntry =
-    fs.existsSync(path.join(repoRoot, "scripts", "commands", "run-scheduler.js")) ||
-    fs.existsSync(path.join(repoRoot, "scripts", "commands", "run-scheduler.ts"));
+    fs.existsSync(path.join(repoRoot, "src", "commands", "run-scheduler.js")) ||
+    fs.existsSync(path.join(repoRoot, "src", "commands", "run-scheduler.ts"));
 
   assert.equal(fs.existsSync(path.join(repoRoot, "package.json")), true);
   assert.equal(hasSchedulerEntry, true);

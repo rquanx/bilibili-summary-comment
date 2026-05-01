@@ -6,7 +6,8 @@
     "rootDir": "."
   },
   "include": [
-    "scripts/**/*.ts"
+    "src/**/*.ts",
+    "tools/**/*.ts"
   ],
   "exclude": [
     "tests/**/*.ts",

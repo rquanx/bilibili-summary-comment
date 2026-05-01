@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { listVideoParts, savePartSubtitle, upsertVideo, upsertVideoPart } from "../scripts/lib/db/index";
-import { resolveVideoWorkDir } from "../scripts/lib/shared/work-paths";
-import { findReusableSummarySource, reusePartSummaries } from "../scripts/lib/summary/live-session-reuse";
-import { ensureSubtitleForPart } from "../scripts/lib/subtitle/pipeline";
+import { openDatabase } from "../src/infra/db/database";
+import { listVideoParts, savePartSubtitle, upsertVideo, upsertVideoPart } from "../src/infra/db/index";
+import { resolveVideoWorkDir } from "../src/shared/work-paths";
+import { findReusableSummarySource, reusePartSummaries } from "../src/domains/summary/live-session-reuse";
+import { ensureSubtitleForPart } from "../src/domains/subtitle/pipeline";
 
 test("same-session summary reuse works across variants even when page counts differ", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-live-reuse-"));

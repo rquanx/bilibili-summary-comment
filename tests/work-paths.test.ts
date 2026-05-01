@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { getVideoById, listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/index";
-import { buildOwnerDirName, buildVideoWorkDirName, ensureVideoWorkDir, resolveVideoWorkDir } from "../scripts/lib/shared/work-paths";
+import { openDatabase } from "../src/infra/db/database";
+import { getVideoById, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/index";
+import { buildOwnerDirName, buildVideoWorkDirName, ensureVideoWorkDir, resolveVideoWorkDir } from "../src/shared/work-paths";
 
 test("buildVideoWorkDirName strips the owner prefix and keeps the BV suffix", () => {
   assert.equal(

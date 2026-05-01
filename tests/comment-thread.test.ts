@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
-import { postSummaryThread, waitForGlobalPasteUploadTurn } from "../scripts/lib/bili/comment-thread";
+import { openDatabase } from "../src/infra/db/database";
+import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { postSummaryThread, waitForGlobalPasteUploadTurn } from "../src/domains/bili/comment-thread";
 
 function createJsonFetchResponse(data) {
   return {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildDirectFasterWhisperArgs, buildTranscribeArgs, transcribeWithRetries } from "../scripts/lib/subtitle/transcriber";
+import { buildDirectFasterWhisperArgs, buildTranscribeArgs, transcribeWithRetries } from "../src/domains/subtitle/transcriber";
 
 function createProgressRecorder() {
   const messages: string[] = [];
@@ -32,8 +32,10 @@ test("buildTranscribeArgs requests Chinese transcription", () => {
 });
 
 test("buildDirectFasterWhisperArgs normalizes local binary arguments", () => {
+  const originalComputeType = process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_COMPUTE_TYPE;
   const originalVadMethod = process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD;
   const originalVadThreshold = process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD;
+  process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_COMPUTE_TYPE = "float16";
   process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD = "silero-v4";
   process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD = "0.4";
 
@@ -60,6 +62,7 @@ test("buildDirectFasterWhisperArgs normalizes local binary arguments", () => {
     assert.ok(args.includes("--vad_method"));
     assert.ok(args.includes("silero_v4"));
   } finally {
+    process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_COMPUTE_TYPE = originalComputeType;
     process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD = originalVadMethod;
     process.env.VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD = originalVadThreshold;
   }

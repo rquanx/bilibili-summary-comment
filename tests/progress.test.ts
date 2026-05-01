@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { createProgressReporter, formatBlockingErrorDetail } from "../scripts/lib/pipeline/progress";
+import { createProgressReporter, formatBlockingErrorDetail } from "../src/domains/pipeline/progress";
 
 test("createProgressReporter omits bvid from console prefix when full video url is present", () => {
   const outputStream = new PassThrough();

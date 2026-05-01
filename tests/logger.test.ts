@@ -8,7 +8,7 @@ import {
   createLogGroupName,
   createWorkFileLogger,
   formatLogDay,
-} from "../scripts/lib/shared/logger";
+} from "../src/shared/logger";
 
 test("createWorkFileLogger writes structured jsonl entries", async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-logger-"));

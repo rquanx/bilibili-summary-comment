@@ -3,25 +3,25 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
-import { resolveAuthFileForUser } from "../scripts/lib/scheduler/auth-files";
-import { createCoalescedRunner } from "../scripts/lib/scheduler/coalesced-runner";
-import { runPipelinesWithConcurrency } from "../scripts/lib/scheduler/concurrency";
-import { resolveCookieFileForUser } from "../scripts/lib/scheduler/cookie-files";
-import { parseSummaryUsers } from "../scripts/lib/scheduler/user-targets";
-import * as schedulerTasks from "../scripts/lib/scheduler/index";
-import { cleanupOldWorkDirectories } from "../scripts/lib/scheduler/cleanup";
+import { openDatabase } from "../src/infra/db/database";
+import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { resolveAuthFileForUser } from "../src/domains/scheduler/auth-files";
+import { createCoalescedRunner } from "../src/domains/scheduler/coalesced-runner";
+import { runPipelinesWithConcurrency } from "../src/domains/scheduler/concurrency";
+import { resolveCookieFileForUser } from "../src/domains/scheduler/cookie-files";
+import { parseSummaryUsers } from "../src/domains/scheduler/user-targets";
+import * as schedulerTasks from "../src/domains/scheduler/index";
+import { cleanupOldWorkDirectories } from "../src/domains/scheduler/cleanup";
 import {
   detectGapsFromVideoSnapshot,
   readGapCheckDailySnapshot,
   runRecentVideoGapCheck,
   upsertGapCheckDailySnapshot,
-} from "../scripts/lib/scheduler/gap-check";
-import { runPipelineForBvid } from "../scripts/lib/scheduler/pipeline-runner";
-import { runPendingVideoPublishSweep } from "../scripts/lib/scheduler/publish";
-import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../scripts/lib/scheduler/uploads";
-import { compareTimestampDesc, formatEast8DateTime } from "../scripts/lib/shared/time";
+} from "../src/domains/scheduler/gap-check";
+import { runPipelineForBvid } from "../src/domains/scheduler/pipeline-runner";
+import { runPendingVideoPublishSweep } from "../src/domains/scheduler/publish";
+import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../src/domains/scheduler/uploads";
+import { compareTimestampDesc, formatEast8DateTime } from "../src/shared/time";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");
@@ -1052,7 +1052,7 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
   assert.deepEqual(calls[0].args, [
     "--import",
     "tsx",
-    "D:\\repo\\scripts\\commands\\run-video-pipeline.ts",
+    "D:\\repo\\src\\commands\\run-video-pipeline.ts",
     "--cookie-file",
     "D:\\repo\\cookie.txt",
     "--bvid",
@@ -1068,7 +1068,7 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
 test("runPipelineForBvid launches the compiled JavaScript entry directly when dist files exist", async () => {
   const calls = [];
   const tempRepoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-dist-"));
-  const compiledEntryPath = path.join(tempRepoRoot, "scripts", "commands", "run-video-pipeline.js");
+  const compiledEntryPath = path.join(tempRepoRoot, "src", "commands", "run-video-pipeline.js");
 
   fs.mkdirSync(path.dirname(compiledEntryPath), { recursive: true });
   fs.writeFileSync(compiledEntryPath, "export {};\n", "utf8");
@@ -1176,6 +1176,7 @@ test("listVideosPendingPublish returns append work before rebuild work", () => {
 test("runPendingVideoPublishSweep publishes queued videos serially and stops after the first failure", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-sweep-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
   const db = openDatabase(dbPath);
   const publishedBvids: string[] = [];
 
@@ -1211,11 +1212,12 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
       summaryUsers: "123,456",
       authFile: ".auth/bili-auth.json",
       dbPath,
-      workRoot: "work",
+      workRoot,
       collectRecentUploadsImpl: async () => ({
         summaryUsers: [],
         uploads: [],
       }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
       findAuthFileForUserImpl(_authFile, userIndex) {
         return path.join(tempRoot, `.auth-${userIndex}.json`);
       },
@@ -1257,6 +1259,7 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
 test("runPendingVideoPublishSweep healthchecks recently uploaded published videos even without pending parts", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-healthcheck-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
   const db = openDatabase(dbPath);
   const publishedBvids: string[] = [];
 
@@ -1286,7 +1289,7 @@ test("runPendingVideoPublishSweep healthchecks recently uploaded published video
       summaryUsers: "123",
       authFile: ".auth/bili-auth.json",
       dbPath,
-      workRoot: "work",
+      workRoot,
       collectRecentUploadsImpl: async () => ({
         summaryUsers: [{ mid: 123, source: "123" }],
         uploads: [
@@ -1302,6 +1305,7 @@ test("runPendingVideoPublishSweep healthchecks recently uploaded published video
           },
         ],
       }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
       findAuthFileForUserImpl(_authFile, userIndex) {
         return path.join(tempRoot, `.auth-${userIndex}.json`);
       },
@@ -1328,6 +1332,7 @@ test("runPendingVideoPublishSweep healthchecks recently uploaded published video
 test("runPendingVideoPublishSweep only cools down after tasks that actually created comments", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-cooldown-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
   const db = openDatabase(dbPath);
   const sleepCalls: number[] = [];
 
@@ -1390,11 +1395,12 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
       summaryUsers: "123",
       authFile: ".auth/bili-auth.json",
       dbPath,
-      workRoot: "work",
+      workRoot,
       collectRecentUploadsImpl: async () => ({
         summaryUsers: [],
         uploads: [],
       }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
       findAuthFileForUserImpl() {
         return path.join(tempRoot, ".auth-1.json");
       },
@@ -1438,6 +1444,7 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
 test("runPendingVideoPublishSweep runs at most two publish tasks concurrently", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
   const db = openDatabase(dbPath);
   const started: string[] = [];
   const finished: string[] = [];
@@ -1469,11 +1476,12 @@ test("runPendingVideoPublishSweep runs at most two publish tasks concurrently", 
       summaryUsers: "123",
       authFile: ".auth/bili-auth.json",
       dbPath,
-      workRoot: "work",
+      workRoot,
       collectRecentUploadsImpl: async () => ({
         summaryUsers: [],
         uploads: [],
       }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
       findAuthFileForUserImpl() {
         return path.join(tempRoot, ".auth-1.json");
       },

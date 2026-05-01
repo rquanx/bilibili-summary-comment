@@ -7,3 +7,4 @@ summary.md
 cookie.txt
 bili-auth*.json
 .auth/
+.tmp-tests

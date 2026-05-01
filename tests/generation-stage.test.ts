@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { listVideoParts, savePartSummary, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
-import { runGenerationStage } from "../scripts/lib/pipeline/generation-stage";
-import { writePartSummaryArtifact } from "../scripts/lib/summary/files";
-import { createSummaryHash } from "../scripts/lib/video/change-detection";
+import { openDatabase } from "../src/infra/db/database";
+import { listVideoParts, savePartSummary, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { runGenerationStage } from "../src/domains/pipeline/generation-stage";
+import { writePartSummaryArtifact } from "../src/domains/summary/files";
+import { createSummaryHash } from "../src/domains/video/change-detection";
 
 test("runGenerationStage skips content-filtered summary pages and continues later parts", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "generation-stage-"));

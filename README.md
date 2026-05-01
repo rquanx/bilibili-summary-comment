@@ -112,7 +112,7 @@ npm run setup:sh
 - 检查 Python 工具是否可用
 - 检查 `ffmpeg` 是否存在
 
-更详细的安装与首跑说明见 [SETUP.md](./SETUP.md)。
+更详细的安装与首跑说明见 [SETUP.md](./docs/SETUP.md)。
 
 ## 快速开始
 
@@ -299,19 +299,19 @@ npm run reprocess:recent-comments -- --summary-since-hours 168
 ### 5. 查询当前置顶评论
 
 ```bash
-tsx scripts/commands/get-bili-top-comment.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx
+tsx src/commands/get-bili-top-comment.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx
 ```
 
 如果要看游客视角可见的顶层评论列表：
 
 ```bash
-tsx scripts/commands/get-bili-guest-replies.ts --bvid BVxxxxxxxxxx --pn 1 --ps 20
+tsx src/commands/get-bili-guest-replies.ts --bvid BVxxxxxxxxxx --pn 1 --ps 20
 ```
 
 ### 6. 手工发送一份总结
 
 ```bash
-tsx scripts/commands/post-bili-summary.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --message-file "work/<owner_dir>/<video_dir>/pending-summary.md"
+tsx src/commands/post-bili-summary.ts --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --message-file "work/<owner_dir>/<video_dir>/pending-summary.md"
 ```
 
 ### 7. 初始化 TV 登录
@@ -331,7 +331,7 @@ npm run login:bili
 如果你仍然需要额外产出 cookie 文件，可以显式传：
 
 ```bash
-tsx scripts/commands/login-bili-tv.ts --auth-file ./secrets/bili-auth.json --cookie-file ./secrets/cookie.txt
+tsx src/commands/login-bili-tv.ts --auth-file ./secrets/bili-auth.json --cookie-file ./secrets/cookie.txt
 ```
 
 ### 8. 刷新授权
@@ -345,7 +345,7 @@ npm run refresh:cookie
 也支持直接传 token：
 
 ```bash
-tsx scripts/commands/refresh-bili-cookie.ts --access-token <token> --refresh-token <token>
+tsx src/commands/refresh-bili-cookie.ts --access-token <token> --refresh-token <token>
 ```
 
 ### 9. 扫描指定用户最近投稿并跑流水线
@@ -382,12 +382,12 @@ npm run start
 只执行一次并退出：
 
 ```bash
-tsx scripts/commands/run-scheduler.ts --once summary
-tsx scripts/commands/run-scheduler.ts --once publish
-tsx scripts/commands/run-scheduler.ts --once gap-check
-tsx scripts/commands/run-scheduler.ts --once refresh
-tsx scripts/commands/run-scheduler.ts --once cleanup
-tsx scripts/commands/run-scheduler.ts --once all
+tsx src/commands/run-scheduler.ts --once summary
+tsx src/commands/run-scheduler.ts --once publish
+tsx src/commands/run-scheduler.ts --once gap-check
+tsx src/commands/run-scheduler.ts --once refresh
+tsx src/commands/run-scheduler.ts --once cleanup
+tsx src/commands/run-scheduler.ts --once all
 ```
 
 说明：
@@ -396,7 +396,7 @@ tsx scripts/commands/run-scheduler.ts --once all
 - 调度器里的 summary 任务只负责生成 / 更新摘要，不在单条视频流水线里直接发布；如果这一轮扫到了 recent uploads，结束后会立即请求一次 publish sweep，`05` 分的 publish sweep 继续作为兜底与线程健康检查入口
 - 缺段巡检会把当天快照写到 `work/logs/gap-check/YYYY-MM-DD.json`
 
-调度细节见 [SCHEDULE.md](./SCHEDULE.md)。
+调度细节见 [SCHEDULE.md](./docs/SCHEDULE.md)。
 
 ### 12. 维护与验证
 
@@ -421,7 +421,7 @@ npm run inspect:events -- --since-hours 24 --limit 100
 
 ## 主流程
 
-完整流水线由 [`scripts/commands/run-video-pipeline.ts`](./scripts/commands/run-video-pipeline.ts) 驱动：
+完整流水线由 [`src/commands/run-video-pipeline.ts`](./src/commands/run-video-pipeline.ts) 驱动：
 
 1. 解析 `--bvid` / `--aid` / `--url`
 2. 拉取视频详情与分 P 列表，并同步到 SQLite
@@ -556,8 +556,8 @@ work/pipeline.sqlite3
 
 ## 相关文档
 
-- [SETUP.md](./SETUP.md)：环境准备、首跑与验证
-- [SCHEDULE.md](./SCHEDULE.md)：定时任务与部署方式
+- [SETUP.md](./docs/SETUP.md)：环境准备、首跑与验证
+- [SCHEDULE.md](./docs/SCHEDULE.md)：定时任务与部署方式
 
 ## 按用户定制 Summary Prompt
 

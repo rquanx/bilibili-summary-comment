@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
-import { createSummaryHash } from "../scripts/lib/video/change-detection";
-import { runPublishStage } from "../scripts/lib/pipeline/publish-stage";
+import { openDatabase } from "../src/infra/db/database";
+import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { createSummaryHash } from "../src/domains/video/change-detection";
+import { runPublishStage } from "../src/domains/pipeline/publish-stage";
 
 function createJsonFetchResponse(data) {
   return {

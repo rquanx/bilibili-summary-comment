@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_AUTH_FILE, resolveBiliLoginOutputFiles, saveBiliAuthBundle } from "../scripts/lib/bili/auth";
+import { DEFAULT_AUTH_FILE, resolveBiliLoginOutputFiles, saveBiliAuthBundle } from "../src/domains/bili/auth";
 
 test("resolveBiliLoginOutputFiles auto-increments auth file names and does not auto-create cookie outputs", () => {
   const result = resolveBiliLoginOutputFiles({

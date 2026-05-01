@@ -3,28 +3,28 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { listVideoParts, upsertVideo, upsertVideoPart } from "../scripts/lib/db/video-storage";
-import { resolveSummaryConfig } from "../scripts/lib/summary/config";
+import { openDatabase } from "../src/infra/db/database";
+import { listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { resolveSummaryConfig } from "../src/domains/summary/config";
 import {
   buildSummaryHttpRequest,
   buildSummaryPromptInput,
   extractSummaryText,
   resolveSummaryApiTarget,
-} from "../scripts/lib/summary/client";
-import { compactPasteLinkSummaryRanges, extractCoveredPages, inspectSummaryPageMarkers, splitSummaryForComments } from "../scripts/lib/summary/format";
-import { writeSummaryArtifacts } from "../scripts/lib/summary/files";
-import { normalizeSummaryOutput } from "../scripts/lib/summary/output";
-import { resolveSummaryPromptProfile } from "../scripts/lib/summary/prompt-config";
-import { reindexSummaryTextToPage } from "../scripts/lib/db/summary-text";
+} from "../src/domains/summary/client";
+import { compactPasteLinkSummaryRanges, extractCoveredPages, inspectSummaryPageMarkers, splitSummaryForComments } from "../src/domains/summary/format";
+import { writeSummaryArtifacts } from "../src/domains/summary/files";
+import { normalizeSummaryOutput } from "../src/domains/summary/output";
+import { resolveSummaryPromptProfile } from "../src/domains/summary/prompt-config";
+import { reindexSummaryTextToPage } from "../src/infra/db/summary-text";
 import {
   requestSummaryWithFallback,
   shouldSkipSummaryPart,
   shouldRetrySummaryWithGeminiFlash,
   shouldRetrySummaryWithGlm5,
   summarizePartFromSubtitle,
-} from "../scripts/lib/summary/service";
-import { resolveVideoWorkDir } from "../scripts/lib/shared/work-paths";
+} from "../src/domains/summary/service";
+import { resolveVideoWorkDir } from "../src/shared/work-paths";
 
 test("resolveSummaryConfig normalizes args and env values", () => {
   const config = resolveSummaryConfig(

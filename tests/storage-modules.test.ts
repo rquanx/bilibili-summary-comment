@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { getGapNotificationByKey, hasGapNotification, saveGapNotification } from "../scripts/lib/db/gap-notification-storage";
-import { insertPipelineEvent, listPipelineEvents } from "../scripts/lib/db/pipeline-event-storage";
+import { openDatabase } from "../src/infra/db/database";
+import { getGapNotificationByKey, hasGapNotification, saveGapNotification } from "../src/infra/db/gap-notification-storage";
+import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipeline-event-storage";
 import {
   getVideoByIdentity,
   listPendingPublishParts,
@@ -13,8 +13,8 @@ import {
   savePartSummary,
   upsertVideo,
   upsertVideoPart,
-} from "../scripts/lib/db/video-storage";
-import * as storage from "../scripts/lib/db/index";
+} from "../src/infra/db/video-storage";
+import * as storage from "../src/infra/db/index";
 
 test("storage modules preserve video and event workflows after the split", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-storage-"));

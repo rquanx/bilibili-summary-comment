@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../scripts/lib/db/database";
-import { getVideoByIdentity, upsertVideo } from "../scripts/lib/db/video-storage";
-import { probePublishedCommentThreadHealth } from "../scripts/lib/video/pipeline-runner";
-import { withVideoPipelineLock } from "../scripts/lib/video/pipeline-lock";
+import { openDatabase } from "../src/infra/db/database";
+import { getVideoByIdentity, upsertVideo } from "../src/infra/db/video-storage";
+import { probePublishedCommentThreadHealth } from "../src/domains/video/pipeline-runner";
+import { withVideoPipelineLock } from "../src/domains/video/pipeline-lock";
 
 test("probePublishedCommentThreadHealth marks a missing stored root thread for rebuild", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-healthcheck-"));
