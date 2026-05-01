@@ -14,6 +14,7 @@
     "refresh:cookie": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/refresh-bili-cookie.ts",
     "sync:video": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/sync-bili-video-state.ts",
     "sync:users": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/sync-summary-users.ts",
+    "reprocess:recent-comments": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/reprocess-recent-comment-issues.ts",
     "import:summary": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/import-summary-file.ts",
     "publish:pending": "node --disable-warning=ExperimentalWarning --import tsx scripts/commands/publish-pending-summaries.ts",
     "inspect:events": "node --disable-warning=ExperimentalWarning --import tsx scripts/maintenance/inspect-pipeline-events.ts",

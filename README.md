@@ -276,6 +276,26 @@ npm run publish:pending -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxx
 npm run publish:pending -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --root-rpid 1234567890
 ```
 
+### 4.1 批量重处理最近无评论或含 paste.rs 的视频
+
+默认扫描最近 15 天投稿，筛出“没有评论线程”或“处理后总结里含 `paste.rs`”的视频，再按现有流水线重新生成/重发：
+
+```bash
+npm run reprocess:recent-comments
+```
+
+先看命中列表、不落库也不重跑：
+
+```bash
+npm run reprocess:recent-comments -- --dry-run
+```
+
+如果要改扫描窗口，例如最近 7 天：
+
+```bash
+npm run reprocess:recent-comments -- --summary-since-hours 168
+```
+
 ### 5. 查询当前置顶评论
 
 ```bash

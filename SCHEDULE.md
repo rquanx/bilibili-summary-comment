@@ -128,6 +128,12 @@ npm run refresh:cookie
 npm run sync:users
 ```
 
+批量回补最近 15 天里“没有评论线程”或“评论曾降级到 paste.rs”的视频：
+
+```bash
+npm run reprocess:recent-comments
+```
+
 手动清理旧工作目录：
 
 ```bash

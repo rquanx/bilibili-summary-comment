@@ -1,0 +1,141 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openDatabase } from "../scripts/lib/db/database";
+import {
+  getVideoByIdentity,
+  listVideoParts,
+  upsertVideo,
+  upsertVideoPart,
+} from "../scripts/lib/db/video-storage";
+import {
+  buildRecentReprocessCandidate,
+  prepareRecentReprocessCandidate,
+} from "../scripts/lib/scheduler/recent-reprocess";
+
+test("buildRecentReprocessCandidate matches missing comment threads and paste.rs summaries", () => {
+  const upload = {
+    mid: 1,
+    bvid: "BVRECENT1",
+    aid: 1001,
+    title: "Recent Video",
+    createdAtUnix: 100,
+    createdAt: new Date(100 * 1000).toISOString(),
+    source: "1",
+  };
+
+  const candidate = buildRecentReprocessCandidate(
+    upload,
+    {
+      id: 9,
+      root_comment_rpid: null,
+      publish_needs_rebuild: 1,
+    },
+    [
+      {
+        page_no: 1,
+        summary_text_processed: "<1P>\nhttps://paste.rs/abc123",
+      },
+      {
+        page_no: 2,
+        summary_text_processed: null,
+      },
+    ],
+  );
+
+  assert.deepEqual(candidate?.reasons, [
+    "missing-comment-thread",
+    "paste-rs-processed-summary",
+    "publish-rebuild-needed",
+  ]);
+  assert.deepEqual(candidate?.pastePages, [1]);
+  assert.equal(candidate?.videoId, 9);
+  assert.equal(candidate?.hadStoredVideo, true);
+});
+
+test("prepareRecentReprocessCandidate clears paste.rs processed summaries and resets missing comment publish state", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-recent-reprocess-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVRECENT2",
+      aid: 1002,
+      title: "Recent Reprocess",
+      pageCount: 2,
+      rootCommentRpid: null,
+      topCommentRpid: null,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nraw page one",
+      processedSummaryText: "<1P>\nhttps://paste.rs/abc123",
+      summaryHash: "hash-1",
+      published: true,
+      publishedCommentRpid: 7001,
+      publishedAt: "2026-05-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: "<2P>\nraw page two",
+      summaryHash: "hash-2",
+      published: true,
+      publishedCommentRpid: 7001,
+      publishedAt: "2026-05-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+
+    const result = prepareRecentReprocessCandidate(db, {
+      mid: 1,
+      bvid: "BVRECENT2",
+      aid: 1002,
+      title: "Recent Reprocess",
+      createdAtUnix: 100,
+      createdAt: new Date(100 * 1000).toISOString(),
+      source: "1",
+      videoId: video.id,
+      hadStoredVideo: true,
+      reasons: [
+        "missing-comment-thread",
+        "paste-rs-processed-summary",
+      ],
+      pastePages: [1],
+    });
+
+    assert.deepEqual(result, {
+      videoId: video.id,
+      clearedProcessedPages: [1],
+      resetPublishedState: true,
+      markedPublishRebuild: true,
+    });
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVRECENT2" });
+    assert.equal(Number(persistedVideo?.publish_needs_rebuild), 1);
+    assert.equal(persistedVideo?.publish_rebuild_reason, "recent-reprocess-paste-rs");
+    assert.equal(persistedVideo?.root_comment_rpid, null);
+    assert.equal(persistedVideo?.top_comment_rpid, null);
+
+    const parts = listVideoParts(db, video.id);
+    assert.equal(parts[0].summary_text_processed, null);
+    assert.equal(Number(parts[0].published), 0);
+    assert.equal(parts[0].published_comment_rpid, null);
+    assert.equal(Number(parts[1].published), 0);
+    assert.equal(parts[1].published_comment_rpid, null);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
