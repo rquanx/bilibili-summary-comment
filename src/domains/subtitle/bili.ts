@@ -8,11 +8,42 @@ export async function tryDownloadBiliSubtitle({ client, bvid, cid, subtitlePath,
   }
 
   const picked = subtitles.find((item) => Number(item.ai_type ?? 0) > 0 || Number(item.ai_status ?? 0) > 0) ?? subtitles[0];
-  const subtitleUrl = normalizeSubtitleUrl(picked.subtitle_url_v2 ?? picked.subtitle_url);
-  if (!subtitleUrl) {
+  const subtitleUrls = getSubtitleCandidateUrls(picked);
+  if (subtitleUrls.length === 0) {
     return null;
   }
 
+  let subtitleJson = null;
+  let lastError = null;
+  for (const subtitleUrl of subtitleUrls) {
+    try {
+      subtitleJson = await downloadSubtitleJson(subtitleUrl, {
+        bvid,
+        cookie,
+      });
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!subtitleJson) {
+    throw lastError ?? new Error("Failed to download Bilibili subtitle");
+  }
+
+  const srtText = convertBiliSubtitleJsonToSrt(subtitleJson);
+  if (!srtText.trim()) {
+    return null;
+  }
+
+  fs.writeFileSync(subtitlePath, `${srtText.trim()}\n`, "utf8");
+  return {
+    source: Number(picked.ai_type ?? 0) > 0 || Number(picked.ai_status ?? 0) > 0 ? "bili_ai" : "bili_subtitle",
+    lang: picked.lan ?? null,
+  };
+}
+
+async function downloadSubtitleJson(subtitleUrl, { bvid, cookie }) {
   const response = await fetch(subtitleUrl, {
     headers: {
       "user-agent": "Mozilla/5.0",
@@ -25,17 +56,16 @@ export async function tryDownloadBiliSubtitle({ client, bvid, cid, subtitlePath,
     throw new Error(`Failed to download Bilibili subtitle: ${response.status} ${response.statusText}`);
   }
 
-  const subtitleJson = await response.json();
-  const srtText = convertBiliSubtitleJsonToSrt(subtitleJson);
-  if (!srtText.trim()) {
-    return null;
-  }
+  return response.json();
+}
 
-  fs.writeFileSync(subtitlePath, `${srtText.trim()}\n`, "utf8");
-  return {
-    source: Number(picked.ai_type ?? 0) > 0 || Number(picked.ai_status ?? 0) > 0 ? "bili_ai" : "bili_subtitle",
-    lang: picked.lan ?? null,
-  };
+function getSubtitleCandidateUrls(subtitle) {
+  const candidates = [
+    normalizeSubtitleUrl(subtitle?.subtitle_url),
+    normalizeSubtitleUrl(subtitle?.subtitle_url_v2),
+  ].filter(Boolean);
+
+  return [...new Set(candidates)];
 }
 
 function normalizeSubtitleUrl(url) {
