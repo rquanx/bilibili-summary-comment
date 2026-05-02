@@ -115,6 +115,7 @@ await runCli({
         workRoot: config.workRoot,
         logDay,
         logGroup,
+        forceFreshThread: true,
         logger,
         collectRecentUploadsImpl: async () => ({
           summaryUsers: collected.summaryUsers,

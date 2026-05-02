@@ -1713,3 +1713,99 @@ test("postSummaryThread adopts an existing matching top comment instead of posti
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("postSummaryThread skips top-comment adoption when existing comment reuse is disabled", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const fullMessage = [
+    "<1P>",
+    "1#20:36 first page summary",
+    "",
+    "<2P>",
+    "2#00:00 second page summary",
+  ].join("\n");
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVcommentNoReuseTopRoot",
+      aid: 123450005,
+      title: "Existing Top Comment No Reuse Test",
+      pageCount: 2,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\n1#20:36 first page summary",
+      summaryHash: "hash-1",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: "<2P>\n2#00:00 second page summary",
+      summaryHash: "hash-2",
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestCommentHarness({
+      startRpid: 990100,
+    });
+    harness.comments.set(990001, {
+      rpid: 990001,
+      root: 990001,
+      parent: 990001,
+      message: fullMessage,
+      visible: true,
+    });
+    await harness.client.reply.top({
+      rpid: 990001,
+    });
+
+    const result = await postSummaryThread({
+      client: harness.client as never,
+      oid: video.aid,
+      type: 1,
+      message: fullMessage,
+      db,
+      videoId: video.id,
+      topCommentState: {
+        hasTopComment: true,
+        topComment: {
+          rpid: 990001,
+          message: fullMessage,
+        },
+      },
+      allowExistingCommentAdoption: false,
+      sleepImpl: async () => {},
+      guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 990100);
+    assert.equal(result.action, "comment-thread-created-or-extended");
+    assert.equal(result.reusedExistingRootComment, false);
+    assert.equal(harness.comments.has(990001), true);
+    assert.equal(harness.comments.has(990100), true);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentNoReuseTopRoot" });
+    assert.equal(persistedVideo?.root_comment_rpid, 990100);
+    assert.equal(persistedVideo?.top_comment_rpid, 990100);
+
+    const parts = listVideoParts(db, video.id);
+    assert.deepEqual(parts.map((part) => part.published), [1, 1]);
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [990100, 990100]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});

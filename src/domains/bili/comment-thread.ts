@@ -1324,6 +1324,7 @@ async function createCommentWithDuplicateRecovery({
   message,
   isRoot,
   rootRpid = null,
+  allowExistingCommentAdoption = true,
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
@@ -1338,6 +1339,9 @@ async function createCommentWithDuplicateRecovery({
     const duplicateDetected = isDuplicateCommentError(error)
       || String((error as { message?: unknown })?.message ?? "").toLowerCase().includes("duplicate comment");
     if (!duplicateDetected) {
+      throw error;
+    }
+    if (!allowExistingCommentAdoption) {
       throw error;
     }
 
@@ -1406,6 +1410,7 @@ async function publishCommentChunk({
   chunk,
   isRoot,
   rootRpid = null,
+  allowExistingCommentAdoption = true,
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
@@ -1434,6 +1439,7 @@ async function publishCommentChunk({
     message: chunk.message,
     isRoot,
     rootRpid,
+    allowExistingCommentAdoption,
     sleepImpl,
     guestReplyListImpl,
     fetchImpl,
@@ -1486,7 +1492,7 @@ async function publishCommentChunk({
         uploadToPasteImpl,
       });
     } catch (diagnosisError) {
-      if (initialRpid && isDuplicateCommentError(diagnosisError)) {
+      if (allowExistingCommentAdoption && initialRpid && isDuplicateCommentError(diagnosisError)) {
         const visibleComment = await findVisibleCommentAsGuest({
           oid,
           type,
@@ -1568,6 +1574,7 @@ async function publishCommentChunk({
       message: processedCommentMessage,
       isRoot,
       rootRpid,
+      allowExistingCommentAdoption,
       sleepImpl,
       guestReplyListImpl,
       fetchImpl,
@@ -1635,6 +1642,7 @@ export async function postSummaryThread({
   existingRootRpid = null,
   forcedRootRpid = null,
   workRoot = "work",
+  allowExistingCommentAdoption = true,
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
@@ -1650,7 +1658,9 @@ export async function postSummaryThread({
     throw createCliError("No comment chunks generated from summary");
   }
 
-  let rootRpid = forcedRootRpid ?? existingRootRpid ?? topCommentState.topComment?.rpid ?? null;
+  let rootRpid = forcedRootRpid
+    ?? existingRootRpid
+    ?? (allowExistingCommentAdoption ? topCommentState.topComment?.rpid ?? null : null);
   const initialRootRpid = rootRpid;
   const createdComments = [];
   const warnings = [];
@@ -1694,7 +1704,8 @@ export async function postSummaryThread({
 
   const pendingChunks = [...chunks];
   if (
-    !forcedRootRpid
+    allowExistingCommentAdoption
+    && !forcedRootRpid
     && !existingRootRpid
     && rootRpid
     && topCommentState.topComment
@@ -1706,7 +1717,11 @@ export async function postSummaryThread({
       reusedExistingRootComment = true;
     }
   }
-  if (!rootRpid && !forcedRootRpid && !existingRootRpid && pendingChunks[0]) {
+  if (allowExistingCommentAdoption
+    && !rootRpid
+    && !forcedRootRpid
+    && !existingRootRpid
+    && pendingChunks[0]) {
     const visibleRootComment = await findAdoptableVisibleComment({
       oid,
       type,
@@ -1728,7 +1743,7 @@ export async function postSummaryThread({
   for (const [index, chunk] of pendingChunks.entries()) {
     const shouldCreateRoot = !rootRpid;
 
-    if (!shouldCreateRoot) {
+    if (allowExistingCommentAdoption && !shouldCreateRoot) {
       const visibleReplyComment = await findAdoptableVisibleComment({
         oid,
         type,
@@ -1754,6 +1769,7 @@ export async function postSummaryThread({
         chunk,
         isRoot: shouldCreateRoot,
         rootRpid,
+        allowExistingCommentAdoption,
         sleepImpl,
         guestReplyListImpl,
         fetchImpl,
@@ -1796,6 +1812,7 @@ export async function postSummaryThread({
           chunk,
           isRoot: true,
           rootRpid: null,
+          allowExistingCommentAdoption,
           sleepImpl,
           guestReplyListImpl,
           fetchImpl,

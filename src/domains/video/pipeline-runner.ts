@@ -30,6 +30,7 @@ interface VideoPipelineArgs extends Record<string, unknown> {
   ["cookie-file"]?: string;
   publish?: boolean;
   ["force-summary"]?: boolean;
+  ["force-fresh-thread"]?: boolean;
 }
 
 export async function runVideoPipeline(
@@ -176,6 +177,7 @@ export async function runVideoPipeline(
             type: commentType,
             workRoot,
             forcedRootRpid: null,
+            forceFreshThread: Boolean(args["force-fresh-thread"]),
             eventLogger,
             progress,
           });

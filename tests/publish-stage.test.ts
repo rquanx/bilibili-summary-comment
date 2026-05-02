@@ -313,6 +313,132 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
   }
 });
 
+test("runPublishStage forceFreshThread deletes the old pinned thread before rebuilding from scratch", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-force-fresh-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const summaryPath = path.join(tempRoot, "summary.md");
+  const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
+  const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const fullMessage = ["<1P>", "first page", "", "<2P>", "second page"].join("\n");
+    fs.writeFileSync(summaryPath, `${fullMessage}\n`, "utf8");
+    fs.writeFileSync(pendingSummaryPath, "", "utf8");
+
+    const video = upsertVideo(db, {
+      bvid: "BVpublishFresh123",
+      aid: 987011,
+      title: "Publish Stage Force Fresh Test",
+      pageCount: 2,
+      rootCommentRpid: 555001,
+      topCommentRpid: 555001,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst page",
+      summaryHash: createSummaryHash("<1P>\nfirst page"),
+      published: true,
+      publishedCommentRpid: 555001,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "P2",
+      durationSec: 10,
+      summaryText: "<2P>\nsecond page",
+      summaryHash: createSummaryHash("<2P>\nsecond page"),
+      published: true,
+      publishedCommentRpid: 555001,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+
+    const harness = createGuestFetchHarness(930001);
+    harness.comments.set(555001, {
+      rpid: 555001,
+      root: 555001,
+      parent: 555001,
+      message: fullMessage,
+    });
+
+    const calls = [];
+    const originalClient = harness.client.reply;
+    const client = {
+      reply: {
+        async list(...args) {
+          calls.push({ type: "list", args });
+          return {
+            upper: {
+              top: {
+                rpid: 555001,
+                content: {
+                  message: fullMessage,
+                },
+              },
+            },
+            replies: [],
+          };
+        },
+        async add(payload) {
+          calls.push({ type: "add", payload });
+          return originalClient.add(payload);
+        },
+        async top(payload) {
+          calls.push({ type: "top", payload });
+          return originalClient.top(payload);
+        },
+        async delete(payload) {
+          calls.push({ type: "delete", payload });
+          return originalClient.delete(payload);
+        },
+      },
+    };
+
+    const result = await runPublishStage({
+      client,
+      db,
+      video: {
+        ...video,
+        publish_needs_rebuild: 1,
+      },
+      artifacts: {
+        summaryPath,
+        pendingSummaryPath,
+      },
+      oid: video.aid,
+      type: 1,
+      workRoot,
+      forceFreshThread: true,
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rebuild, true);
+    assert.equal(result.rootCommentRpid, 930001);
+    assert.deepEqual(result.deletedThreads?.map((item) => item.rootRpid), [555001]);
+    assert.deepEqual(calls.map((entry) => entry.type), ["list", "delete", "add", "top"]);
+    assert.equal(calls[1].payload.rpid, 555001);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: "BVpublishFresh123" });
+    assert.equal(persistedVideo.root_comment_rpid, 930001);
+    assert.equal(persistedVideo.top_comment_rpid, 930001);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
 test("runPublishStage rebuilds when stored root comment is missing even without pending summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-missing-root-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

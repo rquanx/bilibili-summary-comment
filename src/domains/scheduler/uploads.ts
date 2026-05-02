@@ -48,6 +48,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
   logDay?: string | null;
   logGroup?: string | null;
   publish?: boolean;
+  forceFreshThread?: boolean;
   maxConcurrent?: number;
   logger?: FileLogger | null;
   onPipelineSucceeded?: (payload: {
@@ -168,6 +169,7 @@ export async function syncSummaryUsersRecentVideos({
   logGroup = null,
   sinceHours = 24,
   publish = true,
+  forceFreshThread = false,
   maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
   logger = null,
   onLog = () => {},
@@ -224,6 +226,7 @@ export async function syncSummaryUsersRecentVideos({
         logDay,
         logGroup,
         publish,
+        forceFreshThread,
         logger: logger?.child({
           bvid: upload.bvid,
           mid: upload.mid,

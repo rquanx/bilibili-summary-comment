@@ -31,6 +31,7 @@ interface RunPipelineForBvidOptions {
   logDay?: string | null;
   logGroup?: string | null;
   publish?: boolean;
+  forceFreshThread?: boolean;
   logger?: FileLogger | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
   repoRoot?: string;
@@ -45,6 +46,7 @@ export async function runPipelineForBvid({
   logDay = null,
   logGroup = null,
   publish = true,
+  forceFreshThread = false,
   logger = null,
   runCommandImpl = runCommand,
   repoRoot = getRepoRoot(),
@@ -60,6 +62,9 @@ export async function runPipelineForBvid({
   args.push("--bvid", bvid, "--db", path.resolve(repoRoot, dbPath), "--work-root", workRoot);
   if (publish) {
     args.push("--publish");
+  }
+  if (forceFreshThread) {
+    args.push("--force-fresh-thread");
   }
   let result;
   try {

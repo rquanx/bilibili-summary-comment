@@ -57,6 +57,7 @@ export async function runPublishStage({
   type,
   workRoot = "work",
   forcedRootRpid = null,
+  forceFreshThread = false,
   eventLogger = null,
   progress = null,
   sleepImpl = undefined,
@@ -71,6 +72,7 @@ export async function runPublishStage({
   type: number;
   workRoot?: string;
   forcedRootRpid?: number | null;
+  forceFreshThread?: boolean;
   eventLogger?: PipelineEventLogger | null;
   progress?: { log?: (message: string) => void } | null;
   sleepImpl?: Parameters<typeof postSummaryThread>[0]["sleepImpl"];
@@ -135,12 +137,24 @@ export async function runPublishStage({
 
     const topCommentState = rebuildTopCommentState ?? await getTopComment(client, { oid, type });
     const deleteCandidates = collectRebuildDeleteCandidates(video, topCommentState);
+    const deletedThreads: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }> = [];
 
     resetPublishedStateForVideo(db, video.id);
     updateVideoCommentThread(db, video.id, {
       rootCommentRpid: null,
       topCommentRpid: null,
     });
+
+    if (forceFreshThread) {
+      for (const rootRpid of deleteCandidates) {
+        deletedThreads.push(await deleteSummaryThread({
+          client,
+          oid,
+          type,
+          rootRpid,
+        }));
+      }
+    }
 
     const rebuilt = await postSummaryThread({
       client,
@@ -156,23 +170,25 @@ export async function runPublishStage({
       existingRootRpid: null,
       forcedRootRpid: null,
       workRoot,
+      allowExistingCommentAdoption: !forceFreshThread,
       sleepImpl,
       fetchImpl,
       uploadToPasteImpl,
     });
 
-    const deletedThreads: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }> = [];
-    for (const rootRpid of deleteCandidates) {
-      if (rootRpid === rebuilt.rootCommentRpid) {
-        continue;
-      }
+    if (!forceFreshThread) {
+      for (const rootRpid of deleteCandidates) {
+        if (rootRpid === rebuilt.rootCommentRpid) {
+          continue;
+        }
 
-      deletedThreads.push(await deleteSummaryThread({
-        client,
-        oid,
-        type,
-        rootRpid,
-      }));
+        deletedThreads.push(await deleteSummaryThread({
+          client,
+          oid,
+          type,
+          rootRpid,
+        }));
+      }
     }
 
     clearVideoPublishRebuildNeeded(db, video.id);

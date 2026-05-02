@@ -180,6 +180,49 @@ test("syncSummaryUsersRecentVideos forwards publish=false to pipeline runs", asy
   assert.deepEqual(observedPublishFlags, [false]);
 });
 
+test("syncSummaryUsersRecentVideos forwards forceFreshThread=true to pipeline runs", async () => {
+  const observedForceFreshFlags: boolean[] = [];
+
+  await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    publish: true,
+    forceFreshThread: true,
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BVFORCEFRESH",
+          aid: 1,
+          title: "Force Fresh",
+          authFile: "D:\\repo\\.auth\\bili-auth_1.json",
+          createdAtUnix: 100,
+          createdAt: new Date(100 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    async runPipelinesWithConcurrencyImpl(options) {
+      for (const upload of options.uploads ?? []) {
+        await options.runUpload?.(upload);
+      }
+
+      return {
+        runs: [],
+        failures: [],
+      };
+    },
+    async runPipelineForBvidImpl(options) {
+      observedForceFreshFlags.push(Boolean(options.forceFreshThread));
+      return {
+        ok: true,
+      };
+    },
+  });
+
+  assert.deepEqual(observedForceFreshFlags, [true]);
+});
+
 test("syncSummaryUsersRecentVideos triggers a per-pipeline success hook after each successful run", async () => {
   const observedPayloads: Array<{
     bvid: string;
@@ -1062,6 +1105,45 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
     "--work-root",
     "work",
     "--publish",
+  ]);
+});
+
+test("runPipelineForBvid appends --force-fresh-thread when requested", async () => {
+  const calls = [];
+
+  await runPipelineForBvid({
+    cookieFile: "cookie.txt",
+    dbPath: "work/pipeline.sqlite3",
+    workRoot: "work",
+    bvid: "BV1FRESH",
+    publish: true,
+    forceFreshThread: true,
+    repoRoot: "D:\\repo",
+    async runCommandImpl(command, args) {
+      calls.push({ command, args });
+      return {
+        code: 0,
+        stdout: '{"ok":true}',
+        stderr: "",
+      };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, [
+    "--import",
+    "tsx",
+    "D:\\repo\\src\\commands\\run-video-pipeline.ts",
+    "--cookie-file",
+    "D:\\repo\\cookie.txt",
+    "--bvid",
+    "BV1FRESH",
+    "--db",
+    "D:\\repo\\work\\pipeline.sqlite3",
+    "--work-root",
+    "work",
+    "--publish",
+    "--force-fresh-thread",
   ]);
 });
 
