@@ -1022,6 +1022,45 @@ function buildWholeCommentPasteComment(pageBlocks, pasteUrl) {
   return `${pageGroups.join(", ")}\n${pasteUrl}`;
 }
 
+function buildCompactedPasteCommentMessage(pageBlocks) {
+  const segments: string[] = [];
+  let pasteGroup: CommentPageBlock[] = [];
+  let pasteUrl = "";
+
+  const flushPasteGroup = () => {
+    if (!pasteGroup.length || !pasteUrl) {
+      pasteGroup = [];
+      pasteUrl = "";
+      return;
+    }
+
+    segments.push(buildWholeCommentPasteComment(pasteGroup, pasteUrl));
+    pasteGroup = [];
+    pasteUrl = "";
+  };
+
+  for (const block of pageBlocks) {
+    if (isPasteOnlyPageBlock(block)) {
+      const currentPasteUrl = String(block.units[0]?.text ?? "").trim();
+      if (pasteGroup.length > 0 && currentPasteUrl === pasteUrl) {
+        pasteGroup.push(block);
+        continue;
+      }
+
+      flushPasteGroup();
+      pasteGroup = [block];
+      pasteUrl = currentPasteUrl;
+      continue;
+    }
+
+    flushPasteGroup();
+    segments.push(buildMessageFromPageBlocks([block]));
+  }
+
+  flushPasteGroup();
+  return segments.filter(Boolean).join("\n\n").trim();
+}
+
 function isPasteOnlyPageBlock(block) {
   return (
     Array.isArray(block?.units)
@@ -1083,6 +1122,30 @@ function applyProcessedPagePatch(baseText, originalBlock, processedBlock) {
   }]);
 }
 
+function resolveUploadSourcePageBlock({
+  db,
+  videoId,
+  fallbackBlock,
+}: {
+  db: Parameters<typeof getActiveVideoPartByPageNo>[0];
+  videoId: number;
+  fallbackBlock: CommentPageBlock;
+}): CommentPageBlock {
+  const part = getActiveVideoPartByPageNo(db, videoId, fallbackBlock.page);
+  if (!part) {
+    return fallbackBlock;
+  }
+
+  const rawText = normalizeStoredSummaryText(part.summary_text);
+  if (!rawText) {
+    return fallbackBlock;
+  }
+
+  const rawBlock = parseCommentPageBlocks(rawText).find((candidate) => candidate.page === fallbackBlock.page)
+    ?? parseCommentPageBlocks(rawText)[0];
+  return rawBlock ?? fallbackBlock;
+}
+
 function persistProcessedChunk({
   db,
   videoId,
@@ -1116,6 +1179,8 @@ function persistProcessedChunk({
 }
 
 async function diagnoseInvisibleComment({
+  db,
+  videoId,
   message,
   fetchImpl = fetch,
   uploadToPasteImpl = uploadTextToPasteRs,
@@ -1130,21 +1195,20 @@ async function diagnoseInvisibleComment({
     };
   }
 
-  const processedPageBlocks = [];
-  for (const block of pageBlocks) {
-    if (isPasteOnlyPageBlock(block)) {
-      processedPageBlocks.push(block);
-      continue;
-    }
+  const uploadSourceBlocks = pageBlocks.map((block) => resolveUploadSourcePageBlock({
+    db,
+    videoId,
+    fallbackBlock: block,
+  }));
+  const pasteUrl = await uploadToPasteImpl(buildMessageFromPageBlocks(uploadSourceBlocks), fetchImpl);
+  const processedPageBlocks = pageBlocks.map((block) => buildPasteOnlyPageBlock(block, pasteUrl));
 
-    const pasteUrl = await uploadToPasteImpl(buildMessageFromPageBlocks([block]), fetchImpl);
-    processedPageBlocks.push(buildPasteOnlyPageBlock(block, pasteUrl));
-  }
+  const processedMessage = buildMessageFromPageBlocks(processedPageBlocks);
 
   return {
     badUnitIds: pageBlocks.flatMap((block) => block.units.map((unit) => unit.id)),
-    processedCommentMessage: buildMessageFromPageBlocks(processedPageBlocks),
-    processedMessage: buildMessageFromPageBlocks(processedPageBlocks),
+    processedCommentMessage: buildCompactedPasteCommentMessage(processedPageBlocks),
+    processedMessage,
   };
 }
 
@@ -1415,6 +1479,8 @@ async function publishCommentChunk({
     let diagnosis;
     try {
       diagnosis = await diagnoseInvisibleComment({
+        db,
+        videoId,
         message: chunk.message,
         fetchImpl,
         uploadToPasteImpl,
@@ -1469,7 +1535,15 @@ async function publishCommentChunk({
 
     const processedCommentMessage = normalizeMessageForMatch(diagnosis.processedCommentMessage);
     const processedMessage = normalizeSummaryMarkers(diagnosis.processedMessage);
-    if (!processedCommentMessage || !processedMessage || processedMessage === normalizeSummaryMarkers(chunk.message)) {
+    const normalizedChunkMessage = normalizeSummaryMarkers(chunk.message);
+    if (
+      !processedCommentMessage
+      || !processedMessage
+      || (
+        processedMessage === normalizedChunkMessage
+        && processedCommentMessage === normalizeMessageForMatch(chunk.message)
+      )
+    ) {
       throw createCliError("Published comment is not visible to guests", {
         oid,
         type,

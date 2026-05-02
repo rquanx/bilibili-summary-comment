@@ -1254,7 +1254,7 @@ test("postSummaryThread retries once with a paste link instead of probe comments
   }
 });
 
-test("postSummaryThread compacts multi-page paste fallbacks into a single page range in comments", async () => {
+test("postSummaryThread merges consecutive raw pages into a single paste fallback range", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -1331,23 +1331,12 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
     assert.equal(result.rootCommentRpid, 990402);
     assert.equal(result.createdComments.length, 1);
     assert.deepEqual(result.createdComments[0].pages, [1, 2, 3, 4, 5]);
+    const mergedPasteUrl = expectedPasteUrlForText(fullMessage);
     assert.deepEqual(addCalls, [
       fullMessage,
       [
-        `<1P>`,
-        expectedPasteUrlForText("<1P>\n1#00:00 first page summary"),
-        "",
-        `<2P>`,
-        expectedPasteUrlForText("<2P>\n2#00:00 second page summary"),
-        "",
-        `<3P>`,
-        expectedPasteUrlForText("<3P>\n3#00:00 third page summary"),
-        "",
-        `<4P>`,
-        expectedPasteUrlForText("<4P>\n4#00:00 fourth page summary"),
-        "",
-        `<5P>`,
-        expectedPasteUrlForText("<5P>\n5#00:00 fifth page summary"),
+        "<1P> ~ <5P>",
+        mergedPasteUrl,
       ].join("\n"),
     ]);
 
@@ -1355,11 +1344,11 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
     assert.deepEqual(
       parts.map((part) => part.summary_text_processed),
       [
-        `<1P>\n${expectedPasteUrlForText("<1P>\n1#00:00 first page summary")}`,
-        `<2P>\n${expectedPasteUrlForText("<2P>\n2#00:00 second page summary")}`,
-        `<3P>\n${expectedPasteUrlForText("<3P>\n3#00:00 third page summary")}`,
-        `<4P>\n${expectedPasteUrlForText("<4P>\n4#00:00 fourth page summary")}`,
-        `<5P>\n${expectedPasteUrlForText("<5P>\n5#00:00 fifth page summary")}`,
+        `<1P>\n${mergedPasteUrl}`,
+        `<2P>\n${mergedPasteUrl}`,
+        `<3P>\n${mergedPasteUrl}`,
+        `<4P>\n${mergedPasteUrl}`,
+        `<5P>\n${mergedPasteUrl}`,
       ],
     );
   } finally {
@@ -1369,7 +1358,7 @@ test("postSummaryThread compacts multi-page paste fallbacks into a single page r
   }
 });
 
-test("postSummaryThread keeps existing per-page paste links when retrying an invisible mixed chunk", async () => {
+test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retrying an invisible chunk", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-mixed-paste-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -1446,14 +1435,18 @@ test("postSummaryThread keeps existing per-page paste links when retrying an inv
 
     assert.equal(result.rootCommentRpid, 990602);
     assert.equal(result.createdComments.length, 1);
+    const mergedPasteUrl = expectedPasteUrlForText([
+      "<1P>",
+      "1#00:00 first page summary",
+      "",
+      "<2P>",
+      "2#00:00 second page summary",
+    ].join("\n"));
     assert.deepEqual(addCalls, [
       fullMessage,
       [
-        "<1P>",
-        expectedPasteUrlForText("<1P>\n1#00:00 first page summary"),
-        "",
-        "<2P>",
-        "https://paste.rs/gbLcw",
+        "<1P> ~ <2P>",
+        mergedPasteUrl,
       ].join("\n"),
     ]);
 
@@ -1461,8 +1454,8 @@ test("postSummaryThread keeps existing per-page paste links when retrying an inv
     assert.deepEqual(
       parts.map((part) => part.summary_text_processed),
       [
-        `<1P>\n${expectedPasteUrlForText("<1P>\n1#00:00 first page summary")}`,
-        "<2P>\nhttps://paste.rs/gbLcw",
+        `<1P>\n${mergedPasteUrl}`,
+        `<2P>\n${mergedPasteUrl}`,
       ],
     );
   } finally {
