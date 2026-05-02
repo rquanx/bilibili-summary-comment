@@ -177,7 +177,7 @@ export async function runVideoPipeline(
             type: commentType,
             workRoot,
             forcedRootRpid: null,
-            forceFreshThread: Boolean(args["force-fresh-thread"]),
+            forceFreshThread: args["force-fresh-thread"] ? true : undefined,
             eventLogger,
             progress,
           });

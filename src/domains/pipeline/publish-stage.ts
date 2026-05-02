@@ -57,7 +57,7 @@ export async function runPublishStage({
   type,
   workRoot = "work",
   forcedRootRpid = null,
-  forceFreshThread = false,
+  forceFreshThread = true,
   eventLogger = null,
   progress = null,
   sleepImpl = undefined,

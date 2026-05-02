@@ -159,7 +159,7 @@ function createGuestFetchHarness(startRpid) {
   };
 }
 
-test("runPublishStage rebuild posts a new pinned root before deleting stale old threads", async () => {
+test("runPublishStage rebuild deletes stale old threads before posting a fresh root", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const summaryPath = path.join(tempRoot, "summary.md");
@@ -292,7 +292,7 @@ test("runPublishStage rebuild posts a new pinned root before deleting stale old 
     );
 
     const callTypes = calls.map((entry) => entry.type);
-    assert.deepEqual(callTypes, ["list", "add", "top", "delete", "delete"]);
+    assert.deepEqual(callTypes, ["list", "delete", "delete", "add", "top"]);
     assert.deepEqual(
       calls.filter((entry) => entry.type === "delete").map((entry) => entry.payload.rpid).sort((a, b) => a - b),
       [555001, 555002],
@@ -546,7 +546,7 @@ test("runPublishStage rebuilds when stored root comment is missing even without 
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [910001, 910001]);
 
-    assert.deepEqual(calls.map((entry) => entry.type), ["list", "add", "top", "delete"]);
+    assert.deepEqual(calls.map((entry) => entry.type), ["list", "delete", "add", "top"]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -659,8 +659,8 @@ test("runPublishStage rebuilds when stored root comment is missing even with pen
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [920001, 920001]);
 
-    assert.deepEqual(calls.map((entry) => entry.type), ["list", "add", "top", "delete"]);
-    assert.equal(calls[1].payload.message, fullMessage);
+    assert.deepEqual(calls.map((entry) => entry.type), ["list", "delete", "add", "top"]);
+    assert.equal(calls[2].payload.message, fullMessage);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
