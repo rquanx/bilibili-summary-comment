@@ -207,10 +207,60 @@ export async function syncSummaryUsersRecentVideos({
     };
   }
 
+  const executionResult = await runRecentUploadsPipelines({
+    uploads: effectiveCollected.uploads,
+    dbPath,
+    workRoot,
+    logDay,
+    logGroup,
+    publish,
+    forceFreshThread,
+    maxConcurrent,
+    logger,
+    onLog,
+    onPipelineSucceeded,
+    runPipelinesWithConcurrencyImpl,
+    runPipelineForBvidImpl,
+  });
+
+  return {
+    ...effectiveCollected,
+    runs: executionResult.runs,
+    failures: executionResult.failures,
+  };
+}
+
+export async function runRecentUploadsPipelines({
+  uploads = [],
+  dbPath = "work/pipeline.sqlite3",
+  workRoot = "work",
+  logDay = null,
+  logGroup = null,
+  publish = true,
+  forceFreshThread = false,
+  maxConcurrent = SUMMARY_PIPELINE_MAX_CONCURRENCY,
+  logger = null,
+  onLog = () => {},
+  onPipelineSucceeded = undefined,
+  runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
+  runPipelineForBvidImpl = runPipelineForBvid,
+}: Omit<SyncSummaryUsersRecentVideosOptions, "summaryUsers" | "authFile" | "sinceHours" | "collectRecentUploadsImpl"> & {
+  uploads?: RecentUpload[];
+}) {
+  const deduplicatedUploads = orderRecentUploadsForVariantReuse(uploads, onLog);
+  if (deduplicatedUploads.length === 0) {
+    onLog("No uploads selected for reprocess");
+    return {
+      uploads: [],
+      runs: [],
+      failures: [],
+    };
+  }
+
   const safeMaxConcurrent = Math.max(1, Number(maxConcurrent) || SUMMARY_PIPELINE_MAX_CONCURRENCY);
   onLog(`Running up to ${safeMaxConcurrent} pipelines concurrently with variant-aware serialization`);
   const { runs, failures } = await runPipelinesWithConcurrencyImpl({
-    uploads: effectiveCollected.uploads,
+    uploads: deduplicatedUploads,
     maxConcurrent: safeMaxConcurrent,
     userKeyForUpload(upload) {
       return buildUploadSchedulingKey(upload);
@@ -249,7 +299,7 @@ export async function syncSummaryUsersRecentVideos({
   });
 
   return {
-    ...effectiveCollected,
+    uploads: deduplicatedUploads,
     runs,
     failures,
   };

@@ -137,6 +137,19 @@ interface GuestReplyListResponse {
 
 type GuestReplyListImpl = (params: GuestReplyListParams) => Promise<GuestReplyListResponse | null | undefined>;
 
+export interface VisibleGuestSummaryThreadInspection {
+  oid: number;
+  type: number;
+  expectedRootRpid: number | null;
+  hasTopComment: boolean;
+  topCommentRpid: number | null;
+  topCommentMessage: string;
+  matchesExpectedRoot: boolean;
+  pastePages: number[];
+  pasteUrls: string[];
+  scannedReplyCount: number;
+}
+
 const DELETED_COMMENT_PATTERNS = [
   "已经被删除",
   "已被删除",
@@ -438,6 +451,87 @@ export async function listGuestTopLevelReplies({
     ps,
     fetchImpl,
   })));
+}
+
+export async function inspectVisibleGuestSummaryThread({
+  oid,
+  type,
+  expectedRootRpid = null,
+  childReplyPageLimit = GUEST_COMMENT_SCAN_PAGE_LIMIT,
+  guestReplyListImpl = defaultGuestReplyListImpl,
+  fetchImpl = fetch,
+}: {
+  oid: number;
+  type: number;
+  expectedRootRpid?: number | null;
+  childReplyPageLimit?: number;
+  guestReplyListImpl?: GuestReplyListImpl;
+  fetchImpl?: typeof fetch;
+}): Promise<VisibleGuestSummaryThreadInspection> {
+  const firstPage = await listGuestTopLevelReplies({
+    oid,
+    type,
+    pn: 1,
+    ps: GUEST_REPLY_PAGE_SIZE,
+    guestReplyListImpl,
+    fetchImpl,
+  });
+  const topReply = getPinnedTopReply(firstPage);
+  const topCommentRpid = normalizeCommentRpid(topReply?.rpid ?? topReply?.rpid_str);
+  const pastePageSet = new Set<number>();
+  const pasteUrlSet = new Set<string>();
+  const scannedReplyRpids = new Set<number>();
+
+  collectPasteDataFromReply(topReply, {
+    pageSet: pastePageSet,
+    urlSet: pasteUrlSet,
+    scannedReplyRpids,
+  });
+
+  if (topCommentRpid) {
+    for (let pageNo = 1; pageNo <= Math.max(1, Number(childReplyPageLimit) || GUEST_COMMENT_SCAN_PAGE_LIMIT); pageNo += 1) {
+      const response = await fetchGuestChildReplies({
+        oid,
+        type,
+        rootRpid: topCommentRpid,
+        pn: pageNo,
+        ps: GUEST_REPLY_PAGE_SIZE,
+        fetchImpl,
+      });
+
+      for (const candidate of collectReplyCandidates(response)) {
+        for (const reply of collectReplyNodes(candidate)) {
+          collectPasteDataFromReply(reply, {
+            pageSet: pastePageSet,
+            urlSet: pasteUrlSet,
+            scannedReplyRpids,
+          });
+        }
+      }
+
+      if (!hasMoreGuestChildReplyPages(response, pageNo, GUEST_REPLY_PAGE_SIZE)) {
+        break;
+      }
+    }
+  }
+
+  const normalizedExpectedRootRpid = normalizeCommentRpid(expectedRootRpid);
+  return {
+    oid,
+    type,
+    expectedRootRpid: normalizedExpectedRootRpid,
+    hasTopComment: Boolean(topCommentRpid),
+    topCommentRpid,
+    topCommentMessage: extractReplyMessage(topReply),
+    matchesExpectedRoot: Boolean(
+      normalizedExpectedRootRpid
+      && topCommentRpid
+      && normalizedExpectedRootRpid === topCommentRpid,
+    ),
+    pastePages: [...pastePageSet].sort((left, right) => left - right),
+    pasteUrls: [...pasteUrlSet].sort(),
+    scannedReplyCount: scannedReplyRpids.size,
+  };
 }
 
 async function fetchGuestChildReplies({ oid, type, rootRpid, pn, ps = GUEST_REPLY_PAGE_SIZE, fetchImpl = fetch }) {
@@ -742,6 +836,79 @@ function isProcessAlive(pid: number) {
 
     return false;
   }
+}
+
+function getPinnedTopReply(response: GuestReplyListResponse | null | undefined): GuestReplyNode | null {
+  if (!response || typeof response !== "object") {
+    return null;
+  }
+
+  const upper = response.upper && typeof response.upper === "object" ? response.upper : null;
+  if (upper?.top && typeof upper.top === "object") {
+    return upper.top;
+  }
+
+  const topWrapper = response.top && typeof response.top === "object"
+    ? response.top as Record<string, unknown>
+    : null;
+  if (topWrapper?.upper && typeof topWrapper.upper === "object") {
+    return topWrapper.upper as GuestReplyNode;
+  }
+
+  const topReplies = Array.isArray(response.top_replies) ? response.top_replies : [];
+  if (topReplies[0] && typeof topReplies[0] === "object") {
+    return topReplies[0] as GuestReplyNode;
+  }
+
+  return topWrapper as GuestReplyNode | null;
+}
+
+function collectPasteDataFromReply(
+  reply: GuestReplyNode | null | undefined,
+  {
+    pageSet,
+    urlSet,
+    scannedReplyRpids,
+  }: {
+    pageSet: Set<number>;
+    urlSet: Set<string>;
+    scannedReplyRpids: Set<number>;
+  },
+) {
+  const replyRpid = normalizeCommentRpid(reply?.rpid ?? reply?.rpid_str);
+  if (replyRpid) {
+    if (scannedReplyRpids.has(replyRpid)) {
+      return;
+    }
+    scannedReplyRpids.add(replyRpid);
+  }
+
+  const message = extractReplyMessage(reply);
+  if (!message) {
+    return;
+  }
+
+  for (const block of parseSummaryBlocks(message)) {
+    const pasteUrl = extractPasteUrlFromSummaryBlock(block.text, block.marker);
+    if (!pasteUrl) {
+      continue;
+    }
+
+    urlSet.add(pasteUrl);
+    for (const page of block.coveredPages ?? [block.page]) {
+      if (Number.isInteger(page) && page > 0) {
+        pageSet.add(page);
+      }
+    }
+  }
+}
+
+function extractPasteUrlFromSummaryBlock(blockText: string, marker: string): string | null {
+  const normalizedText = String(blockText ?? "").trim();
+  const body = normalizedText.startsWith(marker)
+    ? normalizedText.slice(marker.length).trim()
+    : normalizedText;
+  return /^https:\/\/paste\.rs\/\S+$/u.test(body) ? body : null;
 }
 
 function buildPasteArtifactPageLabel(message) {

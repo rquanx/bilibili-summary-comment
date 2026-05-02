@@ -189,3 +189,34 @@ export interface PipelineEventLogger {
   runId: string;
   log(event: PipelineEventInput): PipelineEventRecord | null;
 }
+
+export type RecentReprocessRunStatus = "success" | "failed";
+
+export interface RecentReprocessRunRecord {
+  id: number;
+  video_id: number | null;
+  bvid: string;
+  video_title: string | null;
+  candidate_key: string;
+  reasons_json: string;
+  paste_pages_json: string;
+  status: RecentReprocessRunStatus;
+  error_message: string | null;
+  details_json: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export interface RecentReprocessRunInsert {
+  videoId?: number | null;
+  bvid: string;
+  videoTitle?: string | null;
+  candidateKey: string;
+  reasons: string[];
+  pastePages?: number[];
+  status: RecentReprocessRunStatus;
+  errorMessage?: string | null;
+  details?: unknown;
+  finishedAt?: string | null;
+}

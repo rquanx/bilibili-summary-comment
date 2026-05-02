@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
 import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
-import { postSummaryThread, waitForGlobalPasteUploadTurn } from "../src/domains/bili/comment-thread";
+import {
+  inspectVisibleGuestSummaryThread,
+  postSummaryThread,
+  waitForGlobalPasteUploadTurn,
+} from "../src/domains/bili/comment-thread";
 
 function createJsonFetchResponse(data) {
   return {
@@ -353,6 +357,81 @@ test("postSummaryThread keeps publishing when pinning a new root comment fails",
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("inspectVisibleGuestSummaryThread recognizes top.upper wrappers and paste links under visible root replies", async () => {
+  const rootRpid = 910001;
+  const guestReplyListImpl = async () => ({
+    cursor: {
+      is_begin: true,
+      prev: 0,
+      next: 2,
+      is_end: false,
+      pagination_reply: {
+        next_offset: "offset-2",
+      },
+      all_count: 1,
+    },
+    top: {
+      upper: {
+        rpid: rootRpid,
+        content: {
+          message: "<1P>\nvisible root",
+        },
+      },
+    },
+    top_replies: [
+      {
+        rpid: rootRpid,
+        content: {
+          message: "<1P>\nvisible root",
+        },
+      },
+    ],
+    replies: [],
+  });
+  const fetchImpl = async (url) => {
+    const normalizedUrl = new URL(String(url));
+    if (normalizedUrl.pathname !== "/x/v2/reply/reply") {
+      throw new Error(`Unexpected fetch url: ${normalizedUrl.toString()}`);
+    }
+
+    return createJsonFetchResponse({
+      page: {
+        count: 1,
+      },
+      root: {
+        rpid: rootRpid,
+        content: {
+          message: "<1P>\nvisible root",
+        },
+      },
+      replies: [
+        {
+          rpid: 910002,
+          root: rootRpid,
+          parent: rootRpid,
+          content: {
+            message: "<2P> ~ <3P>\nhttps://paste.rs/test-visible",
+          },
+        },
+      ],
+    });
+  };
+
+  const inspection = await inspectVisibleGuestSummaryThread({
+    oid: 123456,
+    type: 1,
+    expectedRootRpid: rootRpid,
+    guestReplyListImpl: guestReplyListImpl as never,
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+
+  assert.equal(inspection.hasTopComment, true);
+  assert.equal(inspection.topCommentRpid, rootRpid);
+  assert.equal(inspection.matchesExpectedRoot, true);
+  assert.deepEqual(inspection.pastePages, [2, 3]);
+  assert.deepEqual(inspection.pasteUrls, ["https://paste.rs/test-visible"]);
 });
 
 test("postSummaryThread keeps scanning guest pages when top-level count is omitted", async () => {

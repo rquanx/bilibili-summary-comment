@@ -6,6 +6,7 @@ import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
 import { getGapNotificationByKey, hasGapNotification, saveGapNotification } from "../src/infra/db/gap-notification-storage";
 import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipeline-event-storage";
+import { getLatestSuccessfulRecentReprocessRunByCandidateKey, saveRecentReprocessRun } from "../src/infra/db/recent-reprocess-storage";
 import {
   getVideoByIdentity,
   listPendingPublishParts,
@@ -122,4 +123,53 @@ test("storage barrel re-exports the split modules", () => {
   assert.equal(storage.upsertVideo, upsertVideo);
   assert.equal(storage.insertPipelineEvent, insertPipelineEvent);
   assert.equal(storage.saveGapNotification, saveGapNotification);
+});
+
+test("recent reprocess run storage records successes and can query the latest successful candidate", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-reprocess-storage-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVREPROCESS1",
+      aid: 888001,
+      title: "Recent Reprocess Storage",
+      pageCount: 1,
+    });
+
+    saveRecentReprocessRun(db, {
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      candidateKey: "{\"bvid\":\"BVREPROCESS1\",\"reasons\":[\"paste-rs-processed-summary\"],\"pastePages\":[8]}",
+      reasons: ["paste-rs-processed-summary"],
+      pastePages: [8],
+      status: "failed",
+      errorMessage: "temporary failure",
+    });
+    const success = saveRecentReprocessRun(db, {
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      candidateKey: "{\"bvid\":\"BVREPROCESS1\",\"reasons\":[\"paste-rs-processed-summary\"],\"pastePages\":[8]}",
+      reasons: ["paste-rs-processed-summary"],
+      pastePages: [8],
+      status: "success",
+      details: {
+        generatedPages: [8],
+      },
+    });
+
+    const latest = getLatestSuccessfulRecentReprocessRunByCandidateKey(
+      db,
+      "{\"bvid\":\"BVREPROCESS1\",\"reasons\":[\"paste-rs-processed-summary\"],\"pastePages\":[8]}",
+    );
+    assert.equal(latest?.id, success.id);
+    assert.equal(latest?.status, "success");
+    assert.match(String(latest?.details_json ?? ""), /generatedPages/);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

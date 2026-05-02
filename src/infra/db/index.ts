@@ -60,3 +60,7 @@ export {
   insertPipelineEvent,
   listPipelineEvents,
 } from "./pipeline-event-storage";
+export {
+  getLatestSuccessfulRecentReprocessRunByCandidateKey,
+  saveRecentReprocessRun,
+} from "./recent-reprocess-storage";
