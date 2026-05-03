@@ -1,6 +1,5 @@
 import fs from "node:fs";
-import { getTopComment } from "../bili/comment-utils";
-import { deleteSummaryThread, postSummaryThread } from "../bili/comment-thread";
+import { deleteSummaryThread, getGuestTopComment, postSummaryThread } from "../bili/comment-thread";
 import { writeSummaryArtifacts } from "../summary/files";
 import {
   clearVideoPublishRebuildNeeded,
@@ -82,10 +81,10 @@ export async function runPublishStage({
   let needsRebuildPublish = Boolean(video.publish_needs_rebuild);
   const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
   const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
-  let rebuildTopCommentState: Awaited<ReturnType<typeof getTopComment>> | null = null;
+  let rebuildTopCommentState: Awaited<ReturnType<typeof getGuestTopComment>> | null = null;
 
   if (!needsRebuildPublish && Number(video.root_comment_rpid ?? 0) > 0) {
-    rebuildTopCommentState = await getTopComment(client, { oid, type });
+    rebuildTopCommentState = await getGuestTopComment({ oid, type, fetchImpl });
     if (shouldRebuildMissingStoredRootCommentThread(video, rebuildTopCommentState)) {
       needsRebuildPublish = true;
       eventLogger?.log({
@@ -135,7 +134,7 @@ export async function runPublishStage({
       return skipped;
     }
 
-    const topCommentState = rebuildTopCommentState ?? await getTopComment(client, { oid, type });
+    const topCommentState = rebuildTopCommentState ?? await getGuestTopComment({ oid, type, fetchImpl });
     const deleteCandidates = collectRebuildDeleteCandidates(video, topCommentState);
     const deletedThreads: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }> = [];
 
@@ -258,7 +257,7 @@ export async function runPublishStage({
   });
   progress?.log("Publishing pending summaries");
 
-  const topCommentState = await getTopComment(client, { oid, type });
+  const topCommentState = await getGuestTopComment({ oid, type, fetchImpl });
   const appended = await postSummaryThread({
     client,
     oid,

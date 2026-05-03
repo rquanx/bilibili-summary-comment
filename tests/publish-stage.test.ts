@@ -222,6 +222,12 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
       parent: 555002,
       message: "old top thread",
     });
+    await harness.client.reply.top({
+      oid: video.aid,
+      type: 1,
+      rpid: 555002,
+      action: 1,
+    });
 
     const calls = [];
     const originalClient = harness.client.reply;
@@ -292,7 +298,7 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
     );
 
     const callTypes = calls.map((entry) => entry.type);
-    assert.deepEqual(callTypes, ["list", "delete", "delete", "add", "top"]);
+    assert.deepEqual(callTypes, ["delete", "delete", "add", "top"]);
     assert.deepEqual(
       calls.filter((entry) => entry.type === "delete").map((entry) => entry.payload.rpid).sort((a, b) => a - b),
       [555001, 555002],
@@ -426,8 +432,8 @@ test("runPublishStage forceFreshThread deletes the old pinned thread before rebu
     assert.equal(result.rebuild, true);
     assert.equal(result.rootCommentRpid, 930001);
     assert.deepEqual(result.deletedThreads?.map((item) => item.rootRpid), [555001]);
-    assert.deepEqual(calls.map((entry) => entry.type), ["list", "delete", "add", "top"]);
-    assert.equal(calls[1].payload.rpid, 555001);
+    assert.deepEqual(calls.map((entry) => entry.type), ["delete", "add", "top"]);
+    assert.equal(calls[0].payload.rpid, 555001);
 
     const persistedVideo = getVideoByIdentity(db, { bvid: "BVpublishFresh123" });
     assert.equal(persistedVideo.root_comment_rpid, 930001);
@@ -546,7 +552,7 @@ test("runPublishStage rebuilds when stored root comment is missing even without 
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [910001, 910001]);
 
-    assert.deepEqual(calls.map((entry) => entry.type), ["list", "delete", "add", "top"]);
+    assert.deepEqual(calls.map((entry) => entry.type), ["delete", "add", "top"]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -659,8 +665,8 @@ test("runPublishStage rebuilds when stored root comment is missing even with pen
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [920001, 920001]);
 
-    assert.deepEqual(calls.map((entry) => entry.type), ["list", "delete", "add", "top"]);
-    assert.equal(calls[2].payload.message, fullMessage);
+    assert.deepEqual(calls.map((entry) => entry.type), ["delete", "add", "top"]);
+    assert.equal(calls[1].payload.message, fullMessage);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

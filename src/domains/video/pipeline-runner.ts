@@ -1,10 +1,10 @@
 import {
   createClient,
-  getTopComment,
   getType,
   printJson,
   readCookie,
 } from "../bili/comment-utils";
+import { getGuestTopComment } from "../bili/comment-thread";
 import { attachVideoContextToError } from "../bili/video-url";
 import { attachErrorDetails, errorToJson, extractErrorDetails } from "../../shared/cli/errors";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
@@ -104,7 +104,6 @@ export async function runVideoPipeline(
   progress.info(`Video synced: (total parts: ${totalParts}, pending: ${state.pendingSummaryParts.length})`);
   if (!args.publish) {
     await probePublishedCommentThreadHealth({
-      client,
       db,
       video: state.video,
       oid: state.video.aid,
@@ -297,16 +296,14 @@ export async function runVideoPipeline(
 }
 
 export async function probePublishedCommentThreadHealth({
-  client,
   db,
   video,
   oid,
   type,
   eventLogger = null,
   progress = null,
-  getTopCommentImpl = getTopComment,
+  getTopCommentImpl = getGuestTopComment,
 }: {
-  client: Parameters<typeof getTopComment>[0];
   db: ReturnType<typeof openDatabase>;
   video: {
     id: number;
@@ -321,7 +318,7 @@ export async function probePublishedCommentThreadHealth({
   type: number;
   eventLogger?: PipelineEventLogger | null;
   progress?: { warn?: (message: string) => void } | null;
-  getTopCommentImpl?: typeof getTopComment;
+  getTopCommentImpl?: typeof getGuestTopComment;
 }) {
   if (Number(video.root_comment_rpid ?? 0) <= 0 || Number(video.publish_needs_rebuild) === 1) {
     return {
@@ -331,7 +328,7 @@ export async function probePublishedCommentThreadHealth({
     };
   }
 
-  const topCommentState = await getTopCommentImpl(client, { oid, type });
+  const topCommentState = await getTopCommentImpl({ oid, type });
   const needsRebuild = shouldRebuildMissingStoredRootCommentThread(video, topCommentState);
   if (!needsRebuild) {
     return {

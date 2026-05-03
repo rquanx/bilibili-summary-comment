@@ -26,7 +26,6 @@ test("probePublishedCommentThreadHealth marks a missing stored root thread for r
     });
 
     const result = await probePublishedCommentThreadHealth({
-      client: {} as never,
       db,
       video,
       oid: video.aid,
@@ -41,9 +40,9 @@ test("probePublishedCommentThreadHealth marks a missing stored root thread for r
           progressMessages.push(message);
         },
       } as never,
-      getTopCommentImpl: async () => ({
-        oid: video.aid,
-        type: 1,
+      getTopCommentImpl: async ({ oid, type }) => ({
+        oid,
+        type,
         hasTopComment: false,
         topComment: null,
         raw: null,
@@ -88,16 +87,15 @@ test("probePublishedCommentThreadHealth skips videos without a stored root threa
     });
 
     const result = await probePublishedCommentThreadHealth({
-      client: {} as never,
       db,
       video,
       oid: video.aid,
       type: 1,
-      getTopCommentImpl: async () => {
+      getTopCommentImpl: async ({ oid, type }) => {
         called = true;
         return {
-          oid: video.aid,
-          type: 1,
+          oid,
+          type,
           hasTopComment: false,
           topComment: null,
           raw: null,

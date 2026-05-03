@@ -119,6 +119,26 @@ interface GuestReplyPage {
   [key: string]: unknown;
 }
 
+export interface GuestTopCommentReply {
+  rpid: number;
+  oid: unknown;
+  mid: unknown;
+  uname: string | null;
+  message: string;
+  like: unknown;
+  count: unknown;
+  ctime: unknown;
+  raw: Record<string, unknown>;
+}
+
+export interface GuestTopCommentState {
+  oid: number;
+  type: number;
+  hasTopComment: boolean;
+  topComment: GuestTopCommentReply | null;
+  raw: GuestReplyListResponse;
+}
+
 interface GuestReplyUpper {
   top?: GuestReplyNode | null;
   [key: string]: unknown;
@@ -451,6 +471,36 @@ export async function listGuestTopLevelReplies({
     ps,
     fetchImpl,
   })));
+}
+
+export async function getGuestTopComment({
+  oid,
+  type,
+  guestReplyListImpl = defaultGuestReplyListImpl,
+  fetchImpl = fetch,
+}: {
+  oid: number;
+  type: number;
+  guestReplyListImpl?: GuestReplyListImpl;
+  fetchImpl?: typeof fetch;
+}): Promise<GuestTopCommentState> {
+  const response = await listGuestTopLevelReplies({
+    oid,
+    type,
+    pn: 1,
+    ps: GUEST_REPLY_PAGE_SIZE,
+    guestReplyListImpl,
+    fetchImpl,
+  });
+  const topReply = normalizeGuestTopReply(getPinnedTopReply(response));
+
+  return {
+    oid,
+    type,
+    hasTopComment: Boolean(topReply),
+    topComment: topReply,
+    raw: response,
+  };
 }
 
 export async function inspectVisibleGuestSummaryThread({
@@ -861,6 +911,33 @@ function getPinnedTopReply(response: GuestReplyListResponse | null | undefined):
   }
 
   return topWrapper as GuestReplyNode | null;
+}
+
+function normalizeGuestTopReply(reply: GuestReplyNode | null | undefined): GuestTopCommentReply | null {
+  if (!reply || typeof reply !== "object") {
+    return null;
+  }
+
+  const rpid = normalizeCommentRpid(reply.rpid ?? reply.rpid_str);
+  if (!rpid) {
+    return null;
+  }
+
+  const member = (typeof reply.member === "object" && reply.member !== null
+    ? reply.member
+    : {}) as Record<string, unknown>;
+
+  return {
+    rpid,
+    oid: reply.oid ?? null,
+    mid: reply.mid ?? member.mid ?? null,
+    uname: typeof member.uname === "string" ? member.uname : null,
+    message: extractReplyMessage(reply),
+    like: reply.like ?? 0,
+    count: reply.count ?? reply.rcount ?? 0,
+    ctime: reply.ctime ?? null,
+    raw: reply as Record<string, unknown>,
+  };
 }
 
 function collectPasteDataFromReply(
