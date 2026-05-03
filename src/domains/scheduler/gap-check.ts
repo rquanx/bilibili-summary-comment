@@ -10,7 +10,7 @@ import { fetchVideoSnapshot } from "../video/index";
 import { EAST_8_TIMEZONE, compareTimestampDesc, formatDateInTimeZone, formatEast8DateTime } from "../../shared/time";
 import { collectRecentUploadsFromUsers } from "./uploads";
 
-const PART_TIMESTAMP_RE = /^(?<title>.*?)(?<date>\d{4}\.\d{2}\.\d{2})\s+(?<time>\d{2}\.\d{2}\.\d{2})\s*$/u;
+const PART_TIMESTAMP_RE = /^(?<title>.*?)(?<date>\d{4}\.\d{2}\.\d{2})\s+(?<time>\d{2}\.\d{2}(?:\.\d{2})?)\s*$/u;
 
 export const DEFAULT_GAP_CHECK_SINCE_HOURS = 24;
 export const DEFAULT_GAP_THRESHOLD_SECONDS = 5;
@@ -570,7 +570,7 @@ function parsePartTitleTimestamp(partTitle: string) {
   const datePart = match.groups.date;
   const timePart = match.groups.time;
   const [year, month, day] = datePart.split(".").map((value) => Number(value));
-  const [hour, minute, second] = timePart.split(".").map((value) => Number(value));
+  const [hour, minute, second = 0] = timePart.split(".").map((value) => Number(value));
   const startAtMs = Date.UTC(year, month - 1, day, hour, minute, second);
   if (Number.isNaN(startAtMs)) {
     throw new Error(`Invalid part title timestamp: ${partTitle || "<empty>"}`);
@@ -578,7 +578,7 @@ function parsePartTitleTimestamp(partTitle: string) {
 
   return {
     startAtMs,
-    formattedText: `${datePart.replace(/\./g, "-")} ${timePart.replace(/\./g, ":")}`,
+    formattedText: `${datePart.replace(/\./g, "-")} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`,
   };
 }
 
