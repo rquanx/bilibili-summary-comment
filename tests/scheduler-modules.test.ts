@@ -698,6 +698,32 @@ test("detectGapsFromVideoSnapshot flags only intervals larger than the threshold
   assert.equal(gaps[0].gapSeconds, 8);
 });
 
+test("detectGapsFromVideoSnapshot accepts part titles without seconds", () => {
+  const gaps = detectGapsFromVideoSnapshot({
+    bvid: "BV1GAPMIN",
+    title: "Gap Minute Precision Video",
+    pages: [
+      {
+        pageNo: 1,
+        cid: 101,
+        partTitle: "价投大贤者2026.05.03 20.24",
+        durationSec: 30,
+      },
+      {
+        pageNo: 2,
+        cid: 202,
+        partTitle: "价投大贤者2026.05.03 20.25",
+        durationSec: 10,
+      },
+    ],
+  }, 5);
+
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].fromEndAt, "2026-05-03 20:24:30");
+  assert.equal(gaps[0].toStartAt, "2026-05-03 20:25:00");
+  assert.equal(gaps[0].gapSeconds, 30);
+});
+
 test("upsertGapCheckDailySnapshot keeps only the latest record per bvid for the day", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-snapshot-"));
   const now = new Date("2026-04-12T01:00:00.000Z");
