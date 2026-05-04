@@ -9,6 +9,7 @@ import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipelin
 import { getLatestSuccessfulRecentReprocessRunByCandidateKey, saveRecentReprocessRun } from "../src/infra/db/recent-reprocess-storage";
 import {
   getVideoByIdentity,
+  listVideoParts,
   listPendingPublishParts,
   listPendingSummaryParts,
   savePartSummary,
@@ -16,6 +17,7 @@ import {
   upsertVideoPart,
 } from "../src/infra/db/video-storage";
 import * as storage from "../src/infra/db/index";
+import { invalidateSummaries } from "../src/domains/summary/invalidation";
 
 test("storage modules preserve video and event workflows after the split", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-storage-"));
@@ -168,6 +170,169 @@ test("recent reprocess run storage records successes and can query the latest su
     assert.equal(latest?.id, success.id);
     assert.equal(latest?.status, "success");
     assert.match(String(latest?.details_json ?? ""), /generatedPages/);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("invalidateSummaries previews and clears stored summaries while marking publish rebuild", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-invalidate-summary-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVINVALID001",
+      aid: 701001,
+      title: "Invalidate Summary Test",
+      pageCount: 2,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 801001,
+      partTitle: "P1",
+      durationSec: 120,
+      promptText: "old prompt",
+      summaryText: "<1P> old summary",
+      processedSummaryText: "<1P> old summary processed",
+      summaryHash: "hash-1",
+      published: true,
+      publishedCommentRpid: 998877,
+      publishedAt: "2026-05-05T00:00:00.000Z",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 801002,
+      partTitle: "P2",
+      durationSec: 120,
+      isDeleted: false,
+    });
+
+    const preview = invalidateSummaries(db, {
+      bvid: video.bvid,
+      dryRun: true,
+      reason: "summary-input-upgrade-2026-05-05",
+    });
+    assert.equal(preview.videoCount, 1);
+    assert.equal(preview.affectedVideoCount, 1);
+    assert.equal(preview.activePartCount, 2);
+    assert.equal(preview.affectedPartCount, 1);
+
+    const persistedBefore = listVideoParts(db, video.id);
+    assert.equal(String(persistedBefore[0].summary_text ?? "").trim(), "<1P> old summary");
+    assert.equal(Number(getVideoByIdentity(db, { bvid: video.bvid })?.publish_needs_rebuild ?? 0), 0);
+
+    const applied = invalidateSummaries(db, {
+      bvid: video.bvid,
+      reason: "summary-input-upgrade-2026-05-05",
+    });
+    assert.equal(applied.affectedPartCount, 1);
+
+    const persistedAfter = listVideoParts(db, video.id);
+    assert.equal(persistedAfter[0].summary_text, null);
+    assert.equal(persistedAfter[0].summary_text_processed, null);
+    assert.equal(persistedAfter[0].summary_hash, null);
+    assert.equal(persistedAfter[0].prompt_text, null);
+    assert.equal(Number(persistedAfter[0].published), 0);
+    assert.equal(persistedAfter[0].published_comment_rpid, null);
+    assert.equal(persistedAfter[0].published_at, null);
+    assert.equal(persistedAfter[1].summary_text, null);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: video.bvid });
+    assert.equal(Number(persistedVideo?.publish_needs_rebuild ?? 0), 1);
+    assert.equal(persistedVideo?.publish_rebuild_reason, "summary-input-upgrade-2026-05-05");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("invalidateSummaries can target only recently updated parts or a specific time window", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-invalidate-window-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVINVALID002",
+      aid: 701002,
+      title: "Invalidate Summary Window Test",
+      pageCount: 2,
+    });
+
+    const oldPart = upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 802001,
+      partTitle: "P1",
+      durationSec: 120,
+      promptText: "old prompt",
+      summaryText: "<1P> old summary",
+      processedSummaryText: "<1P> old summary processed",
+      summaryHash: "hash-old",
+      isDeleted: false,
+    });
+    const recentPart = upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 802002,
+      partTitle: "P2",
+      durationSec: 120,
+      promptText: "recent prompt",
+      summaryText: "<2P> recent summary",
+      processedSummaryText: "<2P> recent summary processed",
+      summaryHash: "hash-recent",
+      isDeleted: false,
+    });
+
+    db.prepare("UPDATE video_parts SET updated_at = ? WHERE id = ?").run("2026-04-01T00:00:00.000Z", oldPart.id);
+    db.prepare("UPDATE video_parts SET updated_at = ? WHERE id = ?").run("2026-05-04T12:00:00.000Z", recentPart.id);
+
+    const preview = invalidateSummaries(db, {
+      recentDays: 3,
+      dryRun: true,
+      now: new Date("2026-05-05T12:00:00.000Z"),
+    });
+    assert.equal(preview.scope, "all");
+    assert.equal(preview.videoCount, 1);
+    assert.equal(preview.matchedPartCount, 1);
+    assert.equal(preview.affectedPartCount, 1);
+    assert.equal(preview.videos[0].matchedPartCount, 1);
+    assert.equal(preview.videos[0].affectedPartCount, 1);
+
+    const applied = invalidateSummaries(db, {
+      recentDays: 3,
+      now: new Date("2026-05-05T12:00:00.000Z"),
+      reason: "summary-input-upgrade-2026-05-05",
+    });
+    assert.equal(applied.affectedPartCount, 1);
+
+    const partsAfterRecent = listVideoParts(db, video.id);
+    assert.equal(String(partsAfterRecent[0].summary_text ?? "").trim(), "<1P> old summary");
+    assert.equal(partsAfterRecent[1].summary_text, null);
+
+    const rangePreview = invalidateSummaries(db, {
+      fromIso: "2026-03-31",
+      toIso: "2026-04-02",
+      dryRun: true,
+    });
+    assert.equal(rangePreview.matchedPartCount, 1);
+    assert.equal(rangePreview.affectedPartCount, 1);
+
+    invalidateSummaries(db, {
+      fromIso: "2026-03-31",
+      toIso: "2026-04-02",
+      reason: "summary-input-upgrade-2026-05-05",
+    });
+
+    const partsAfterRange = listVideoParts(db, video.id);
+    assert.equal(partsAfterRange[0].summary_text, null);
+    assert.equal(partsAfterRange[1].summary_text, null);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
