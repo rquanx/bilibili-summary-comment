@@ -39,18 +39,21 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json package-lock.json requirements.txt ./
-
-RUN npm ci \
-  && python3 -m venv .3.11 \
-  && ./.3.11/bin/python -m pip install --upgrade pip \
-  && ./.3.11/bin/python -m pip install -r requirements.txt
-
 RUN mkdir -p /opt/videocaptioner/bin /opt/videocaptioner/models \
   && curl -L "${FASTER_WHISPER_XXL_URL}" -o /tmp/faster-whisper-xxl.7z \
   && 7z x -y /tmp/faster-whisper-xxl.7z -o/opt/videocaptioner/bin >/dev/null \
   && find /opt/videocaptioner/bin -type f \( -name "faster-whisper-xxl" -o -name "faster-whisper" \) -exec chmod +x {} \; \
   && rm -f /tmp/faster-whisper-xxl.7z
+
+COPY requirements.txt ./
+
+RUN python3 -m venv .3.11 \
+  && ./.3.11/bin/python -m pip install --upgrade pip \
+  && ./.3.11/bin/python -m pip install -r requirements.txt
+
+COPY package.json package-lock.json ./
+
+RUN npm ci
 
 COPY . .
 
