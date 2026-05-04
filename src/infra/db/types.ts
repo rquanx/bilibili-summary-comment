@@ -49,6 +49,8 @@ export interface VideoPartRecord {
   subtitle_path: string | null;
   subtitle_source: string | null;
   subtitle_lang: string | null;
+  subtitle_text: string | null;
+  prompt_text: string | null;
   summary_text: string | null;
   summary_text_processed: string | null;
   summary_hash: string | null;
@@ -70,6 +72,8 @@ export interface VideoPartUpsert {
   subtitlePath?: string | null;
   subtitleSource?: string | null;
   subtitleLang?: string | null;
+  subtitleText?: string | null;
+  promptText?: string | null;
   summaryText?: string | null;
   processedSummaryText?: string | null;
   summaryHash?: string | null;

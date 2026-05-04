@@ -225,6 +225,7 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
     assert.equal(targetPart?.subtitle_path, expectedSubtitlePath);
     assert.equal(targetPart?.subtitle_source, "asr");
     assert.equal(targetPart?.subtitle_lang, "zh-CN");
+    assert.equal(targetPart?.subtitle_text, "1\n00:00:00,000 --> 00:00:01,000\nsame subtitle");
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -315,6 +316,7 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
     const part = listVideoParts(db, video.id).find((item) => item.page_no === 1);
     assert.equal(part?.subtitle_source, "asr");
     assert.equal(part?.subtitle_path, subtitlePath);
+    assert.equal(part?.subtitle_text, "1\n00:00:00,000 --> 00:00:02,000\nretry transcription succeeded");
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

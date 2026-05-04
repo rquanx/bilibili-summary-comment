@@ -66,6 +66,7 @@ export async function ensureSubtitleForPart({
   const subtitlePath = path.join(workDir, `${stableBaseName}.srt`);
   const audioTemplate = path.join(workDir, `${stableBaseName}.%(ext)s`);
   const audioPath = path.join(workDir, `${stableBaseName}.m4a`);
+  const currentPart = getVideoPartByCid(db, videoId, cid);
 
   if (existingSubtitlePath && fs.existsSync(existingSubtitlePath)) {
     if (path.resolve(existingSubtitlePath) !== path.resolve(subtitlePath)) {
@@ -125,6 +126,36 @@ export async function ensureSubtitleForPart({
     fs.rmSync(subtitlePath, { force: true });
   }
 
+  const storedSubtitleText = String(currentPart?.subtitle_text ?? "").trim();
+  if (storedSubtitleText) {
+    fs.writeFileSync(subtitlePath, `${storedSubtitleText}\n`, "utf8");
+
+    if (acceptSubtitleCandidate({
+      subtitlePath,
+      subtitleSource: String(currentPart?.subtitle_source ?? "").trim() || "local",
+      pageNo,
+      cid,
+      partTitle,
+      eventLogger,
+      progress,
+    })) {
+      return finalizeSubtitle({
+        db,
+        videoId,
+        pageNo,
+        cid,
+        partTitle,
+        eventLogger,
+        subtitlePath,
+        subtitleSource: String(currentPart?.subtitle_source ?? "").trim() || "local",
+        subtitleLang: currentPart?.subtitle_lang ?? null,
+        reused: true,
+      });
+    }
+
+    fs.rmSync(subtitlePath, { force: true });
+  }
+
   const reusableSubtitle = findReusableSubtitleSource(
     db,
     {
@@ -158,6 +189,41 @@ export async function ensureSubtitleForPart({
     if (path.resolve(reusableSubtitlePath) !== path.resolve(subtitlePath)) {
       fs.copyFileSync(reusableSubtitlePath, subtitlePath);
     }
+
+    const subtitleSource = String(reusableSubtitlePart?.subtitle_source ?? "").trim() || "local";
+    if (acceptSubtitleCandidate({
+      subtitlePath,
+      subtitleSource,
+      pageNo,
+      cid,
+      partTitle,
+      eventLogger,
+      progress,
+    })) {
+      return finalizeSubtitle({
+        db,
+        videoId,
+        pageNo,
+        cid,
+        partTitle,
+        eventLogger,
+        subtitlePath,
+        subtitleSource,
+        subtitleLang: reusableSubtitlePart?.subtitle_lang ?? null,
+        reused: true,
+      });
+    }
+
+    fs.rmSync(subtitlePath, { force: true });
+  }
+  const reusableSubtitleText = String(reusableSubtitlePart?.subtitle_text ?? "").trim();
+  if (reusableSubtitleText) {
+    progress?.logPartStage?.(
+      pageNo,
+      "Subtitle",
+      `Rebuilding subtitle from stored text in ${reusableSubtitle?.video?.bvid ?? "database"}`,
+    );
+    fs.writeFileSync(subtitlePath, `${reusableSubtitleText}\n`, "utf8");
 
     const subtitleSource = String(reusableSubtitlePart?.subtitle_source ?? "").trim() || "local";
     if (acceptSubtitleCandidate({
@@ -397,10 +463,12 @@ function finalizeSubtitle({
   reused,
   durationSec,
 }: SubtitleFinalizeInput) {
+  const subtitleText = fs.readFileSync(subtitlePath, "utf8").trim();
   savePartSubtitle(db, videoId, pageNo, {
     subtitlePath,
     subtitleSource,
     subtitleLang,
+    subtitleText,
   });
   eventLogger?.log({
     scope: "subtitle",

@@ -152,6 +152,7 @@ export async function summarizePartFromSubtitle({
       partTitle,
       durationSec,
       subtitleText,
+      promptText: null,
       subtitlePath,
       promptProfile,
       promptConfigPath,

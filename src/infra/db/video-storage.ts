@@ -10,6 +10,11 @@ import type {
 } from "./types";
 import { getPreferredSummaryText, normalizeStoredSummaryText } from "./summary-text";
 
+function normalizeStoredPartText(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
 export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): VideoRecord | null {
   if (bvid) {
     const row = db.prepare("SELECT * FROM videos WHERE bvid = ?").get(bvid) as unknown as VideoRecord | undefined;
@@ -218,6 +223,8 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         subtitle_path,
         subtitle_source,
         subtitle_lang,
+        subtitle_text,
+        prompt_text,
         summary_text,
         summary_text_processed,
         summary_hash,
@@ -229,7 +236,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(video_id, cid) DO UPDATE SET
         page_no = excluded.page_no,
         part_title = excluded.part_title,
@@ -237,6 +244,8 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         subtitle_path = excluded.subtitle_path,
         subtitle_source = excluded.subtitle_source,
         subtitle_lang = excluded.subtitle_lang,
+        subtitle_text = excluded.subtitle_text,
+        prompt_text = excluded.prompt_text,
         summary_text = excluded.summary_text,
         summary_text_processed = excluded.summary_text_processed,
         summary_hash = excluded.summary_hash,
@@ -255,6 +264,8 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
       part.subtitlePath ?? null,
       part.subtitleSource ?? null,
       part.subtitleLang ?? null,
+      normalizeStoredPartText(part.subtitleText),
+      normalizeStoredPartText(part.promptText),
       part.summaryText ?? null,
       normalizeStoredSummaryText(part.processedSummaryText),
       part.summaryHash ?? null,
@@ -420,20 +431,54 @@ export function savePartSubtitle(
   db: Db,
   videoId: number,
   pageNo: number,
-  { subtitlePath, subtitleSource, subtitleLang = null }: { subtitlePath: string; subtitleSource: string; subtitleLang?: string | null },
+  {
+    subtitlePath,
+    subtitleSource,
+    subtitleLang = null,
+    subtitleText = null,
+  }: {
+    subtitlePath: string;
+    subtitleSource: string;
+    subtitleLang?: string | null;
+    subtitleText?: string | null;
+  },
 ): VideoPartRecord | null {
   const now = new Date().toISOString();
+  const normalizedSubtitleText = normalizeStoredPartText(subtitleText);
   withDatabaseWriteLock(db, () => {
     db.prepare(`
       UPDATE video_parts
       SET subtitle_path = ?,
           subtitle_source = ?,
           subtitle_lang = ?,
+          subtitle_text = COALESCE(?, subtitle_text),
           updated_at = ?
       WHERE video_id = ?
         AND page_no = ?
         AND is_deleted = 0
-    `).run(subtitlePath, subtitleSource, subtitleLang, now, videoId, pageNo);
+    `).run(subtitlePath, subtitleSource, subtitleLang, normalizedSubtitleText, now, videoId, pageNo);
+  });
+
+  return getActiveVideoPartByPageNo(db, videoId, pageNo);
+}
+
+export function savePartPrompt(
+  db: Db,
+  videoId: number,
+  pageNo: number,
+  promptText: string | null | undefined,
+): VideoPartRecord | null {
+  const now = new Date().toISOString();
+  const normalizedPromptText = normalizeStoredPartText(promptText);
+  withDatabaseWriteLock(db, () => {
+    db.prepare(`
+      UPDATE video_parts
+      SET prompt_text = ?,
+          updated_at = ?
+      WHERE video_id = ?
+        AND page_no = ?
+        AND is_deleted = 0
+    `).run(normalizedPromptText, now, videoId, pageNo);
   });
 
   return getActiveVideoPartByPageNo(db, videoId, pageNo);

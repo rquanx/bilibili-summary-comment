@@ -7,6 +7,7 @@ import {
   listPendingPublishParts,
   listVideoParts,
   reindexSummaryTextToPage,
+  savePartPrompt,
 } from "../../infra/db/index";
 import { compactPasteLinkSummaryRanges } from "./format";
 import { buildSummaryPromptInput } from "./client";
@@ -116,7 +117,9 @@ export function writePartPromptArtifact({
   partTitle,
   durationSec,
   subtitleText = null,
+  storedSubtitleText = null,
   subtitlePath = null,
+  promptText = null,
   promptProfile = null,
   promptConfigPath,
   ownerMid = null,
@@ -128,7 +131,9 @@ export function writePartPromptArtifact({
   partTitle: string;
   durationSec: number;
   subtitleText?: string | null;
+  storedSubtitleText?: string | null;
   subtitlePath?: string | null;
+  promptText?: string | null;
   promptProfile?: {
     displayName?: string | null;
     preset?: string | null;
@@ -140,8 +145,9 @@ export function writePartPromptArtifact({
 }): string | null {
   const normalizedSubtitleText = typeof subtitleText === "string"
     ? subtitleText
-    : readPromptSubtitleText(subtitlePath);
-  if (!normalizedSubtitleText.trim()) {
+    : readPromptSubtitleText(subtitlePath, storedSubtitleText);
+  const normalizedPromptText = normalizeStoredArtifactText(promptText);
+  if (!normalizedSubtitleText.trim() && !normalizedPromptText) {
     return null;
   }
 
@@ -155,16 +161,21 @@ export function writePartPromptArtifact({
     promptConfigPath,
   });
   const partPromptPath = path.join(workDir, `prompt-p${String(pageNo).padStart(2, "0")}.md`);
-  const promptArtifact = buildPartPromptArtifact({
-    pageNo,
-    partTitle,
-    durationSec,
-    subtitleText: normalizedSubtitleText,
-    subtitlePath,
-    promptProfile: resolvedPromptProfile,
-  });
+  const promptArtifact = normalizedSubtitleText.trim()
+    ? buildPartPromptArtifact({
+      pageNo,
+      partTitle,
+      durationSec,
+      subtitleText: normalizedSubtitleText,
+      subtitlePath,
+      promptProfile: resolvedPromptProfile,
+    })
+    : `${normalizedPromptText}\n`;
 
   fs.writeFileSync(partPromptPath, promptArtifact, "utf8");
+  if (db && typeof video.id === "number") {
+    savePartPrompt(db, video.id, pageNo, promptArtifact);
+  }
   return partPromptPath;
 }
 
@@ -265,7 +276,9 @@ function rewritePerPagePromptViews(
       pageNo: part.page_no,
       partTitle: part.part_title,
       durationSec: part.duration_sec,
+      storedSubtitleText: part.subtitle_text,
       subtitlePath: part.subtitle_path,
+      promptText: part.prompt_text,
       promptConfigPath,
       ownerMid: video.owner_mid,
       workRoot,
@@ -300,13 +313,18 @@ function cleanupPerPageArtifacts(
   }
 }
 
-function readPromptSubtitleText(subtitlePath: string | null | undefined) {
+function readPromptSubtitleText(subtitlePath: string | null | undefined, storedSubtitleText: string | null | undefined = null) {
   const normalizedSubtitlePath = String(subtitlePath ?? "").trim();
-  if (!normalizedSubtitlePath || !fs.existsSync(normalizedSubtitlePath)) {
-    return "";
+  if (normalizedSubtitlePath && fs.existsSync(normalizedSubtitlePath)) {
+    return fs.readFileSync(normalizedSubtitlePath, "utf8");
   }
 
-  return fs.readFileSync(normalizedSubtitlePath, "utf8");
+  return normalizeStoredArtifactText(storedSubtitleText);
+}
+
+function normalizeStoredArtifactText(value: string | null | undefined) {
+  const normalized = String(value ?? "").trim();
+  return normalized || "";
 }
 
 function getAlignedSummaryText(

@@ -1027,6 +1027,9 @@ test("summarizePartFromSubtitle writes prompt artifact before a summary request 
     assert.match(fs.readFileSync(promptPath, "utf8"), /Prompt P01/u);
     assert.match(fs.readFileSync(promptPath, "utf8"), /## System Prompt/u);
     assert.match(fs.readFileSync(promptPath, "utf8"), /## User Prompt/u);
+    const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 1);
+    assert.match(String(savedPart?.prompt_text ?? ""), /Prompt P01/u);
+    assert.match(String(savedPart?.prompt_text ?? ""), /## User Prompt/u);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1103,6 +1106,60 @@ test("writeSummaryArtifacts refreshes per-page prompt files and removes stale pr
     assert.equal(fs.existsSync(path.join(workDir, "prompt-p03.md")), false);
     assert.match(fs.readFileSync(promptPath1, "utf8"), /## System Prompt/u);
     assert.match(fs.readFileSync(promptPath2, "utf8"), /## User Prompt/u);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("writeSummaryArtifacts can rebuild prompt files from stored subtitle text after subtitle files are removed", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-stored-subtitles-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVstoredprompt1",
+      aid: 789112,
+      title: "Stored Subtitle Prompt Rebuild Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 901,
+      partTitle: "P1",
+      durationSec: 30,
+      subtitlePath: path.join(tempRoot, "missing.srt"),
+      subtitleText: [
+        "1",
+        "00:00:00,000 --> 00:00:02,000",
+        "subtitle from database",
+        "",
+      ].join("\n"),
+      promptText: "# stale prompt\n",
+      summaryText: "<1P> 1#00:00 summary one",
+      summaryHash: "hash-one",
+      isDeleted: false,
+    });
+
+    writeSummaryArtifacts(db, video, workRoot, {
+      promptConfigPath: null,
+    });
+
+    const workDir = resolveVideoWorkDir(video, workRoot, repoRoot);
+    const promptPath = path.join(workDir, "prompt-p01.md");
+    assert.equal(fs.existsSync(promptPath), true);
+    assert.match(fs.readFileSync(promptPath, "utf8"), /subtitle from database/u);
+
+    const savedPart = listVideoParts(db, video.id).find((part) => part.page_no === 1);
+    assert.match(String(savedPart?.prompt_text ?? ""), /subtitle from database/u);
+    assert.doesNotMatch(String(savedPart?.prompt_text ?? ""), /# stale prompt/u);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

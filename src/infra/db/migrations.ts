@@ -29,6 +29,8 @@ export function migrateDatabase(db) {
 
   migrateVideoPartsTable(db);
   ensureVideoPartColumn(db, "summary_text_processed", "TEXT");
+  ensureVideoPartColumn(db, "subtitle_text", "TEXT");
+  ensureVideoPartColumn(db, "prompt_text", "TEXT");
   createPipelineEventsTable(db);
   createGapNotificationsTable(db);
   createRecentReprocessRunsTable(db);
@@ -103,6 +105,8 @@ function migrateVideoPartsTable(db) {
         subtitle_path,
         subtitle_source,
         subtitle_lang,
+        subtitle_text,
+        prompt_text,
         summary_text,
         summary_text_processed,
         summary_hash,
@@ -124,6 +128,8 @@ function migrateVideoPartsTable(db) {
         subtitle_path,
         subtitle_source,
         subtitle_lang,
+        NULL,
+        NULL,
         summary_text,
         NULL,
         summary_hash,
@@ -156,6 +162,8 @@ function createVideoPartsTable(db) {
       subtitle_path TEXT,
       subtitle_source TEXT,
       subtitle_lang TEXT,
+      subtitle_text TEXT,
+      prompt_text TEXT,
       summary_text TEXT,
       summary_text_processed TEXT,
       summary_hash TEXT,

@@ -49,6 +49,7 @@ export {
   markVideoPublishRebuildNeeded,
   replaceVideoSubtitlePathPrefix,
   resetPublishedStateForVideo,
+  savePartPrompt,
   savePartProcessedSummary,
   savePartSubtitle,
   savePartSummary,
