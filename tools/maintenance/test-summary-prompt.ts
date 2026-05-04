@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { buildSummarySegmentsFromSrt, formatSummaryTime, parseSrt } from "../../src/domains/subtitle/srt-utils";
+import { buildTimedSubtitleTextFromSrt, formatSummaryTime, parseSrt } from "../../src/domains/subtitle/srt-utils";
 import { getRepoRoot, loadDotEnvIfPresent } from "../../src/shared/runtime-tools";
 import { normalizeSummaryOutput, requestSummary, resolveSummaryConfig } from "../../src/domains/summary/index";
 
@@ -69,14 +69,14 @@ async function main() {
 
 async function runSample({ sampleName, pageNo, candidate, outputDir, config, workRoot }) {
   const subtitleText = fs.readFileSync(candidate.filePath, "utf8");
-  const segments = buildSummarySegmentsFromSrt(subtitleText, candidate.durationSec);
+  const timedSubtitleText = buildTimedSubtitleTextFromSrt(subtitleText);
   const partTitle = buildPartTitle(candidate, workRoot);
   const rawSummary = await requestSummary({
     pageNo,
     partTitle,
     durationSec: candidate.durationSec,
     subtitleText,
-    segments,
+    segments: null,
     model: config.model,
     apiKey: config.apiKey,
     apiBaseUrl: config.apiBaseUrl,
@@ -96,14 +96,14 @@ async function runSample({ sampleName, pageNo, candidate, outputDir, config, wor
     partTitle,
     candidate,
     subtitleText,
-    segments,
+    timedSubtitleText,
   }), "utf8");
   fs.writeFileSync(requestPath, JSON.stringify(buildRequestSnapshot({
     pageNo,
     partTitle,
     durationSec: candidate.durationSec,
     subtitleText,
-    segments,
+    timedSubtitleText,
   }), null, 2), "utf8");
   fs.writeFileSync(summaryPath, `${normalizedSummary}\n`, "utf8");
 
@@ -217,7 +217,7 @@ function buildPartTitle(candidate, workRoot) {
   return `${parsed.dir}/${parsed.base}`.replace(/\\/g, "/");
 }
 
-function buildPromptSnapshot({ sampleName, pageNo, partTitle, candidate, subtitleText, segments }) {
+function buildPromptSnapshot({ sampleName, pageNo, partTitle, candidate, subtitleText, timedSubtitleText }) {
   const lines = [
     `sample: ${sampleName}`,
     "promptSource: src/domains/summary/index.js#requestSummary",
@@ -227,32 +227,27 @@ function buildPromptSnapshot({ sampleName, pageNo, partTitle, candidate, subtitl
     `source: ${candidate.relativePath.replace(/\\/g, "/")}`,
     `duration: ${formatSummaryTime(candidate.durationSec)}`,
     `cueCount: ${candidate.cueCount}`,
-    `segmentCount: ${segments.length}`,
+    `timedSubtitleLineCount: ${timedSubtitleText ? timedSubtitleText.split("\n").filter(Boolean).length : 0}`,
     "",
-    "subtitle preview:",
-    subtitleText.slice(0, 4000).trim(),
+    "timed subtitle preview:",
+    timedSubtitleText.slice(0, 4000).trim(),
+    "",
+    "raw subtitle preview:",
+    subtitleText.slice(0, 2000).trim(),
   ];
 
   return lines.join("\n").trimEnd() + "\n";
 }
 
-function buildRequestSnapshot({ pageNo, partTitle, durationSec, subtitleText, segments }) {
-  const segmentPayload =
-    segments.length > 0
-      ? segments.map((segment) => ({
-          start: formatSummaryTime(segment.startSec),
-          end: formatSummaryTime(segment.endSec),
-          text: segment.text,
-        }))
-      : null;
-
+function buildRequestSnapshot({ pageNo, partTitle, durationSec, subtitleText, timedSubtitleText }) {
   return {
     page: pageNo,
     partTitle,
     durationSec,
     subtitleFormat: "srt",
-    segments: segmentPayload,
-    rawSubtitleTextWhenSegmentParsingFailed: segmentPayload ? null : subtitleText,
+    timedSubtitleText: timedSubtitleText || null,
+    rawSubtitleTextWhenTimingUnavailable: timedSubtitleText ? null : subtitleText,
+    segmentMetadata: null,
   };
 }
 

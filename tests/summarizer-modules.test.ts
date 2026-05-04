@@ -370,7 +370,36 @@ test("requestSummaryWithFallback does not retry high-risk content filter errors 
   assert.deepEqual(calls, ["kimi-k2.5"]);
 });
 
-test("buildSummaryPromptInput uses raw subtitles when there are no parsed segments", () => {
+test("buildSummaryPromptInput prefers timed subtitle lines and falls back to raw subtitles only when timing is unavailable", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 3,
+    partTitle: "P3",
+    durationSec: 60,
+    subtitleText: [
+      "1",
+      "00:00:01,000 --> 00:00:02,000",
+      "第一句",
+      "",
+      "2",
+      "00:00:03,000 --> 00:00:04,000",
+      "第二句",
+    ].join("\n"),
+    segments: [],
+  });
+
+  const userPrompt = JSON.parse(promptInput.userPrompt);
+  assert.equal(userPrompt.page, 3);
+  assert.equal(userPrompt.timedSubtitleText, "00:01 第一句\n00:03 第二句");
+  assert.equal(userPrompt.rawSubtitleTextWhenTimingUnavailable, null);
+  assert.equal(userPrompt.segmentMetadata, null);
+  assert.match(promptInput.systemPrompt, /timedSubtitleText/u);
+  assert.match(promptInput.systemPrompt, /逐句字幕/u);
+  assert.match(promptInput.systemPrompt, /不要直接复用一大段内容的开头时间/u);
+  assert.match(promptInput.systemPrompt, /3#时间 空格 总结/u);
+  assert.match(promptInput.systemPrompt, /<3P> 3#00:00/u);
+});
+
+test("buildSummaryPromptInput falls back to raw subtitle text when cue timing cannot be parsed", () => {
   const promptInput = buildSummaryPromptInput({
     pageNo: 3,
     partTitle: "P3",
@@ -380,11 +409,8 @@ test("buildSummaryPromptInput uses raw subtitles when there are no parsed segmen
   });
 
   const userPrompt = JSON.parse(promptInput.userPrompt);
-  assert.equal(userPrompt.page, 3);
-  assert.equal(userPrompt.segments, null);
-  assert.equal(userPrompt.rawSubtitleTextWhenSegmentParsingFailed, "raw subtitle text");
-  assert.match(promptInput.systemPrompt, /3#时间 空格 总结/u);
-  assert.match(promptInput.systemPrompt, /<3P> 3#00:00/u);
+  assert.equal(userPrompt.timedSubtitleText, null);
+  assert.equal(userPrompt.rawSubtitleTextWhenTimingUnavailable, "raw subtitle text");
 });
 
 test("buildSummaryPromptInput tells the model not to mistake BGM for singing", () => {

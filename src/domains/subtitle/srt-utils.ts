@@ -118,6 +118,31 @@ export function buildSummarySegmentsFromSrt(srtText, durationSec = null) {
   return segments;
 }
 
+export function buildTimedSubtitleTextFromSrt(srtText) {
+  const cues = parseSrt(srtText);
+  if (cues.length === 0) {
+    return "";
+  }
+
+  return cues
+    .map((cue) => {
+      const text = String(cue.text ?? "")
+        .replace(/\r\n/g, "\n")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(" ");
+
+      if (!text) {
+        return "";
+      }
+
+      return `${formatSummaryTime(cue.startSec)} ${text}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function formatSummaryTime(seconds) {
   const total = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(total / 3600);

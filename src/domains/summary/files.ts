@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { buildSummarySegmentsFromSrt, formatSummaryTime } from "../subtitle/srt-utils";
+import { buildTimedSubtitleTextFromSrt, formatSummaryTime, parseSrt } from "../subtitle/srt-utils";
 import { ensureVideoWorkDir } from "../../shared/work-paths";
 import {
   getPreferredSummaryText,
@@ -58,13 +58,17 @@ export function buildPartPromptArtifact({
     extraRules?: string[] | null;
   } | null;
 }) {
-  const segments = buildSummarySegmentsFromSrt(subtitleText, durationSec);
+  const cues = parseSrt(subtitleText);
+  const timedSubtitleText = buildTimedSubtitleTextFromSrt(subtitleText);
+  const timedSubtitleLineCount = timedSubtitleText
+    ? timedSubtitleText.split("\n").filter(Boolean).length
+    : 0;
   const { systemPrompt, userPrompt } = buildSummaryPromptInput({
     pageNo,
     partTitle,
     durationSec,
     subtitleText,
-    segments,
+    segments: null,
     promptProfile,
   });
   const normalizedSubtitlePath = String(subtitlePath ?? "").trim();
@@ -77,7 +81,8 @@ export function buildPartPromptArtifact({
     `- pageNo: ${pageNo}`,
     `- partTitle: ${String(partTitle ?? "").trim() || `P${pageNo}`}`,
     `- duration: ${formatSummaryTime(durationSec)}`,
-    `- segmentCount: ${segments.length}`,
+    `- cueCount: ${cues.length}`,
+    `- timedSubtitleLineCount: ${timedSubtitleLineCount}`,
   ];
 
   if (normalizedSubtitlePath) {

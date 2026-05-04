@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { buildSummarySegmentsFromSrt } from "../subtitle/srt-utils";
+import { parseSrt } from "../subtitle/srt-utils";
 import { getVideoById, savePartSummary } from "../../infra/db/index";
 import { writePartPromptArtifact, writePartSummaryArtifact } from "./files";
 import { requestSummary } from "./client";
@@ -131,7 +131,7 @@ export async function summarizePartFromSubtitle({
   let promptPath = null;
   try {
     const subtitleText = fs.readFileSync(subtitlePath, "utf8");
-    const segments = buildSummarySegmentsFromSrt(subtitleText, durationSec);
+    const cueCount = parseSrt(subtitleText).length;
     const promptProfile = resolveSummaryPromptProfile({
       ownerMid,
       promptConfigPath,
@@ -164,7 +164,7 @@ export async function summarizePartFromSubtitle({
       partTitle,
       durationSec,
       subtitleText,
-      segments,
+      segments: null,
       promptProfile,
       model,
       apiKey,
@@ -228,7 +228,7 @@ export async function summarizePartFromSubtitle({
         requestedModel: model,
         fallbackUsed: summaryAttempt.fallbackUsed,
         fallbackReason: summaryAttempt.fallbackReason,
-        segmentCount: segments.length,
+        cueCount,
         summaryHash,
         promptPath,
         summaryPath: partSummaryPath,
