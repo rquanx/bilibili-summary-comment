@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import BetterSqlite3 from "better-sqlite3";
 import { openDatabase } from "../src/infra/db/database";
 import { getGapNotificationByKey, hasGapNotification, saveGapNotification } from "../src/infra/db/gap-notification-storage";
 import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipeline-event-storage";
@@ -125,6 +126,107 @@ test("storage barrel re-exports the split modules", () => {
   assert.equal(storage.upsertVideo, upsertVideo);
   assert.equal(storage.insertPipelineEvent, insertPipelineEvent);
   assert.equal(storage.saveGapNotification, saveGapNotification);
+});
+
+test("openDatabase upgrades a legacy schema and seeds drizzle migration history", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-legacy-storage-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const legacyDb = new BetterSqlite3(dbPath);
+
+  legacyDb.exec(`
+    CREATE TABLE videos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bvid TEXT NOT NULL UNIQUE,
+      aid INTEGER NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      page_count INTEGER NOT NULL DEFAULT 0,
+      root_comment_rpid INTEGER,
+      top_comment_rpid INTEGER,
+      last_scan_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE video_parts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_id INTEGER NOT NULL,
+      page_no INTEGER NOT NULL,
+      cid INTEGER NOT NULL,
+      part_title TEXT NOT NULL,
+      duration_sec INTEGER NOT NULL DEFAULT 0,
+      subtitle_path TEXT,
+      subtitle_source TEXT,
+      subtitle_lang TEXT,
+      summary_text TEXT,
+      summary_hash TEXT,
+      published INTEGER NOT NULL DEFAULT 0,
+      published_comment_rpid INTEGER,
+      published_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+    );
+    INSERT INTO videos (bvid, aid, title, page_count, created_at, updated_at)
+    VALUES ('BVLEGACY001', 900001, 'Legacy Video', 1, '2026-05-05T00:00:00.000Z', '2026-05-05T00:00:00.000Z');
+    INSERT INTO video_parts (
+      video_id,
+      page_no,
+      cid,
+      part_title,
+      duration_sec,
+      subtitle_path,
+      subtitle_source,
+      subtitle_lang,
+      summary_text,
+      summary_hash,
+      published,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      1,
+      1,
+      990001,
+      'Legacy P1',
+      60,
+      'legacy.srt',
+      'local',
+      'zh-CN',
+      '<1P> legacy summary',
+      'legacy-hash',
+      1,
+      '2026-05-05T00:00:00.000Z',
+      '2026-05-05T00:00:00.000Z'
+    );
+  `);
+  legacyDb.close();
+
+  const db = openDatabase(dbPath);
+  try {
+    const video = getVideoByIdentity(db, { bvid: "BVLEGACY001" });
+    const parts = listVideoParts(db, Number(video?.id));
+    const videoPartColumns = db.prepare("PRAGMA table_info(video_parts)").all() as Array<{ name: string }>;
+    const migrationRows = db.prepare("SELECT hash, created_at FROM __drizzle_migrations ORDER BY created_at ASC").all() as Array<{
+      hash: string;
+      created_at: number;
+    }>;
+
+    assert.equal(video?.title, "Legacy Video");
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0].summary_text, "<1P> legacy summary");
+    assert.equal(parts[0].summary_text_processed, null);
+    assert.equal(parts[0].prompt_text, null);
+    assert.equal(parts[0].subtitle_text, null);
+    assert.equal(Number(parts[0].is_deleted), 0);
+    assert.ok(videoPartColumns.some((column) => column.name === "is_deleted"));
+    assert.ok(videoPartColumns.some((column) => column.name === "summary_text_processed"));
+    assert.ok(videoPartColumns.some((column) => column.name === "subtitle_text"));
+    assert.ok(videoPartColumns.some((column) => column.name === "prompt_text"));
+    assert.equal(migrationRows.length, 1);
+    assert.equal(typeof migrationRows[0]?.hash, "string");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("recent reprocess run storage records successes and can query the latest successful candidate", () => {

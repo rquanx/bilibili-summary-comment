@@ -14,6 +14,7 @@ const STATIC_RUNTIME_ASSETS = [
   "config",
   "cookie.txt",
   ".auth/bili-auth.json",
+  "drizzle",
   "work/bili-auth.json",
   "work/pipeline.sqlite3",
   "sql",

@@ -1,10 +1,14 @@
+import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
+import { getDrizzleDb } from "./orm";
+import { pipelineEvents } from "./schema";
 import type { Db, PipelineEventInput, PipelineEventRecord } from "./types";
 
 export function insertPipelineEvent(db: Db, event: PipelineEventInput): PipelineEventRecord | null {
+  const orm = getDrizzleDb(db);
   const createdAt = new Date().toISOString();
   return withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    orm.run(sql`
       INSERT INTO pipeline_events (
         run_id,
         video_id,
@@ -20,24 +24,28 @@ export function insertPipelineEvent(db: Db, event: PipelineEventInput): Pipeline
         details_json,
         created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      normalizeNullableText(event.runId),
-      normalizeNullableInteger(event.videoId),
-      normalizeNullableText(event.bvid),
-      normalizeNullableText(event.videoTitle),
-      normalizeNullableInteger(event.pageNo),
-      normalizeNullableInteger(event.cid),
-      normalizeNullableText(event.partTitle),
-      requirePipelineEventField(event.scope, "scope"),
-      requirePipelineEventField(event.action, "action"),
-      requirePipelineEventField(event.status, "status"),
-      normalizeNullableText(event.message),
-      serializePipelineEventDetails(event.details),
-      createdAt,
-    );
+      VALUES (
+        ${normalizeNullableText(event.runId)},
+        ${normalizeNullableInteger(event.videoId)},
+        ${normalizeNullableText(event.bvid)},
+        ${normalizeNullableText(event.videoTitle)},
+        ${normalizeNullableInteger(event.pageNo)},
+        ${normalizeNullableInteger(event.cid)},
+        ${normalizeNullableText(event.partTitle)},
+        ${requirePipelineEventField(event.scope, "scope")},
+        ${requirePipelineEventField(event.action, "action")},
+        ${requirePipelineEventField(event.status, "status")},
+        ${normalizeNullableText(event.message)},
+        ${serializePipelineEventDetails(event.details)},
+        ${createdAt}
+      )
+    `);
 
-    return ((db.prepare("SELECT * FROM pipeline_events WHERE id = last_insert_rowid()").get()) as unknown as PipelineEventRecord | undefined) ?? null;
+    return orm.get<PipelineEventRecord>(sql`
+      SELECT *
+      FROM ${pipelineEvents}
+      WHERE ${pipelineEvents.id} = last_insert_rowid()
+    `) ?? null;
   });
 }
 
@@ -46,20 +54,14 @@ export function listPipelineEvents(
   { bvid = null, sinceIso = null, limit = 100 }: { bvid?: string | null; sinceIso?: string | null; limit?: number } = {},
 ): PipelineEventRecord[] {
   const safeLimit = Math.max(1, Number(limit) || 100);
-  return db.prepare(`
+  return getDrizzleDb(db).all<PipelineEventRecord>(sql`
     SELECT *
-    FROM pipeline_events
-    WHERE (? IS NULL OR bvid = ?)
-      AND (? IS NULL OR created_at >= ?)
+    FROM ${pipelineEvents}
+    WHERE (${normalizeNullableText(bvid)} IS NULL OR ${pipelineEvents.bvid} = ${normalizeNullableText(bvid)})
+      AND (${normalizeNullableText(sinceIso)} IS NULL OR ${pipelineEvents.created_at} >= ${normalizeNullableText(sinceIso)})
     ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(
-    normalizeNullableText(bvid),
-    normalizeNullableText(bvid),
-    normalizeNullableText(sinceIso),
-    normalizeNullableText(sinceIso),
-    safeLimit,
-  ) as unknown as PipelineEventRecord[];
+    LIMIT ${safeLimit}
+  `);
 }
 
 function requirePipelineEventField(value: unknown, fieldName: string): string {

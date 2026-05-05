@@ -1,6 +1,9 @@
-import type { DatabaseSync } from "node:sqlite";
+import BetterSqlite3 from "better-sqlite3";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type * as schema from "./schema";
 
-export type Db = DatabaseSync;
+export type Db = InstanceType<typeof BetterSqlite3>;
+export type DrizzleDb = BetterSQLite3Database<typeof schema>;
 
 export interface VideoIdentity {
   bvid?: string | null;

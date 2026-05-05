@@ -1,4 +1,119 @@
-export function migrateDatabase(db) {
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { migrate as migrateDrizzle } from "drizzle-orm/better-sqlite3/migrator";
+import { getRepoRoot } from "../../shared/runtime-tools";
+import { getDrizzleDb } from "./orm";
+import type { Db } from "./types";
+
+const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
+
+interface MigrationJournalEntry {
+  idx: number;
+  when: number;
+  tag: string;
+  breakpoints: boolean;
+}
+
+interface MigrationJournal {
+  entries: MigrationJournalEntry[];
+}
+
+export function migrateDatabase(db: Db) {
+  const hasPipelineTables = hasAnyPipelineTable(db);
+  const hasDrizzleMigrationsTable = hasTable(db, DRIZZLE_MIGRATIONS_TABLE);
+
+  if (hasPipelineTables && !hasDrizzleMigrationsTable) {
+    migrateLegacyDatabase(db);
+    markLegacyBaselineMigrationAsApplied(db);
+  }
+
+  migrateDrizzle(getDrizzleDb(db), {
+    migrationsFolder: getDrizzleMigrationsFolder(),
+  });
+
+  // Old builds could leave this obsolete index behind; keep startup idempotent.
+  db.exec("DROP INDEX IF EXISTS idx_video_parts_video_active_page");
+}
+
+function getDrizzleMigrationsFolder(): string {
+  return path.join(getRepoRoot(), "drizzle");
+}
+
+function hasAnyPipelineTable(db: Db): boolean {
+  return [
+    "videos",
+    "video_parts",
+    "pipeline_events",
+    "gap_notifications",
+    "recent_reprocess_runs",
+  ].some((tableName) => hasTable(db, tableName));
+}
+
+function hasTable(db: Db, tableName: string): boolean {
+  const table = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = ?
+  `).get(tableName);
+  return Boolean(table);
+}
+
+function markLegacyBaselineMigrationAsApplied(db: Db) {
+  const baselineMigration = readBaselineMigration();
+  if (!baselineMigration) {
+    return;
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${DRIZZLE_MIGRATIONS_TABLE} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+      hash TEXT NOT NULL,
+      created_at NUMERIC
+    )
+  `);
+
+  const existingMigration = db.prepare(`
+    SELECT id
+    FROM ${DRIZZLE_MIGRATIONS_TABLE}
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get();
+
+  if (existingMigration) {
+    return;
+  }
+
+  db.prepare(`
+    INSERT INTO ${DRIZZLE_MIGRATIONS_TABLE} (hash, created_at)
+    VALUES (?, ?)
+  `).run(baselineMigration.hash, baselineMigration.createdAt);
+}
+
+function readBaselineMigration(): { hash: string; createdAt: number } | null {
+  const migrationsFolder = getDrizzleMigrationsFolder();
+  const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+  if (!fs.existsSync(journalPath)) {
+    return null;
+  }
+
+  const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as MigrationJournal;
+  const baselineEntry = [...(journal.entries ?? [])]
+    .sort((left, right) => left.idx - right.idx)[0];
+  if (!baselineEntry) {
+    return null;
+  }
+
+  const migrationPath = path.join(migrationsFolder, `${baselineEntry.tag}.sql`);
+  const migrationSql = fs.readFileSync(migrationPath, "utf8");
+  return {
+    hash: crypto.createHash("sha256").update(migrationSql).digest("hex"),
+    createdAt: baselineEntry.when,
+  };
+}
+
+function migrateLegacyDatabase(db: Db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS videos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +142,7 @@ export function migrateDatabase(db) {
   ensureVideoColumn(db, "publish_needs_rebuild", "INTEGER NOT NULL DEFAULT 0");
   ensureVideoColumn(db, "publish_rebuild_reason", "TEXT");
 
-  migrateVideoPartsTable(db);
+  migrateLegacyVideoPartsTable(db);
   ensureVideoPartColumn(db, "summary_text_processed", "TEXT");
   ensureVideoPartColumn(db, "subtitle_text", "TEXT");
   ensureVideoPartColumn(db, "prompt_text", "TEXT");
@@ -49,11 +164,10 @@ export function migrateDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_recent_reprocess_runs_bvid_created_at
       ON recent_reprocess_runs(bvid, created_at DESC, id DESC);
   `);
-  db.exec("DROP INDEX IF EXISTS idx_video_parts_video_active_page");
 }
 
-function ensureVideoColumn(db, columnName, definition) {
-  const columns = db.prepare("PRAGMA table_info(videos)").all();
+function ensureVideoColumn(db: Db, columnName: string, definition: string) {
+  const columns = db.prepare("PRAGMA table_info(videos)").all() as Array<{ name?: string }>;
   if (columns.some((column) => column.name === columnName)) {
     return;
   }
@@ -61,28 +175,21 @@ function ensureVideoColumn(db, columnName, definition) {
   db.exec(`ALTER TABLE videos ADD COLUMN ${columnName} ${definition}`);
 }
 
-function migrateVideoPartsTable(db) {
-  const table = db.prepare(`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name = 'video_parts'
-  `).get();
-
-  if (!table) {
+function migrateLegacyVideoPartsTable(db: Db) {
+  if (!hasTable(db, "video_parts")) {
     createVideoPartsTable(db);
     return;
   }
 
-  const columns = db.prepare("PRAGMA table_info(video_parts)").all();
+  const columns = db.prepare("PRAGMA table_info(video_parts)").all() as Array<{ name?: string }>;
   const hasDeletedColumns = columns.some((column) => column.name === "is_deleted");
-  const indexes = db.prepare("PRAGMA index_list(video_parts)").all();
+  const indexes = db.prepare("PRAGMA index_list(video_parts)").all() as Array<{ name?: string; unique?: number }>;
   const hasCidUniqueIndex = indexes.some((index) => {
-    if (!index.unique) {
+    if (!index.unique || !index.name) {
       return false;
     }
 
-    const indexColumns = db.prepare(`PRAGMA index_info(${quoteSqlLiteral(index.name)})`).all();
+    const indexColumns = db.prepare(`PRAGMA index_info(${quoteSqlLiteral(index.name)})`).all() as Array<{ name?: string }>;
     return indexColumns.length === 2 && indexColumns[0]?.name === "video_id" && indexColumns[1]?.name === "cid";
   });
 
@@ -150,7 +257,7 @@ function migrateVideoPartsTable(db) {
   }
 }
 
-function createVideoPartsTable(db) {
+function createVideoPartsTable(db: Db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS video_parts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,8 +286,8 @@ function createVideoPartsTable(db) {
   `);
 }
 
-function ensureVideoPartColumn(db, columnName, definition) {
-  const columns = db.prepare("PRAGMA table_info(video_parts)").all();
+function ensureVideoPartColumn(db: Db, columnName: string, definition: string) {
+  const columns = db.prepare("PRAGMA table_info(video_parts)").all() as Array<{ name?: string }>;
   if (columns.some((column) => column.name === columnName)) {
     return;
   }
@@ -188,7 +295,7 @@ function ensureVideoPartColumn(db, columnName, definition) {
   db.exec(`ALTER TABLE video_parts ADD COLUMN ${columnName} ${definition}`);
 }
 
-function createPipelineEventsTable(db) {
+function createPipelineEventsTable(db: Db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS pipeline_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -210,7 +317,7 @@ function createPipelineEventsTable(db) {
   `);
 }
 
-function createGapNotificationsTable(db) {
+function createGapNotificationsTable(db: Db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS gap_notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,7 +338,7 @@ function createGapNotificationsTable(db) {
   `);
 }
 
-function createRecentReprocessRunsTable(db) {
+function createRecentReprocessRunsTable(db: Db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS recent_reprocess_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -252,6 +359,6 @@ function createRecentReprocessRunsTable(db) {
   `);
 }
 
-function quoteSqlLiteral(value) {
+function quoteSqlLiteral(value: string) {
   return `'${String(value ?? "").replace(/'/g, "''")}'`;
 }

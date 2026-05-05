@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import BetterSqlite3 from "better-sqlite3";
+import type { Db } from "./types";
+import { initializeDrizzleDb } from "./orm";
 import { migrateDatabase } from "./migrations";
 
 const DB_PATH_SYMBOL = Symbol.for("video-pipeline.dbPath");
@@ -10,32 +12,33 @@ const DB_WRITE_LOCK_TIMEOUT_MS = 60_000;
 const DB_WRITE_LOCK_STALE_MS = 30 * 60_000;
 const activeWriteLocks = new Map<string, { depth: number; release: () => void }>();
 
-type DbWithPath = DatabaseSync & {
+type DbWithPath = Db & {
   [DB_PATH_SYMBOL]?: string;
 };
 
-export function openDatabase(databasePath: string): DatabaseSync {
+export function openDatabase(databasePath: string): Db {
   const resolvedPath = path.resolve(databasePath);
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
 
-  const db = new DatabaseSync(resolvedPath) as DbWithPath;
+  const db = new BetterSqlite3(resolvedPath) as DbWithPath;
   Object.defineProperty(db, DB_PATH_SYMBOL, {
     value: resolvedPath,
     configurable: false,
     enumerable: false,
     writable: false,
   });
+  initializeDrizzleDb(db);
 
   withDatabaseWriteLock(db, () => {
-    db.exec("PRAGMA journal_mode = WAL;");
-    db.exec("PRAGMA busy_timeout = 5000;");
-    db.exec("PRAGMA foreign_keys = ON;");
+    db.pragma("journal_mode = WAL");
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
     migrateDatabase(db);
   });
   return db;
 }
 
-export function runInTransaction<T>(db: Pick<DatabaseSync, "exec">, work: () => T): T {
+export function runInTransaction<T>(db: Pick<Db, "exec">, work: () => T): T {
   return withDatabaseWriteLock(db, () => {
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -49,7 +52,7 @@ export function runInTransaction<T>(db: Pick<DatabaseSync, "exec">, work: () => 
   });
 }
 
-export function withDatabaseWriteLock<T>(dbOrPath: Pick<DatabaseSync, "exec"> | string, work: () => T): T {
+export function withDatabaseWriteLock<T>(dbOrPath: Pick<Db, "exec"> | string, work: () => T): T {
   const resolvedPath = resolveDatabasePath(dbOrPath);
   const active = activeWriteLocks.get(resolvedPath);
   if (active) {
@@ -89,7 +92,7 @@ function releaseActiveWriteLock(resolvedPath: string) {
   active.release();
 }
 
-function resolveDatabasePath(dbOrPath: Pick<DatabaseSync, "exec"> | string): string {
+function resolveDatabasePath(dbOrPath: Pick<Db, "exec"> | string): string {
   if (typeof dbOrPath === "string") {
     return path.resolve(dbOrPath);
   }

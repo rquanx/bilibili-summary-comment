@@ -1,0 +1,116 @@
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+export const videos = sqliteTable("videos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  bvid: text("bvid").notNull(),
+  aid: integer("aid").notNull(),
+  title: text("title").notNull(),
+  owner_mid: integer("owner_mid"),
+  owner_name: text("owner_name"),
+  owner_dir_name: text("owner_dir_name"),
+  work_dir_name: text("work_dir_name"),
+  page_count: integer("page_count").notNull().default(0),
+  root_comment_rpid: integer("root_comment_rpid"),
+  top_comment_rpid: integer("top_comment_rpid"),
+  publish_needs_rebuild: integer("publish_needs_rebuild").notNull().default(0),
+  publish_rebuild_reason: text("publish_rebuild_reason"),
+  last_scan_at: text("last_scan_at"),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("videos_bvid_unique").on(table.bvid),
+  uniqueIndex("videos_aid_unique").on(table.aid),
+]);
+
+export const videoParts = sqliteTable("video_parts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  video_id: integer("video_id").notNull().references(() => videos.id, { onDelete: "cascade" }),
+  page_no: integer("page_no").notNull(),
+  cid: integer("cid").notNull(),
+  part_title: text("part_title").notNull(),
+  duration_sec: integer("duration_sec").notNull().default(0),
+  subtitle_path: text("subtitle_path"),
+  subtitle_source: text("subtitle_source"),
+  subtitle_lang: text("subtitle_lang"),
+  subtitle_text: text("subtitle_text"),
+  prompt_text: text("prompt_text"),
+  summary_text: text("summary_text"),
+  summary_text_processed: text("summary_text_processed"),
+  summary_hash: text("summary_hash"),
+  published: integer("published").notNull().default(0),
+  published_comment_rpid: integer("published_comment_rpid"),
+  published_at: text("published_at"),
+  is_deleted: integer("is_deleted").notNull().default(0),
+  deleted_at: text("deleted_at"),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+}, (table) => [
+  index("idx_video_parts_video_id").on(table.video_id),
+  index("idx_video_parts_video_page").on(table.video_id, table.page_no),
+  uniqueIndex("idx_video_parts_video_cid").on(table.video_id, table.cid),
+]);
+
+export const pipelineEvents = sqliteTable("pipeline_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  run_id: text("run_id"),
+  video_id: integer("video_id").references(() => videos.id, { onDelete: "cascade" }),
+  bvid: text("bvid"),
+  video_title: text("video_title"),
+  page_no: integer("page_no"),
+  cid: integer("cid"),
+  part_title: text("part_title"),
+  scope: text("scope").notNull(),
+  action: text("action").notNull(),
+  status: text("status").notNull(),
+  message: text("message"),
+  details_json: text("details_json"),
+  created_at: text("created_at").notNull(),
+}, (table) => [
+  index("idx_pipeline_events_created_at").on(table.created_at, table.id),
+  index("idx_pipeline_events_bvid_created_at").on(table.bvid, table.created_at, table.id),
+  index("idx_pipeline_events_run_id").on(table.run_id, table.created_at, table.id),
+]);
+
+export const gapNotifications = sqliteTable("gap_notifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  gap_key: text("gap_key").notNull(),
+  bvid: text("bvid").notNull(),
+  video_title: text("video_title"),
+  from_page_no: integer("from_page_no").notNull(),
+  from_cid: integer("from_cid").notNull(),
+  to_page_no: integer("to_page_no").notNull(),
+  to_cid: integer("to_cid").notNull(),
+  gap_start_at: text("gap_start_at").notNull(),
+  gap_end_at: text("gap_end_at").notNull(),
+  gap_seconds: integer("gap_seconds").notNull(),
+  notified_at: text("notified_at").notNull(),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("idx_gap_notifications_gap_key").on(table.gap_key),
+  index("idx_gap_notifications_bvid_notified_at").on(table.bvid, table.notified_at, table.id),
+]);
+
+export const recentReprocessRuns = sqliteTable("recent_reprocess_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  video_id: integer("video_id").references(() => videos.id, { onDelete: "set null" }),
+  bvid: text("bvid").notNull(),
+  video_title: text("video_title"),
+  candidate_key: text("candidate_key").notNull(),
+  reasons_json: text("reasons_json").notNull(),
+  paste_pages_json: text("paste_pages_json").notNull().default("[]"),
+  status: text("status").notNull(),
+  error_message: text("error_message"),
+  details_json: text("details_json"),
+  created_at: text("created_at").notNull(),
+  updated_at: text("updated_at").notNull(),
+  finished_at: text("finished_at"),
+}, (table) => [
+  index("idx_recent_reprocess_runs_candidate_status").on(
+    table.candidate_key,
+    table.status,
+    table.finished_at,
+    table.id,
+  ),
+  index("idx_recent_reprocess_runs_bvid_created_at").on(table.bvid, table.created_at, table.id),
+]);

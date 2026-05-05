@@ -1,22 +1,25 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../../infra/db/database";
 import { listVideosOlderThan } from "../../infra/db/video-storage";
 import { getRepoRoot } from "../../shared/runtime-tools";
 import { listVideoWorkDirCandidates } from "../../shared/work-paths";
-import type { VideoRecord } from "../../infra/db/types";
+import type { Db, VideoRecord } from "../../infra/db/types";
 
 type CleanupCandidate = Pick<VideoRecord, "bvid" | "title" | "last_scan_at" | "updated_at">
   & Partial<Pick<VideoRecord, "owner_mid" | "owner_name" | "owner_dir_name" | "work_dir_name">>;
+
+type CleanupDatabaseHandle = {
+  close?: () => unknown;
+};
 
 interface CleanupOldWorkDirectoriesOptions {
   dbPath?: string;
   workRoot?: string;
   olderThanDays?: number;
   onLog?: (message: string) => void;
-  openDatabaseImpl?: (databasePath: string) => Pick<DatabaseSync, "close">;
-  listVideosOlderThanImpl?: (db: Pick<DatabaseSync, "close">, cutoffIso: string) => CleanupCandidate[];
+  openDatabaseImpl?: (databasePath: string) => CleanupDatabaseHandle;
+  listVideosOlderThanImpl?: (db: CleanupDatabaseHandle, cutoffIso: string) => CleanupCandidate[];
   repoRoot?: string;
   existsSync?: (targetPath: string) => boolean;
   rmSync?: (targetPath: string, options: { recursive: boolean; force: boolean }) => void;
@@ -27,8 +30,11 @@ export async function cleanupOldWorkDirectories({
   workRoot = "work",
   olderThanDays = 2,
   onLog = () => {},
-  openDatabaseImpl = openDatabase,
-  listVideosOlderThanImpl = listVideosOlderThan,
+  openDatabaseImpl = openDatabase as (databasePath: string) => CleanupDatabaseHandle,
+  listVideosOlderThanImpl = ((db, cutoffIso) => listVideosOlderThan(db as Db, cutoffIso)) as (
+    db: CleanupDatabaseHandle,
+    cutoffIso: string,
+  ) => CleanupCandidate[],
   repoRoot = getRepoRoot(),
   existsSync = fs.existsSync,
   rmSync = fs.rmSync,

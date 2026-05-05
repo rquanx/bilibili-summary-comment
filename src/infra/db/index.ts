@@ -1,8 +1,10 @@
 export { openDatabase } from "./database";
 export { runInTransaction } from "./database";
 export { withDatabaseWriteLock } from "./database";
+export { getDrizzleDb } from "./orm";
 export type {
   Db,
+  DrizzleDb,
   GapNotificationInsert,
   GapNotificationRecord,
   PipelineEventInput,
@@ -19,6 +21,13 @@ export type {
   VideoSnapshotPage,
   VideoState,
 } from "./types";
+export {
+  gapNotifications,
+  pipelineEvents,
+  recentReprocessRuns,
+  videoParts,
+  videos,
+} from "./schema";
 export {
   getGapNotificationByKey,
   hasGapNotification,

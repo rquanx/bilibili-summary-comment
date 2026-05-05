@@ -1,9 +1,13 @@
+import { sql } from "drizzle-orm";
+import { getDrizzleDb } from "./orm";
+import { recentReprocessRuns } from "./schema";
 import type { Db, RecentReprocessRunInsert, RecentReprocessRunRecord } from "./types";
 
 export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert): RecentReprocessRunRecord {
+  const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const finishedAt = normalizeOptionalString(input.finishedAt) ?? now;
-  db.prepare(`
+  orm.run(sql`
     INSERT INTO recent_reprocess_runs (
       video_id,
       bvid,
@@ -19,35 +23,22 @@ export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert):
       finished_at
     )
     VALUES (
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?
+      ${normalizeNullableNumber(input.videoId)},
+      ${String(input.bvid ?? "").trim()},
+      ${normalizeOptionalString(input.videoTitle)},
+      ${String(input.candidateKey ?? "").trim()},
+      ${JSON.stringify(normalizeStringList(input.reasons))},
+      ${JSON.stringify(normalizeNumberList(input.pastePages))},
+      ${input.status},
+      ${normalizeOptionalString(input.errorMessage)},
+      ${input.details === undefined ? null : JSON.stringify(input.details)},
+      ${now},
+      ${now},
+      ${finishedAt}
     )
-  `).run(
-    normalizeNullableNumber(input.videoId),
-    String(input.bvid ?? "").trim(),
-    normalizeOptionalString(input.videoTitle),
-    String(input.candidateKey ?? "").trim(),
-    JSON.stringify(normalizeStringList(input.reasons)),
-    JSON.stringify(normalizeNumberList(input.pastePages)),
-    input.status,
-    normalizeOptionalString(input.errorMessage),
-    input.details === undefined ? null : JSON.stringify(input.details),
-    now,
-    now,
-    finishedAt,
-  );
+  `);
 
-  return db.prepare(`
+  return orm.get<RecentReprocessRunRecord>(sql`
     SELECT
       id,
       video_id,
@@ -62,9 +53,9 @@ export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert):
       created_at,
       updated_at,
       finished_at
-    FROM recent_reprocess_runs
-    WHERE id = last_insert_rowid()
-  `).get() as unknown as RecentReprocessRunRecord;
+    FROM ${recentReprocessRuns}
+    WHERE ${recentReprocessRuns.id} = last_insert_rowid()
+  `) as RecentReprocessRunRecord;
 }
 
 export function getLatestSuccessfulRecentReprocessRunByCandidateKey(
@@ -76,7 +67,7 @@ export function getLatestSuccessfulRecentReprocessRunByCandidateKey(
     return null;
   }
 
-  return db.prepare(`
+  return getDrizzleDb(db).get<RecentReprocessRunRecord>(sql`
     SELECT
       id,
       video_id,
@@ -91,14 +82,14 @@ export function getLatestSuccessfulRecentReprocessRunByCandidateKey(
       created_at,
       updated_at,
       finished_at
-    FROM recent_reprocess_runs
-    WHERE candidate_key = ?
+    FROM ${recentReprocessRuns}
+    WHERE ${recentReprocessRuns.candidate_key} = ${normalizedCandidateKey}
       AND status = 'success'
     ORDER BY
       COALESCE(finished_at, updated_at, created_at) DESC,
       id DESC
     LIMIT 1
-  `).get(normalizedCandidateKey) as unknown as RecentReprocessRunRecord | null;
+  `) ?? null;
 }
 
 function normalizeOptionalString(value: unknown): string | null {

@@ -22,6 +22,8 @@
     "cleanup:work": "node --disable-warning=ExperimentalWarning --import tsx tools/maintenance/cleanup-work-files.ts",
     "schedule": "node --disable-warning=ExperimentalWarning --import tsx src/commands/run-scheduler.ts",
     "start": "node --disable-warning=ExperimentalWarning --import tsx src/commands/run-scheduler.ts --run-on-start",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio",
     "setup:ps": "powershell -ExecutionPolicy Bypass -File tools/setup/setup-env.ps1",
     "setup:sh": "bash ./tools/setup/setup-env.sh",
     "test": "node --disable-warning=ExperimentalWarning --import tsx --test tests/*.test.ts",
@@ -43,15 +45,19 @@
     "@google/genai": "^1.50.1",
     "@renmu/bili-api": "^2.12.5",
     "@types/qrcode-terminal": "^0.12.2",
+    "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "dotenv": "^17.4.1",
+    "drizzle-orm": "^0.45.2",
     "node-cron": "^4.2.1",
     "qrcode-terminal": "^0.12.0",
     "undici": "^8.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.5.2",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   }

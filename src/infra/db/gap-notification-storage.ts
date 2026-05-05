@@ -1,4 +1,7 @@
+import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
+import { getDrizzleDb } from "./orm";
+import { gapNotifications } from "./schema";
 import type { Db, GapNotificationInsert, GapNotificationRecord } from "./types";
 
 export function getGapNotificationByKey(db: Db, gapKey: string): GapNotificationRecord | null {
@@ -7,12 +10,12 @@ export function getGapNotificationByKey(db: Db, gapKey: string): GapNotification
     return null;
   }
 
-  return ((db.prepare(`
+  return getDrizzleDb(db).get<GapNotificationRecord>(sql`
     SELECT *
-    FROM gap_notifications
-    WHERE gap_key = ?
+    FROM ${gapNotifications}
+    WHERE ${gapNotifications.gap_key} = ${normalizedKey}
     LIMIT 1
-  `).get(normalizedKey) as unknown as GapNotificationRecord | undefined) ?? null);
+  `) ?? null;
 }
 
 export function hasGapNotification(db: Db, gapKey: string): boolean {
@@ -20,12 +23,13 @@ export function hasGapNotification(db: Db, gapKey: string): boolean {
 }
 
 export function saveGapNotification(db: Db, notification: GapNotificationInsert): GapNotificationRecord | null {
+  const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const gapKey = requireGapKey(notification.gapKey);
   const notifiedAt = normalizeNullableText(notification.notifiedAt) ?? now;
 
   withDatabaseWriteLock(db, () => {
-    db.prepare(`
+    orm.run(sql`
       INSERT INTO gap_notifications (
         gap_key,
         bvid,
@@ -41,7 +45,21 @@ export function saveGapNotification(db: Db, notification: GapNotificationInsert)
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ${gapKey},
+        ${requireText(notification.bvid, "bvid")},
+        ${normalizeNullableText(notification.videoTitle)},
+        ${requirePositiveInteger(notification.fromPageNo, "fromPageNo")},
+        ${requirePositiveInteger(notification.fromCid, "fromCid")},
+        ${requirePositiveInteger(notification.toPageNo, "toPageNo")},
+        ${requirePositiveInteger(notification.toCid, "toCid")},
+        ${requireText(notification.gapStartAt, "gapStartAt")},
+        ${requireText(notification.gapEndAt, "gapEndAt")},
+        ${requireNonNegativeInteger(notification.gapSeconds, "gapSeconds")},
+        ${notifiedAt},
+        ${now},
+        ${now}
+      )
       ON CONFLICT(gap_key) DO UPDATE SET
         video_title = excluded.video_title,
         from_page_no = excluded.from_page_no,
@@ -53,21 +71,7 @@ export function saveGapNotification(db: Db, notification: GapNotificationInsert)
         gap_seconds = excluded.gap_seconds,
         notified_at = excluded.notified_at,
         updated_at = excluded.updated_at
-    `).run(
-      gapKey,
-      requireText(notification.bvid, "bvid"),
-      normalizeNullableText(notification.videoTitle),
-      requirePositiveInteger(notification.fromPageNo, "fromPageNo"),
-      requirePositiveInteger(notification.fromCid, "fromCid"),
-      requirePositiveInteger(notification.toPageNo, "toPageNo"),
-      requirePositiveInteger(notification.toCid, "toCid"),
-      requireText(notification.gapStartAt, "gapStartAt"),
-      requireText(notification.gapEndAt, "gapEndAt"),
-      requireNonNegativeInteger(notification.gapSeconds, "gapSeconds"),
-      notifiedAt,
-      now,
-      now,
-    );
+    `);
   });
 
   return getGapNotificationByKey(db, gapKey);
