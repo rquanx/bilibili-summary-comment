@@ -439,6 +439,8 @@ test("buildSummaryPromptInput keeps the base prompt generic across stream types"
   assert.match(promptInput.systemPrompt, /关键知识点/u);
   assert.match(promptInput.systemPrompt, /核心观点/u);
   assert.match(promptInput.systemPrompt, /默认不要把 summary 写得过短/u);
+  assert.match(promptInput.systemPrompt, /不同类型的主播\/内容/u);
+  assert.match(promptInput.systemPrompt, /不要省略成“聊了行情”/u);
   assert.match(promptInput.systemPrompt, /把关键背景、动作、原因、结果或结论交代完整/u);
   assert.doesNotMatch(promptInput.systemPrompt, /优先保留观众最可能想回看的节目性内容/u);
 });
@@ -529,6 +531,27 @@ test("buildSummaryPromptInput can append entertainment-specific preset rules out
   assert.match(promptInput.systemPrompt, /娱乐主播/u);
   assert.match(promptInput.systemPrompt, /节目性内容/u);
   assert.match(promptInput.systemPrompt, /连麦对象/u);
+});
+
+test("buildSummaryPromptInput can append finance-specific extraction rules", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 7,
+    partTitle: "P7",
+    durationSec: 360,
+    subtitleText: "raw subtitle text",
+    segments: [],
+    promptProfile: {
+      displayName: "金融主播",
+      extraRules: [
+        "只要字幕里明确提到具体标的或行情判断，优先把标的名称/代码、方向、关键价位、触发条件、操作倾向、结论完整摘录出来。",
+      ],
+    },
+  });
+
+  assert.match(promptInput.systemPrompt, /金融主播/u);
+  assert.match(promptInput.systemPrompt, /标的名称\/代码/u);
+  assert.match(promptInput.systemPrompt, /关键价位/u);
+  assert.match(promptInput.systemPrompt, /完整摘录出来/u);
 });
 
 test("extractSummaryText reads responses output arrays", () => {
