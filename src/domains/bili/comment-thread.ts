@@ -28,7 +28,8 @@ const sleep = (timeout) =>
 const ROOT_TOP_DELAY_MS = 5000;
 const ROOT_TOP_RETRY_DELAY_MS = 5000;
 const REPLY_POST_DELAY_MS = 5000;
-const GUEST_VISIBILITY_DELAY_MS = 90_000;
+const GUEST_VISIBILITY_RETRY_DELAY_MS = 180_000;
+const GUEST_VISIBILITY_RETRY_ATTEMPTS = 3;
 const GUEST_COMMENT_SCAN_PAGE_LIMIT = 5;
 const GUEST_REPLY_PAGE_SIZE = 20;
 const BILIBILI_COMMENT_MAX_LENGTH = 700;
@@ -660,6 +661,41 @@ async function findVisibleCommentAsGuest({
   return null;
 }
 
+async function findVisibleCommentAsGuestWithRetries({
+  oid,
+  type,
+  rootRpid = null,
+  targetRpid = null,
+  expectedMessage,
+  isRoot,
+  sleepImpl = sleep,
+  guestReplyListImpl = defaultGuestReplyListImpl,
+  fetchImpl = fetch,
+  retryDelayMs = GUEST_VISIBILITY_RETRY_DELAY_MS,
+  retryAttempts = GUEST_VISIBILITY_RETRY_ATTEMPTS,
+}) {
+  const attempts = Math.max(1, Number(retryAttempts) || GUEST_VISIBILITY_RETRY_ATTEMPTS);
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await sleepImpl(retryDelayMs);
+    const visibleComment = await findVisibleCommentAsGuest({
+      oid,
+      type,
+      rootRpid,
+      targetRpid,
+      expectedMessage,
+      isRoot,
+      guestReplyListImpl,
+      fetchImpl,
+    });
+    if (visibleComment) {
+      return visibleComment;
+    }
+  }
+
+  return null;
+}
+
 async function assertCommentVisibleAsGuest({
   oid,
   type,
@@ -671,8 +707,7 @@ async function assertCommentVisibleAsGuest({
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
 }) {
-  await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
-  const visibleComment = await findVisibleCommentAsGuest({
+  const visibleComment = await findVisibleCommentAsGuestWithRetries({
     oid,
     type,
     rootRpid,
@@ -681,6 +716,7 @@ async function assertCommentVisibleAsGuest({
     isRoot,
     guestReplyListImpl,
     fetchImpl,
+    sleepImpl,
   });
 
   if (visibleComment) {
@@ -1589,13 +1625,14 @@ async function createCommentWithDuplicateRecovery({
       throw error;
     }
 
-    await sleepImpl(GUEST_VISIBILITY_DELAY_MS);
-    const visibleComment = await findAdoptableVisibleComment({
+    const visibleComment = await findVisibleCommentAsGuestWithRetries({
       oid,
       type,
-      message,
-      isRoot,
       rootRpid,
+      targetRpid: null,
+      expectedMessage: message,
+      isRoot,
+      sleepImpl,
       guestReplyListImpl,
       fetchImpl,
     });
