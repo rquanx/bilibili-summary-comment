@@ -1,12 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  createProcessLockOwner,
+  isOwnerProcessAlive,
+  RUNTIME_LOCK_HEARTBEAT_MS,
+  TRANSCRIPTION_QUEUE_STALE_MS,
+  TRANSCRIPTION_QUEUE_WAIT_MS,
+} from "../../shared/runtime-locks";
 import { getRepoRoot } from "../../shared/runtime-tools";
 import { delay, formatQueueOwnerLabel } from "./utils";
 
 const TRANSCRIPTION_QUEUE_LOCK_NAME = "videocaptioner-asr.lock";
-const TRANSCRIPTION_QUEUE_HEARTBEAT_MS = 60_000;
-const TRANSCRIPTION_QUEUE_WAIT_MS = 5_000;
-const TRANSCRIPTION_QUEUE_STALE_MS = 2 * 60 * 60 * 1000;
 
 export async function withTranscriptionQueueLock(
   { workRoot, progress, bvid, videoTitle, pageNo, partTitle, engine, eventLogger, cid },
@@ -44,7 +48,7 @@ async function acquireTranscriptionQueueLock({ workRoot, progress, bvid, videoTi
       const ownerPath = path.join(lockPath, "owner.json");
       const writeHeartbeat = () => {
         fs.writeFileSync(ownerPath, `${JSON.stringify({
-          pid: process.pid,
+          ...createProcessLockOwner(),
           engine,
           bvid,
           videoTitle,
@@ -61,7 +65,7 @@ async function acquireTranscriptionQueueLock({ workRoot, progress, bvid, videoTi
         } catch {
           // Ignore heartbeat failures; stale cleanup will handle abandoned locks.
         }
-      }, TRANSCRIPTION_QUEUE_HEARTBEAT_MS);
+      }, RUNTIME_LOCK_HEARTBEAT_MS);
 
       return () => {
         clearInterval(heartbeat);
@@ -112,7 +116,7 @@ async function acquireTranscriptionQueueLock({ workRoot, progress, bvid, videoTi
 
 function isStaleTranscriptionQueueLock(lockPath) {
   const owner = readTranscriptionQueueOwner(lockPath);
-  if (owner?.pid && !isProcessAlive(owner.pid)) {
+  if (isOwnerProcessAlive(owner) === false) {
     return true;
   }
 
@@ -139,22 +143,10 @@ function readTranscriptionQueueOwner(lockPath) {
     const pid = Number(parsed?.pid);
     return {
       ...parsed,
+      hostname: String(parsed?.hostname ?? "").trim(),
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
     };
   } catch {
     return null;
-  }
-}
-
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "EPERM") {
-      return true;
-    }
-
-    return false;
   }
 }

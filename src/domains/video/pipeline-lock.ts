@@ -1,13 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  createProcessLockOwner,
+  isOwnerProcessAlive,
+  RUNTIME_LOCK_HEARTBEAT_MS,
+  VIDEO_PIPELINE_LOCK_STALE_MS,
+  VIDEO_PIPELINE_LOCK_WAIT_MS,
+} from "../../shared/runtime-locks";
 import { getRepoRoot } from "../../shared/runtime-tools";
-
-const VIDEO_PIPELINE_LOCK_HEARTBEAT_MS = 60_000;
-const VIDEO_PIPELINE_LOCK_WAIT_MS = 5_000;
-const VIDEO_PIPELINE_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
 
 interface VideoPipelineLockOwner {
   pid: number | null;
+  hostname: string;
   bvid: string;
   videoTitle: string;
   publishRequested: boolean;
@@ -37,7 +41,7 @@ export async function withVideoPipelineLock<T>(
     eventLogger = null,
     repoRoot = getRepoRoot(),
     waitMs = VIDEO_PIPELINE_LOCK_WAIT_MS,
-    heartbeatMs = VIDEO_PIPELINE_LOCK_HEARTBEAT_MS,
+    heartbeatMs = RUNTIME_LOCK_HEARTBEAT_MS,
     staleMs = VIDEO_PIPELINE_LOCK_STALE_MS,
   }: WithVideoPipelineLockOptions,
   task: () => Promise<T>,
@@ -89,7 +93,7 @@ async function acquireVideoPipelineLock({
       const ownerPath = path.join(lockPath, "owner.json");
       const writeHeartbeat = () => {
         const owner: VideoPipelineLockOwner = {
-          pid: Number.isInteger(process.pid) && process.pid > 0 ? process.pid : null,
+          ...createProcessLockOwner(),
           bvid: String(bvid ?? "").trim(),
           videoTitle: String(videoTitle ?? "").trim(),
           publishRequested: Boolean(publishRequested),
@@ -149,8 +153,7 @@ async function acquireVideoPipelineLock({
 
 function isStaleVideoPipelineLock(lockPath: string, staleMs: number) {
   const owner = readVideoPipelineLockOwner(lockPath);
-  const ownerPid = Number(owner?.pid ?? 0);
-  if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
+  if (isOwnerProcessAlive(owner) === false) {
     return true;
   }
 
@@ -177,6 +180,7 @@ function readVideoPipelineLockOwner(lockPath: string): VideoPipelineLockOwner | 
     const pid = Number(parsed?.pid);
     return {
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+      hostname: String(parsed?.hostname ?? "").trim(),
       bvid: String(parsed?.bvid ?? "").trim(),
       videoTitle: String(parsed?.videoTitle ?? "").trim(),
       publishRequested: Boolean(parsed?.publishRequested),
@@ -198,22 +202,10 @@ function formatVideoPipelineLockOwner(owner: VideoPipelineLockOwner | null) {
     owner.bvid || "",
     owner.videoTitle || "",
     mode,
+    owner.hostname || "",
     Number.isInteger(pid) && pid > 0 ? `pid ${pid}` : "",
   ].filter(Boolean);
   return parts.join(" | ");
-}
-
-function isProcessAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "EPERM") {
-      return true;
-    }
-
-    return false;
-  }
 }
 
 function delay(timeoutMs: number) {

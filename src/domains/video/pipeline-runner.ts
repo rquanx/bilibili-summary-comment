@@ -15,6 +15,7 @@ import { runPublishStage } from "../pipeline/publish-stage";
 import { resolveSummaryConfig } from "../summary/index";
 import { markVideoPublishRebuildNeeded, openDatabase } from "../../infra/db/index";
 import { createWorkFileLogger } from "../../shared/logger";
+import { cleanupStaleRuntimeLocks } from "../../shared/runtime-locks";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index";
 import { withVideoPipelineLock } from "./pipeline-lock";
 import type { PipelineEventLogger } from "../../infra/db/index";
@@ -46,6 +47,17 @@ export async function runVideoPipeline(
   const logGroup = args["log-group"] ?? process.env.PIPELINE_LOG_GROUP ?? null;
   const venvPath = args["venv-path"] ?? ".3.11";
   const asr = args.asr ?? "faster-whisper";
+  const startupLockCleanup = cleanupStaleRuntimeLocks({
+    workRoot,
+    dbPath,
+  });
+  if (startupLockCleanup.removed.length > 0) {
+    writeTerminalMessage(
+      process.stderr,
+      "warn",
+      `Startup lock cleanup removed ${startupLockCleanup.removed.length} stale lock(s): ${startupLockCleanup.removed.map((entry) => `${entry.name}:${entry.reason}`).join(", ")}`,
+    );
+  }
   const db = openDatabase(dbPath);
 
   const snapshot = await fetchVideoSnapshot(client, args);

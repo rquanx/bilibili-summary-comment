@@ -1,12 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  COMMENT_PUBLISH_QUEUE_STALE_MS,
+  COMMENT_PUBLISH_QUEUE_WAIT_MS,
+  createProcessLockOwner,
+  isOwnerProcessAlive,
+  RUNTIME_LOCK_HEARTBEAT_MS,
+} from "../../shared/runtime-locks";
 import { getRepoRoot } from "../../shared/runtime-tools";
 
 const COMMENT_PUBLISH_QUEUE_LOCK_PREFIX = "bili-comment-publish";
 const COMMENT_PUBLISH_QUEUE_MAX_CONCURRENCY = 2;
-const COMMENT_PUBLISH_QUEUE_HEARTBEAT_MS = 60_000;
-const COMMENT_PUBLISH_QUEUE_WAIT_MS = 5_000;
-const COMMENT_PUBLISH_QUEUE_STALE_MS = 6 * 60 * 60 * 1000;
 
 export async function withCommentPublishQueueLock(
   {
@@ -60,7 +64,7 @@ async function acquireCommentPublishQueueLock({
         const ownerPath = path.join(lockPath, "owner.json");
         const writeHeartbeat = () => {
           fs.writeFileSync(ownerPath, `${JSON.stringify({
-            pid: process.pid,
+            ...createProcessLockOwner(),
             queueName,
             slotIndex,
             updatedAt: new Date().toISOString(),
@@ -75,7 +79,7 @@ async function acquireCommentPublishQueueLock({
           } catch {
             // Ignore heartbeat failures; stale cleanup handles abandoned locks.
           }
-        }, COMMENT_PUBLISH_QUEUE_HEARTBEAT_MS);
+        }, RUNTIME_LOCK_HEARTBEAT_MS);
 
         return () => {
           clearInterval(heartbeat);
@@ -112,8 +116,7 @@ function getCommentPublishQueueLockPath(lockRoot: string, slotIndex: number) {
 
 function isStaleCommentPublishQueueLock(lockPath: string) {
   const owner = readCommentPublishQueueOwner(lockPath);
-  const ownerPid = Number(owner?.pid ?? 0);
-  if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
+  if (isOwnerProcessAlive(owner) === false) {
     return true;
   }
 
@@ -140,6 +143,7 @@ function readCommentPublishQueueOwner(lockPath: string): Record<string, unknown>
     const pid = Number(parsed?.pid);
     return {
       ...parsed,
+      hostname: String(parsed?.hostname ?? "").trim(),
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
     };
   } catch {
@@ -175,19 +179,11 @@ function formatQueueOwnerLabel(owners: Record<string, unknown>[] | Record<string
       Number.isInteger(slotIndex) && slotIndex >= 0 ? `slot ${slotIndex + 1}` : "",
       typeof owner.task === "string" ? owner.task : "",
       typeof owner.bvid === "string" ? owner.bvid : "",
+      typeof owner.hostname === "string" ? owner.hostname : "",
       Number.isInteger(pid) && pid > 0 ? `pid ${pid}` : "",
     ].filter(Boolean);
     return labelParts.join(", ");
   }).filter(Boolean).join("; ");
-}
-
-function isProcessAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function delay(timeoutMs: number) {

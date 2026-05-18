@@ -22,6 +22,7 @@ import {
   syncSummaryUsersRecentVideos,
 } from "../domains/scheduler/index";
 import { createLogGroupName, createWorkFileLogger, formatLogDay } from "../shared/logger";
+import { cleanupStaleRuntimeLocks } from "../shared/runtime-locks";
 import type { LogLevel } from "../shared/logger";
 import { formatEast8Time } from "../shared/time";
 
@@ -86,6 +87,21 @@ await runCli({
     }
 
     log(`Detailed log: ${schedulerLogger.filePath}`);
+    const startupLockCleanup = cleanupStaleRuntimeLocks({
+      workRoot: config.workRoot,
+      dbPath: config.dbPath,
+    });
+    if (startupLockCleanup.removed.length > 0) {
+      log(
+        `Startup lock cleanup removed ${startupLockCleanup.removed.length} stale lock(s): ${startupLockCleanup.removed.map((entry) => `${entry.name}:${entry.reason}`).join(", ")}`,
+        {
+          level: "warn",
+          details: {
+            removedLocks: startupLockCleanup.removed,
+          },
+        },
+      );
+    }
 
     async function runRefreshTask({ force = false } = {}) {
       const bundle = loadBiliAuthBundle(config.authFile);

@@ -18,6 +18,11 @@ import {
   parseSummaryBlocks,
   splitSummaryForComments,
 } from "../summary/format";
+import {
+  createProcessLockOwner,
+  isOwnerProcessAlive,
+  PASTE_RS_RATE_LIMIT_STALE_MS,
+} from "../../shared/runtime-locks";
 import { getRepoRoot } from "../../shared/runtime-tools";
 
 const sleep = (timeout) =>
@@ -38,8 +43,6 @@ const GUEST_COMMENT_WEB_LOCATION = 1315875;
 const GUEST_COMMENT_MODE = 3;
 const PASTE_RS_MIN_INTERVAL_MS = Math.max(0, Number(process.env.PASTE_RS_MIN_INTERVAL_MS) || 5_000);
 const PASTE_RS_RATE_LIMIT_WAIT_MS = 250;
-const PASTE_RS_RATE_LIMIT_STALE_MS = Math.max(1_000, Number(process.env.PASTE_RS_RATE_LIMIT_STALE_MS) || 10_000);
-
 interface CommentUnit {
   id: string;
   page: number;
@@ -834,7 +837,7 @@ async function acquirePasteRateLimitLock({
     try {
       fs.mkdirSync(lockPath);
       fs.writeFileSync(ownerPath, `${JSON.stringify({
-        pid: Number.isInteger(process.pid) && process.pid > 0 ? process.pid : null,
+        ...createProcessLockOwner(),
         updatedAt: new Date(nowImpl()).toISOString(),
       }, null, 2)}\n`, "utf8");
       return () => {
@@ -862,8 +865,7 @@ function isStalePasteRateLimitLock(
   nowImpl: () => number,
 ) {
   const owner = readPasteRateLimitLockOwner(ownerPath);
-  const ownerPid = Number(owner?.pid ?? 0);
-  if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
+  if (isOwnerProcessAlive(owner) === false) {
     return true;
   }
 
@@ -880,14 +882,14 @@ function isStalePasteRateLimitLock(
   }
 }
 
-function readPasteRateLimitLockOwner(ownerPath: string): { pid?: number | null } | null {
+function readPasteRateLimitLockOwner(ownerPath: string): { pid?: number | null; hostname?: string } | null {
   if (!fs.existsSync(ownerPath)) {
     return null;
   }
 
   try {
     const payload = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
-    return payload && typeof payload === "object" ? payload as { pid?: number | null } : null;
+    return payload && typeof payload === "object" ? payload as { pid?: number | null; hostname?: string } : null;
   } catch {
     return null;
   }
@@ -908,19 +910,6 @@ function readPasteRateLimitState(statePath: string): PasteRateLimitState | null 
     };
   } catch {
     return null;
-  }
-}
-
-function isProcessAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "EPERM") {
-      return true;
-    }
-
-    return false;
   }
 }
 

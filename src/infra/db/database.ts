@@ -5,11 +5,15 @@ import BetterSqlite3 from "better-sqlite3";
 import type { Db } from "./types";
 import { initializeDrizzleDb } from "./orm";
 import { migrateDatabase } from "./migrations";
+import {
+  cleanupStaleDatabaseWriteLock,
+  DB_WRITE_LOCK_RETRY_MS,
+  DB_WRITE_LOCK_STALE_MS,
+  DB_WRITE_LOCK_TIMEOUT_MS,
+  isOwnerProcessAlive,
+} from "../../shared/runtime-locks";
 
 const DB_PATH_SYMBOL = Symbol.for("video-pipeline.dbPath");
-const DB_WRITE_LOCK_RETRY_MS = 100;
-const DB_WRITE_LOCK_TIMEOUT_MS = 60_000;
-const DB_WRITE_LOCK_STALE_MS = 30 * 60_000;
 const activeWriteLocks = new Map<string, { depth: number; release: () => void }>();
 
 type DbWithPath = Db & {
@@ -19,6 +23,7 @@ type DbWithPath = Db & {
 export function openDatabase(databasePath: string): Db {
   const resolvedPath = path.resolve(databasePath);
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  cleanupStaleDatabaseWriteLock(resolvedPath);
 
   const db = new BetterSqlite3(resolvedPath) as DbWithPath;
   Object.defineProperty(db, DB_PATH_SYMBOL, {
@@ -152,7 +157,7 @@ function clearStaleDatabaseWriteLock(lockDir: string, ownerPath: string): boolea
     }
 
     const owner = readLockOwner(ownerPath);
-    if (owner?.pid && isProcessRunning(owner.pid)) {
+    if (isOwnerProcessAlive(owner) === true) {
       return false;
     }
 
@@ -166,26 +171,13 @@ function clearStaleDatabaseWriteLock(lockDir: string, ownerPath: string): boolea
   }
 }
 
-function readLockOwner(ownerPath: string): { pid?: number } | null {
+function readLockOwner(ownerPath: string): { pid?: number; hostname?: string } | null {
   try {
     const payload = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
-    return payload && typeof payload === "object" ? payload as { pid?: number } : null;
+    return payload && typeof payload === "object" ? payload as { pid?: number; hostname?: string } : null;
   } catch {
     return null;
   }
-}
-
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !isMissingProcessError(error);
-  }
-}
-
-function isMissingProcessError(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ESRCH");
 }
 
 function isAlreadyExistsError(error: unknown): boolean {
