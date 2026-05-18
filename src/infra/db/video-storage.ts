@@ -69,8 +69,8 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
         WHERE p.video_id = v.id
           AND p.is_deleted = 0
           AND (
-            (p.summary_text_processed IS NOT NULL AND TRIM(p.summary_text_processed) <> '')
-            OR (p.summary_text IS NOT NULL AND TRIM(p.summary_text) <> '')
+            (p.summary_text_processed IS NOT NULL AND TRIM(p.summary_text_processed) <> '' AND TRIM(p.summary_text_processed) NOT GLOB '<[0-9]*P>')
+            OR (p.summary_text IS NOT NULL AND TRIM(p.summary_text) <> '' AND TRIM(p.summary_text) NOT GLOB '<[0-9]*P>')
           )
           AND p.published = 0
       )
@@ -375,8 +375,8 @@ export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecor
     WHERE video_id = ${videoId}
       AND is_deleted = 0
       AND (
-        (summary_text_processed IS NOT NULL AND TRIM(summary_text_processed) <> '')
-        OR (summary_text IS NOT NULL AND TRIM(summary_text) <> '')
+        (summary_text_processed IS NOT NULL AND TRIM(summary_text_processed) <> '' AND TRIM(summary_text_processed) NOT GLOB '<[0-9]*P>')
+        OR (summary_text IS NOT NULL AND TRIM(summary_text) <> '' AND TRIM(summary_text) NOT GLOB '<[0-9]*P>')
       )
       AND published = 0
     ORDER BY page_no ASC

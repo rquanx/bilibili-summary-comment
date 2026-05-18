@@ -78,6 +78,39 @@ test("storage modules preserve video and event workflows after the split", async
   }
 });
 
+test("marker-only summaries count as completed but are excluded from pending publish queues", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-marker-summary-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVMARKER001",
+      aid: 100001,
+      title: "Marker Summary Test",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 910001,
+      partTitle: "P1",
+      durationSec: 2,
+      summaryText: "<1P>",
+      summaryHash: "marker-hash",
+      published: false,
+      isDeleted: false,
+    });
+
+    assert.equal(listPendingSummaryParts(db, video.id).length, 0);
+    assert.equal(listPendingPublishParts(db, video.id).length, 0);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("gap notification storage deduplicates notifications by gap key", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

@@ -17,7 +17,7 @@ import { compactPasteLinkSummaryRanges, extractCoveredPages, inspectSummaryPageM
 import { writeSummaryArtifacts } from "../src/domains/summary/files";
 import { normalizeSummaryOutput } from "../src/domains/summary/output";
 import { resolveSummaryPromptProfile } from "../src/domains/summary/prompt-config";
-import { reindexSummaryTextToPage } from "../src/infra/db/summary-text";
+import { getPreferredSummaryText, reindexSummaryTextToPage } from "../src/infra/db/summary-text";
 import {
   requestSummaryWithFallback,
   shouldSkipSummaryPart,
@@ -600,6 +600,23 @@ test("buildSummaryPromptInput keeps the base prompt generic across stream types"
   assert.match(promptInput.systemPrompt, /不要只写“闲聊”“互动”“继续聊天”“讲了个知识点”/u);
   assert.match(promptInput.systemPrompt, /把关键背景、动作、原因、结果或结论交代完整/u);
   assert.doesNotMatch(promptInput.systemPrompt, /优先保留观众最可能想回看的节目性内容/u);
+});
+
+test("getPreferredSummaryText hides marker-only summaries from rendered artifacts", () => {
+  assert.equal(
+    getPreferredSummaryText({
+      summary_text: "<1P>",
+      summary_text_processed: null,
+    }),
+    "",
+  );
+  assert.equal(
+    getPreferredSummaryText({
+      summary_text: "<1P> 1#00:00 real summary",
+      summary_text_processed: null,
+    }),
+    "<1P> 1#00:00 real summary",
+  );
 });
 
 test("resolveSummaryPromptProfile merges defaults, preset, and user overrides", () => {
@@ -1587,6 +1604,71 @@ test("writeSummaryArtifacts uses raw summary text during rebuild publish prepara
     assert.equal(
       fs.readFileSync(path.join(resolveVideoWorkDir(rebuildVideo, workRoot), "summary-p02.md"), "utf8").trim(),
       "<2P>\n2#00:00 原始内容二",
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("writeSummaryArtifacts hides marker-only summaries during rebuild publish preparation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-rebuild-marker-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVrebuildmarker1",
+      aid: 789115,
+      title: "Rebuild Marker Hidden Test",
+      pageCount: 2,
+    });
+    const rebuildVideo = {
+      ...video,
+      publish_needs_rebuild: 1,
+    };
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 321,
+      partTitle: "P1",
+      durationSec: 2,
+      summaryText: "<1P>",
+      summaryHash: "hash-marker",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 322,
+      partTitle: "P2",
+      durationSec: 30,
+      summaryText: "<2P>\n2#00:00 regular summary",
+      summaryHash: "hash-regular",
+      isDeleted: false,
+    });
+
+    const artifacts = writeSummaryArtifacts(db, rebuildVideo, workRoot, {
+      promptConfigPath: null,
+    });
+    const workDir = resolveVideoWorkDir(rebuildVideo, workRoot, repoRoot);
+
+    assert.equal(
+      fs.readFileSync(artifacts.summaryPath, "utf8").trim(),
+      "<2P>\n2#00:00 regular summary",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p01.md"), "utf8"),
+      "",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p02.md"), "utf8").trim(),
+      "<2P>\n2#00:00 regular summary",
     );
   } finally {
     db.close?.();

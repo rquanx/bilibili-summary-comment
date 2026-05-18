@@ -1,4 +1,4 @@
-import { sanitizeSummaryText } from "../../shared/summary-quality";
+import { isSummaryMarkerOnly, sanitizeSummaryText } from "../../shared/summary-quality";
 
 export function normalizeStoredSummaryText(value: string | null | undefined): string | null {
   const normalized = sanitizeSummaryText(value);
@@ -9,9 +9,10 @@ export function getPreferredSummaryText(part: {
   summary_text?: string | null;
   summary_text_processed?: string | null;
 } | null | undefined): string {
-  return normalizeStoredSummaryText(part?.summary_text_processed)
+  const preferred = normalizeStoredSummaryText(part?.summary_text_processed)
     ?? normalizeStoredSummaryText(part?.summary_text)
     ?? "";
+  return isSummaryMarkerOnly(preferred) ? "" : preferred;
 }
 
 export function hasPreferredSummaryText(part: {

@@ -1,4 +1,5 @@
 const SUMMARY_MARKER_INLINE_PATTERN = /^(<\d+P>)(?:\s+(.*))?$/u;
+const SUMMARY_MARKER_ONLY_PATTERN = /^<\d+P>$/u;
 const SUMMARY_TIMESTAMP_PREFIX_PATTERN = /^(?:\d+#)?\d{2}:\d{2}(?::\d{2})?\s+/u;
 const SUMMARY_EXACT_PROMOTIONAL_PATTERN = /\u8bf7\u4e0d\u541d\u70b9\u8d5e\u8ba2\u9605\u8ba2\u9605\u8f6c\u53d1\u6253\u8d4f\u652f\u6301\u660e\u955c\u4e0e\u70b9\u70b9\u680f\u76ee/u;
 const CTA_KEYWORD_PATTERNS = [
@@ -51,6 +52,10 @@ export function sanitizeSummaryText(text: string | null | undefined) {
 
   const compactedLines = trimEmptyBoundaryLines(collapseRepeatedBlankLines(sanitizedLines));
   return compactedLines.join("\n").trim();
+}
+
+export function isSummaryMarkerOnly(text: string | null | undefined) {
+  return SUMMARY_MARKER_ONLY_PATTERN.test(String(text ?? "").trim());
 }
 
 export function isLikelyPromotionalSummaryContent(text: string | null | undefined) {

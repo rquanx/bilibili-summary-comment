@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildTimedSubtitleTextFromSrt, formatSummaryTime, parseSrt } from "../subtitle/srt-utils";
 import { ensureVideoWorkDir } from "../../shared/work-paths";
+import { isSummaryMarkerOnly } from "../../shared/summary-quality";
 import {
   getPreferredSummaryText,
   listPendingPublishParts,
@@ -339,5 +340,8 @@ function getAlignedSummaryText(
   const summaryText = useProcessedSummaryText
     ? getPreferredSummaryText(part)
     : String(part.summary_text ?? "").trim();
+  if (isSummaryMarkerOnly(summaryText)) {
+    return "";
+  }
   return reindexSummaryTextToPage(summaryText, part.page_no);
 }

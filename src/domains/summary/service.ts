@@ -21,6 +21,7 @@ const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
 const SUMMARY_FETCH_FAILED_PATTERN = /fetch failed/iu;
 const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network error|headers timeout|body timeout)/iu;
 const SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN = /(?:408 Request Timeout|425 Too Early|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)/iu;
+const EMPTY_SUMMARY_MAX_DURATION_SEC = 3;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
@@ -177,25 +178,82 @@ export async function summarizePartFromSubtitle({
     throw new Error("Missing summary API key. Set SUMMARY_API_KEY or OPENAI_API_KEY.");
   }
 
-  eventLogger?.log({
-    scope: "summary",
-    action: "llm",
-    status: "started",
-    pageNo,
-    cid,
-    partTitle,
-    message: `Starting LLM summary for P${pageNo}`,
-    details: {
-      model,
-      apiFormat,
-      subtitlePath,
-    },
-  });
-
   let promptPath = null;
   try {
     const subtitleText = fs.readFileSync(subtitlePath, "utf8");
     const cueCount = parseSrt(subtitleText).length;
+    if (shouldStoreEmptySummaryForPart({
+      durationSec,
+      cueCount,
+    })) {
+      const emptySummaryText = buildEmptySummaryMarker(pageNo);
+      const normalized = `${emptySummaryText}\n`;
+      const summaryHash = createHash("sha1").update(normalized).digest("hex");
+      const saved = savePartSummary(db, videoId, pageNo, {
+        summaryText: emptySummaryText,
+        summaryHash,
+      });
+      const video = getVideoById(db, videoId) ?? {
+        id: videoId,
+        bvid,
+        title: partTitle,
+        owner_mid: ownerMid,
+        owner_name: ownerName,
+        owner_dir_name: null,
+        work_dir_name: null,
+      };
+      const partSummaryPath = writePartSummaryArtifact({
+        db,
+        video,
+        pageNo,
+        summaryText: "",
+        workRoot,
+      });
+
+      eventLogger?.log({
+        scope: "summary",
+        action: "skip",
+        status: "skipped",
+        pageNo,
+        cid,
+        partTitle,
+        message: `Skipped summary output for trivial short part P${pageNo}`,
+        details: {
+          reason: "trivial-short-part",
+          durationSec,
+          cueCount,
+          subtitlePath,
+          summaryPath: partSummaryPath,
+        },
+      });
+
+      return {
+        pageNo,
+        summaryText: "",
+        summaryHash,
+        promptPath: null,
+        summaryPath: partSummaryPath,
+        dbRow: saved,
+        modelUsed: null,
+        fallbackUsed: false,
+      };
+    }
+
+    eventLogger?.log({
+      scope: "summary",
+      action: "llm",
+      status: "started",
+      pageNo,
+      cid,
+      partTitle,
+      message: `Starting LLM summary for P${pageNo}`,
+      details: {
+        model,
+        apiFormat,
+        subtitlePath,
+      },
+    });
+
     const promptProfile = resolveSummaryPromptProfile({
       ownerMid,
       promptConfigPath,
@@ -392,6 +450,22 @@ function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
 function computeSummaryRetryDelayMs(attempt: number) {
   const normalizedAttempt = Math.max(1, Math.floor(attempt));
   return SUMMARY_RETRY_BASE_DELAY_MS * normalizedAttempt;
+}
+
+function shouldStoreEmptySummaryForPart({
+  durationSec,
+  cueCount,
+}: {
+  durationSec: number;
+  cueCount: number;
+}) {
+  return Number(durationSec) > 0
+    && Number(durationSec) <= EMPTY_SUMMARY_MAX_DURATION_SEC
+    && Number(cueCount) === 0;
+}
+
+function buildEmptySummaryMarker(pageNo: number) {
+  return `<${pageNo}P>`;
 }
 
 function delay(timeoutMs: number) {
