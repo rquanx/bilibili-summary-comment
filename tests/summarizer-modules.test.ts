@@ -10,6 +10,7 @@ import {
   buildSummaryHttpRequest,
   buildSummaryPromptInput,
   extractSummaryText,
+  requestSummary,
   resolveSummaryApiTarget,
 } from "../src/domains/summary/client";
 import { compactPasteLinkSummaryRanges, extractCoveredPages, inspectSummaryPageMarkers, splitSummaryForComments } from "../src/domains/summary/format";
@@ -22,6 +23,7 @@ import {
   shouldSkipSummaryPart,
   shouldRetrySummaryWithGeminiFlash,
   shouldRetrySummaryWithGlm5,
+  shouldRetrySummaryRequest,
   summarizePartFromSubtitle,
 } from "../src/domains/summary/service";
 import { resolveVideoWorkDir } from "../src/shared/work-paths";
@@ -76,6 +78,52 @@ test("buildSummaryHttpRequest creates chat-completions payloads", () => {
   });
 });
 
+test("requestSummary surfaces endpoint, model, and nested cause details for transport failures", async () => {
+  const transportCause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:7897"), {
+    code: "ECONNREFUSED",
+    errno: -4078,
+    syscall: "connect",
+    address: "127.0.0.1",
+    port: 7897,
+  });
+
+  await assert.rejects(
+    requestSummary({
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "raw subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "responses",
+      fetchImpl: async () => {
+        throw Object.assign(new Error("fetch failed"), {
+          cause: transportCause,
+        });
+      },
+    }),
+    (error: Error & Record<string, unknown>) => {
+      assert.match(
+        error.message,
+        /Summary request transport failed: connect ECONNREFUSED 127\.0\.0\.1:7897 \| endpoint=https:\/\/example\.com\/v1\/responses \| model=kimi-k2\.5 \| format=responses/u,
+      );
+      assert.equal(error.summaryEndpoint, "https://example.com/v1/responses");
+      assert.equal(error.summaryModel, "kimi-k2.5");
+      assert.equal(error.summaryApiFormat, "responses");
+      assert.equal(error.causeMessage, "connect ECONNREFUSED 127.0.0.1:7897");
+      assert.equal(error.causeCode, "ECONNREFUSED");
+      assert.equal(error.causeErrno, -4078);
+      assert.equal(error.causeSyscall, "connect");
+      assert.equal(error.causeAddress, "127.0.0.1");
+      assert.equal(error.causePort, 7897);
+      return true;
+    },
+  );
+});
+
 test("shouldRetrySummaryWithGlm5 only matches kimi-compatible fallback errors", () => {
   assert.equal(
     shouldRetrySummaryWithGlm5({
@@ -104,7 +152,45 @@ test("shouldRetrySummaryWithGlm5 only matches kimi-compatible fallback errors", 
   assert.equal(
     shouldRetrySummaryWithGlm5({
       model: "kimi-k2.5",
+      error: new Error("fetch failed"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryWithGlm5({
+      model: "kimi-k2.5",
       error: new Error("Summary request failed: 500 Internal Server Error\n{\"message\":\"different error\"}"),
+    }),
+    false,
+  );
+});
+
+test("shouldRetrySummaryRequest only matches transient network and gateway errors", () => {
+  assert.equal(
+    shouldRetrySummaryRequest({
+      error: new Error("fetch failed"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryRequest({
+      error: new Error("Summary request failed: 503 Service Unavailable"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryRequest({
+      error: new Error("Summary request failed: 429 Too Many Requests"),
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldRetrySummaryRequest({
+      error: new Error("Summary request failed: 400 Bad Request"),
     }),
     false,
   );
@@ -249,6 +335,77 @@ test("requestSummaryWithFallback retries 429 responses once before surfacing the
   );
 
   assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+});
+
+test("requestSummaryWithFallback retries transient network failures on the same model before succeeding", async () => {
+  const calls = [];
+  const sleepCalls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "gpt-test",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    sleepImpl: async (timeoutMs) => {
+      sleepCalls.push(timeoutMs);
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (calls.length < 3) {
+        throw new Error("fetch failed");
+      }
+      return "<2P> 2#00:00 recovered summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["gpt-test", "gpt-test", "gpt-test"]);
+  assert.deepEqual(sleepCalls, [1500, 3000]);
+  assert.equal(result.modelUsed, "gpt-test");
+  assert.equal(result.fallbackUsed, false);
+  assert.equal(result.summaryText, "<2P> 2#00:00 recovered summary");
+});
+
+test("requestSummaryWithFallback falls back to glm-5 after kimi network retries are exhausted", async () => {
+  const calls = [];
+  const sleepCalls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    sleepImpl: async (timeoutMs) => {
+      sleepCalls.push(timeoutMs);
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "kimi-k2.5") {
+        throw new Error("fetch failed");
+      }
+      return "<2P> 2#00:00 fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
+  assert.deepEqual(sleepCalls, [1500, 3000]);
+  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "kimi-network-error");
+  assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
 });
 
 test("requestSummaryWithFallback retries empty-text responses once with glm-5", async () => {
@@ -440,7 +597,7 @@ test("buildSummaryPromptInput keeps the base prompt generic across stream types"
   assert.match(promptInput.systemPrompt, /核心观点/u);
   assert.match(promptInput.systemPrompt, /默认不要把 summary 写得过短/u);
   assert.match(promptInput.systemPrompt, /不同类型的主播\/内容/u);
-  assert.match(promptInput.systemPrompt, /不要省略成“聊了行情”/u);
+  assert.match(promptInput.systemPrompt, /不要只写“闲聊”“互动”“继续聊天”“讲了个知识点”/u);
   assert.match(promptInput.systemPrompt, /把关键背景、动作、原因、结果或结论交代完整/u);
   assert.doesNotMatch(promptInput.systemPrompt, /优先保留观众最可能想回看的节目性内容/u);
 });

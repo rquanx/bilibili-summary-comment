@@ -56,3 +56,37 @@ test("errorToJson includes transport details from rich API errors", () => {
     message: "啥都木有",
   });
 });
+
+test("errorToJson includes nested cause and summary request context details", () => {
+  const transportCause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:7897"), {
+    code: "ECONNREFUSED",
+    errno: -4078,
+    syscall: "connect",
+    address: "127.0.0.1",
+    port: 7897,
+  });
+  const error = Object.assign(
+    new Error("Summary request transport failed: connect ECONNREFUSED 127.0.0.1:7897 | endpoint=https://example.com/v1/responses | model=kimi-k2.5 | format=responses", {
+      cause: Object.assign(new Error("fetch failed"), {
+        cause: transportCause,
+      }),
+    }),
+    {
+      summaryEndpoint: "https://example.com/v1/responses",
+      summaryModel: "kimi-k2.5",
+      summaryApiFormat: "responses",
+    },
+  );
+
+  const payload = errorToJson(error);
+
+  assert.equal(payload.summaryEndpoint, "https://example.com/v1/responses");
+  assert.equal(payload.summaryModel, "kimi-k2.5");
+  assert.equal(payload.summaryApiFormat, "responses");
+  assert.equal(payload.causeMessage, "connect ECONNREFUSED 127.0.0.1:7897");
+  assert.equal(payload.causeCode, "ECONNREFUSED");
+  assert.equal(payload.causeErrno, -4078);
+  assert.equal(payload.causeSyscall, "connect");
+  assert.equal(payload.causeAddress, "127.0.0.1");
+  assert.equal(payload.causePort, 7897);
+});

@@ -11,11 +11,16 @@ import { resolveSummaryPromptProfile } from "./prompt-config";
 const KIMI_PRIMARY_MODEL = "kimi-k2.5";
 const GLM_FALLBACK_MODEL = "glm-5";
 const GEMINI_FLASH_FALLBACK_MODEL = "gemini-3-flash-preview";
+const SUMMARY_REQUEST_MAX_ATTEMPTS = 3;
+const SUMMARY_RETRY_BASE_DELAY_MS = 1_500;
 const KIMI_PROMPT_TOKENS_ERROR_PATTERN = /Cannot read properties of undefined \(reading 'prompt_tokens'\)/u;
 const SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN = /Summary response did not contain text output\./u;
 const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
 const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
 const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
+const SUMMARY_FETCH_FAILED_PATTERN = /fetch failed/iu;
+const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network error|headers timeout|body timeout)/iu;
+const SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN = /(?:408 Request Timeout|425 Too Early|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)/iu;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
@@ -25,6 +30,7 @@ export function shouldRetrySummaryWithGlm5({ model, error }) {
       KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message)
       || SUMMARY_TOO_MANY_REQUEST.test(message)
       || SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
+      || shouldRetrySummaryRequest({ error })
     );
 }
 
@@ -37,15 +43,32 @@ export function shouldRetrySummaryWithGeminiFlash({ error, geminiApiKey }) {
   return Boolean(String(geminiApiKey ?? "").trim()) && shouldSkipSummaryPart({ error });
 }
 
+export function shouldRetrySummaryRequest({ error }) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return SUMMARY_FETCH_FAILED_PATTERN.test(message)
+    || SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN.test(message)
+    || SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN.test(message);
+}
+
 export async function requestSummaryWithFallback({
   requestArgs,
   requestSummaryImpl = requestSummary,
   requestGeminiSummaryImpl = requestSummaryWithGeminiSdk,
   onFallback = null,
+  onRetry = null,
   geminiApiKey = process.env.GEMINI_KEY ?? "",
+  maxRequestAttempts = SUMMARY_REQUEST_MAX_ATTEMPTS,
+  sleepImpl = delay,
 }) {
   try {
-    const summaryText = await requestSummaryImpl(requestArgs);
+    const summaryText = await requestSummaryWithRetries({
+      requestArgs,
+      requestImpl: requestSummaryImpl,
+      sleepImpl,
+      maxAttempts: maxRequestAttempts,
+      onRetry,
+      provider: "primary",
+    });
     return {
       summaryText,
       modelUsed: requestArgs.model,
@@ -76,7 +99,14 @@ export async function requestSummaryWithFallback({
     const requestImpl = fallbackTarget.provider === "gemini-sdk"
       ? requestGeminiSummaryImpl
       : requestSummaryImpl;
-    const summaryText = await requestImpl(fallbackRequestArgs);
+    const summaryText = await requestSummaryWithRetries({
+      requestArgs: fallbackRequestArgs,
+      requestImpl,
+      sleepImpl,
+      maxAttempts: maxRequestAttempts,
+      onRetry,
+      provider: fallbackTarget.provider ?? "fallback",
+    });
 
     return {
       summaryText,
@@ -84,6 +114,40 @@ export async function requestSummaryWithFallback({
       fallbackUsed: true,
       fallbackReason: fallbackTarget.reason,
     };
+  }
+}
+
+async function requestSummaryWithRetries({
+  requestArgs,
+  requestImpl,
+  sleepImpl,
+  maxAttempts,
+  onRetry,
+  provider,
+}) {
+  let attempt = 1;
+
+  while (true) {
+    try {
+      return await requestImpl(requestArgs);
+    } catch (error) {
+      if (!shouldRetrySummaryRequest({ error }) || attempt >= Math.max(1, maxAttempts)) {
+        throw error;
+      }
+
+      const nextDelayMs = computeSummaryRetryDelayMs(attempt);
+      await onRetry?.({
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts,
+        model: requestArgs.model,
+        provider,
+        error,
+        nextDelayMs,
+      });
+      await sleepImpl(nextDelayMs);
+      attempt += 1;
+    }
   }
 }
 
@@ -298,6 +362,8 @@ function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
       model: GLM_FALLBACK_MODEL,
       reason: SUMMARY_TOO_MANY_REQUEST.test(message)
         ? "kimi-rate-limit"
+        : shouldRetrySummaryRequest({ error })
+          ? "kimi-network-error"
         : SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
           ? "kimi-empty-text-response"
           : "kimi-prompt_tokens-error",
@@ -321,4 +387,15 @@ function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
   }
 
   return null;
+}
+
+function computeSummaryRetryDelayMs(attempt: number) {
+  const normalizedAttempt = Math.max(1, Math.floor(attempt));
+  return SUMMARY_RETRY_BASE_DELAY_MS * normalizedAttempt;
+}
+
+function delay(timeoutMs: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, timeoutMs);
+  });
 }

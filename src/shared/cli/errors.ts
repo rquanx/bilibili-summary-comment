@@ -9,13 +9,19 @@ export interface ErrorJson extends Record<string, unknown> {
 }
 
 interface ErrorLike {
+  name?: unknown;
   message?: unknown;
   stack?: unknown;
   code?: unknown;
+  errno?: unknown;
   statusCode?: unknown;
+  syscall?: unknown;
+  address?: unknown;
+  port?: unknown;
   path?: unknown;
   method?: unknown;
   rawResponse?: unknown;
+  cause?: unknown;
   bvid?: unknown;
   aid?: unknown;
   pageNo?: unknown;
@@ -25,6 +31,16 @@ interface ErrorLike {
   failedScope?: unknown;
   failedAction?: unknown;
   partTitle?: unknown;
+  summaryEndpoint?: unknown;
+  summaryModel?: unknown;
+  summaryApiFormat?: unknown;
+  causeName?: unknown;
+  causeMessage?: unknown;
+  causeCode?: unknown;
+  causeErrno?: unknown;
+  causeSyscall?: unknown;
+  causeAddress?: unknown;
+  causePort?: unknown;
 }
 
 export class CliError extends Error {
@@ -77,6 +93,10 @@ export function extractErrorDetails(error: unknown): CliErrorDetails {
     details.code = errorLike.code;
   }
 
+  if (errorLike.errno !== undefined) {
+    details.errno = errorLike.errno;
+  }
+
   if (errorLike.statusCode !== undefined) {
     details.statusCode = errorLike.statusCode;
   }
@@ -123,6 +143,20 @@ export function extractErrorDetails(error: unknown): CliErrorDetails {
   if (typeof errorLike.partTitle === "string" && errorLike.partTitle.trim()) {
     details.partTitle = errorLike.partTitle.trim();
   }
+
+  if (typeof errorLike.summaryEndpoint === "string" && errorLike.summaryEndpoint.trim()) {
+    details.summaryEndpoint = errorLike.summaryEndpoint.trim();
+  }
+
+  if (typeof errorLike.summaryModel === "string" && errorLike.summaryModel.trim()) {
+    details.summaryModel = errorLike.summaryModel.trim();
+  }
+
+  if (typeof errorLike.summaryApiFormat === "string" && errorLike.summaryApiFormat.trim()) {
+    details.summaryApiFormat = errorLike.summaryApiFormat.trim();
+  }
+
+  assignCauseDetails(details, errorLike);
 
   return details;
 }
@@ -198,4 +232,55 @@ function isJsonSafeValue(value: unknown): boolean {
   }
 
   return Object.values(value).every((item) => isJsonSafeValue(item));
+}
+
+function assignCauseDetails(details: CliErrorDetails, errorLike: ErrorLike): void {
+  const directCause = normalizeCauseDetails({
+    causeName: errorLike.causeName,
+    causeMessage: errorLike.causeMessage,
+    causeCode: errorLike.causeCode,
+    causeErrno: errorLike.causeErrno,
+    causeSyscall: errorLike.causeSyscall,
+    causeAddress: errorLike.causeAddress,
+    causePort: errorLike.causePort,
+  });
+
+  const nestedCause = extractNestedCauseDetails(errorLike.cause);
+  const mergedCause = {
+    ...nestedCause,
+    ...directCause,
+  };
+
+  for (const [key, value] of Object.entries(mergedCause)) {
+    if (value !== undefined) {
+      details[key] = value;
+    }
+  }
+}
+
+function extractNestedCauseDetails(cause: unknown): CliErrorDetails {
+  if (!cause || typeof cause !== "object") {
+    return {};
+  }
+
+  const causeLike = cause as ErrorLike;
+  const nestedCause = extractNestedCauseDetails(causeLike.cause);
+  return {
+    ...normalizeCauseDetails({
+      causeName: causeLike.causeName ?? causeLike.name,
+      causeMessage: causeLike.causeMessage ?? causeLike.message,
+      causeCode: causeLike.causeCode ?? causeLike.code,
+      causeErrno: causeLike.causeErrno ?? causeLike.errno,
+      causeSyscall: causeLike.causeSyscall ?? causeLike.syscall,
+      causeAddress: causeLike.causeAddress ?? causeLike.address,
+      causePort: causeLike.causePort ?? causeLike.port,
+    }),
+    ...nestedCause,
+  };
+}
+
+function normalizeCauseDetails(details: CliErrorDetails): CliErrorDetails {
+  return Object.fromEntries(
+    Object.entries(details).filter(([, value]) => value !== undefined && value !== ""),
+  );
 }

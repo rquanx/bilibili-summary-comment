@@ -23,29 +23,181 @@ export async function requestSummary({
     promptProfile,
   });
   const api = resolveSummaryApiTarget(apiBaseUrl, apiFormat);
-  const response = await fetchImpl(
-    api.endpointUrl,
-    buildSummaryHttpRequest({
-      apiFormat: api.apiFormat,
+  let response;
+  try {
+    response = await fetchImpl(
+      api.endpointUrl,
+      buildSummaryHttpRequest({
+        apiFormat: api.apiFormat,
+        model,
+        apiKey,
+        systemPrompt,
+        userPrompt,
+      }),
+    );
+  } catch (error) {
+    throw buildSummaryTransportError(error, {
+      endpointUrl: api.endpointUrl,
       model,
-      apiKey,
-      systemPrompt,
-      userPrompt,
-    }),
-  );
+      apiFormat: api.apiFormat,
+    });
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Summary request failed: ${response.status} ${response.statusText}\n${errorText}`);
+    const error = new Error(`Summary request failed: ${response.status} ${response.statusText}\n${errorText}`);
+    attachSummaryRequestContext(error, {
+      endpointUrl: api.endpointUrl,
+      model,
+      apiFormat: api.apiFormat,
+    });
+    throw error;
   }
 
   const data = await response.json();
   const text = extractSummaryText(data, api.apiFormat);
   if (!text.trim()) {
-    throw new Error("Summary response did not contain text output.");
+    const error = new Error("Summary response did not contain text output.");
+    attachSummaryRequestContext(error, {
+      endpointUrl: api.endpointUrl,
+      model,
+      apiFormat: api.apiFormat,
+    });
+    throw error;
   }
 
   return text.trim();
+}
+
+function buildSummaryTransportError(
+  error,
+  {
+    endpointUrl,
+    model,
+    apiFormat,
+  }: {
+    endpointUrl: string;
+    model: string;
+    apiFormat: string;
+  },
+) {
+  const cause = normalizeErrorObject(error);
+  const causeMessage = extractNestedErrorMessage(cause) || extractErrorMessage(error) || "Unknown transport error";
+  const message = [
+    `Summary request transport failed: ${causeMessage}`,
+    `endpoint=${endpointUrl}`,
+    `model=${model}`,
+    `format=${apiFormat}`,
+  ].join(" | ");
+  const wrappedError = new Error(message, {
+    cause: cause ?? undefined,
+  });
+  attachSummaryRequestContext(wrappedError, {
+    endpointUrl,
+    model,
+    apiFormat,
+  });
+  attachNestedErrorDetails(wrappedError, cause);
+  return wrappedError;
+}
+
+function attachSummaryRequestContext(
+  error,
+  {
+    endpointUrl,
+    model,
+    apiFormat,
+  }: {
+    endpointUrl: string;
+    model: string;
+    apiFormat: string;
+  },
+) {
+  if (!error || typeof error !== "object") {
+    return;
+  }
+
+  Object.assign(error, {
+    summaryEndpoint: endpointUrl,
+    summaryModel: model,
+    summaryApiFormat: apiFormat,
+  });
+}
+
+function attachNestedErrorDetails(error, cause) {
+  if (!error || typeof error !== "object" || !cause || typeof cause !== "object") {
+    return;
+  }
+
+  const details = collectNestedErrorDetails(cause);
+
+  for (const [key, value] of Object.entries(details)) {
+    if (value !== undefined) {
+      error[key] = value;
+    }
+  }
+}
+
+function normalizeErrorObject(error) {
+  return error && typeof error === "object" ? error : null;
+}
+
+function extractErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object" && typeof error.message === "string") {
+    return error.message;
+  }
+
+  return String(error ?? "").trim();
+}
+
+function extractNestedErrorMessage(error) {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+
+  const directMessage = typeof error.message === "string" ? error.message.trim() : "";
+  if (directMessage && directMessage.toLowerCase() !== "fetch failed") {
+    return directMessage;
+  }
+
+  const nestedCause = normalizeErrorObject(error.cause);
+  if (nestedCause) {
+    return extractNestedErrorMessage(nestedCause);
+  }
+
+  return directMessage;
+}
+
+function collectNestedErrorDetails(error) {
+  if (!error || typeof error !== "object") {
+    return {};
+  }
+
+  const directDetails = {
+    causeName: typeof error.name === "string" ? error.name : undefined,
+    causeMessage: typeof error.message === "string" ? error.message.trim() || undefined : undefined,
+    causeCode: error.code,
+    causeErrno: error.errno,
+    causeSyscall: error.syscall,
+    causeAddress: error.address,
+    causePort: error.port,
+  };
+  const nestedCause = normalizeErrorObject(error.cause);
+  const nestedDetails = nestedCause ? collectNestedErrorDetails(nestedCause) : {};
+  const mergedDetails = {
+    ...directDetails,
+    ...nestedDetails,
+  };
+
+  if (String(mergedDetails.causeMessage ?? "").trim().toLowerCase() === "fetch failed") {
+    mergedDetails.causeMessage = directDetails.causeMessage;
+  }
+
+  return mergedDetails;
 }
 
 export function buildSummaryPromptInput({
