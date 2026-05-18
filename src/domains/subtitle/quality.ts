@@ -5,6 +5,9 @@ const VOLUNTEER_CREDIT_PARTIAL_PATTERNS = [
   /^\u5b57\u5e55\u5fd7\u613f\u8005$/u,
   /^\u674e\u5b97\u76db$/u,
 ];
+const PROMOTIONAL_CUE_PATTERNS = [
+  /^\u8bf7\u4e0d\u541d\u70b9\u8d5e\u8ba2\u9605\u8ba2\u9605\u8f6c\u53d1\u6253\u8d4f\u652f\u6301\u660e\u955c\u4e0e\u70b9\u70b9\u680f\u76ee$/u,
+];
 
 export function inspectSubtitleQuality(srtText: string | null | undefined) {
   const cues = parseSrt(srtText);
@@ -76,5 +79,6 @@ export function isLikelyVolunteerCreditCue(text: string | null | undefined) {
   }
 
   return VOLUNTEER_CREDIT_FULL_PATTERN.test(normalized)
-    || VOLUNTEER_CREDIT_PARTIAL_PATTERNS.some((pattern) => pattern.test(normalized));
+    || VOLUNTEER_CREDIT_PARTIAL_PATTERNS.some((pattern) => pattern.test(normalized))
+    || PROMOTIONAL_CUE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
