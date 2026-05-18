@@ -229,6 +229,85 @@ test("openDatabase upgrades a legacy schema and seeds drizzle migration history"
   }
 });
 
+test("openDatabase respects an explicit SQLite journal mode override", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-journal-mode-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const originalJournalMode = process.env.SQLITE_JOURNAL_MODE;
+  const originalFallbackMode = process.env.SQLITE_JOURNAL_MODE_FALLBACK;
+  process.env.SQLITE_JOURNAL_MODE = "DELETE";
+  process.env.SQLITE_JOURNAL_MODE_FALLBACK = "DELETE";
+
+  try {
+    const db = openDatabase(dbPath);
+    try {
+      const journalMode = String(db.prepare("PRAGMA journal_mode").pluck().get() ?? "").toLowerCase();
+      assert.equal(journalMode, "delete");
+    } finally {
+      db.close?.();
+    }
+  } finally {
+    if (originalJournalMode === undefined) {
+      delete process.env.SQLITE_JOURNAL_MODE;
+    } else {
+      process.env.SQLITE_JOURNAL_MODE = originalJournalMode;
+    }
+
+    if (originalFallbackMode === undefined) {
+      delete process.env.SQLITE_JOURNAL_MODE_FALLBACK;
+    } else {
+      process.env.SQLITE_JOURNAL_MODE_FALLBACK = originalFallbackMode;
+    }
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("openDatabase falls back from WAL when shm open fails", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-journal-fallback-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const originalJournalMode = process.env.SQLITE_JOURNAL_MODE;
+  const originalFallbackMode = process.env.SQLITE_JOURNAL_MODE_FALLBACK;
+  const originalPragma = BetterSqlite3.prototype.pragma;
+  process.env.SQLITE_JOURNAL_MODE = "WAL";
+  process.env.SQLITE_JOURNAL_MODE_FALLBACK = "DELETE";
+
+  BetterSqlite3.prototype.pragma = function patchedPragma(statement: string, options?: unknown) {
+    if (statement === "journal_mode = WAL") {
+      const error = new Error("disk I/O error") as Error & { code?: string };
+      error.code = "SQLITE_IOERR_SHMOPEN";
+      throw error;
+    }
+
+    return originalPragma.call(this, statement, options as never);
+  };
+
+  try {
+    const db = openDatabase(dbPath);
+    try {
+      const journalMode = String(db.prepare("PRAGMA journal_mode").pluck().get() ?? "").toLowerCase();
+      assert.equal(journalMode, "delete");
+    } finally {
+      db.close?.();
+    }
+  } finally {
+    BetterSqlite3.prototype.pragma = originalPragma;
+
+    if (originalJournalMode === undefined) {
+      delete process.env.SQLITE_JOURNAL_MODE;
+    } else {
+      process.env.SQLITE_JOURNAL_MODE = originalJournalMode;
+    }
+
+    if (originalFallbackMode === undefined) {
+      delete process.env.SQLITE_JOURNAL_MODE_FALLBACK;
+    } else {
+      process.env.SQLITE_JOURNAL_MODE_FALLBACK = originalFallbackMode;
+    }
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("recent reprocess run storage records successes and can query the latest successful candidate", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-reprocess-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

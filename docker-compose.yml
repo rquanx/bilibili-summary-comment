@@ -25,6 +25,8 @@ services:
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Asia/Shanghai}
       WORK_ROOT: work
       PIPELINE_DB_PATH: work/pipeline.sqlite3
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_JOURNAL_MODE_FALLBACK: ${SQLITE_JOURNAL_MODE_FALLBACK:-DELETE}
       BILI_AUTH_FILE: .auth/bili-auth.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -47,6 +49,8 @@ services:
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Asia/Shanghai}
       WORK_ROOT: work
       PIPELINE_DB_PATH: work/pipeline.sqlite3
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_JOURNAL_MODE_FALLBACK: ${SQLITE_JOURNAL_MODE_FALLBACK:-DELETE}
       BILI_AUTH_FILE: .auth/bili-auth.json
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility

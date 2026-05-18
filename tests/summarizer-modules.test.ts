@@ -616,6 +616,15 @@ test("normalizeSummaryOutput keeps page-prefixed timestamps and normalizes page 
   assert.equal(normalized, "<23P>\n23#03:03 继续聊天\n23#00:20 展示照片");
 });
 
+test("normalizeSummaryOutput removes promotional outro summaries", () => {
+  const normalized = normalizeSummaryOutput(
+    "<1P> 1#00:00 片尾结束语，提示观众点赞、订阅、转发、打赏支持明镜与点点栏目",
+    1,
+  );
+
+  assert.equal(normalized, "<1P>");
+});
+
 test("splitSummaryForComments splits oversized page blocks into multiple comment-safe chunks", () => {
   const repeatedLine = "这一段内容很长，需要继续拆分。";
   const longBody = Array.from({ length: 120 }, () => repeatedLine).join("");

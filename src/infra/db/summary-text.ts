@@ -1,5 +1,7 @@
+import { sanitizeSummaryText } from "../../shared/summary-quality";
+
 export function normalizeStoredSummaryText(value: string | null | undefined): string | null {
-  const normalized = String(value ?? "").trim();
+  const normalized = sanitizeSummaryText(value);
   return normalized || null;
 }
 

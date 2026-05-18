@@ -15,6 +15,8 @@ import {
 
 const DB_PATH_SYMBOL = Symbol.for("video-pipeline.dbPath");
 const activeWriteLocks = new Map<string, { depth: number; release: () => void }>();
+const DEFAULT_SQLITE_JOURNAL_MODE = "WAL";
+const DEFAULT_SQLITE_JOURNAL_MODE_FALLBACK = "DELETE";
 
 type DbWithPath = Db & {
   [DB_PATH_SYMBOL]?: string;
@@ -35,7 +37,7 @@ export function openDatabase(databasePath: string): Db {
   initializeDrizzleDb(db);
 
   withDatabaseWriteLock(db, () => {
-    db.pragma("journal_mode = WAL");
+    applyConfiguredJournalMode(db);
     db.pragma("busy_timeout = 5000");
     db.pragma("foreign_keys = ON");
     migrateDatabase(db);
@@ -186,4 +188,47 @@ function isAlreadyExistsError(error: unknown): boolean {
 
 function sleepSync(timeoutMs: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, timeoutMs);
+}
+
+function applyConfiguredJournalMode(db: Db) {
+  const preferredMode = normalizeJournalMode(process.env.SQLITE_JOURNAL_MODE, DEFAULT_SQLITE_JOURNAL_MODE);
+
+  try {
+    db.pragma(`journal_mode = ${preferredMode}`);
+    return;
+  } catch (error) {
+    if (!shouldFallbackJournalMode(error, preferredMode)) {
+      throw error;
+    }
+  }
+
+  const fallbackMode = normalizeJournalMode(
+    process.env.SQLITE_JOURNAL_MODE_FALLBACK,
+    DEFAULT_SQLITE_JOURNAL_MODE_FALLBACK,
+  );
+  if (fallbackMode === preferredMode) {
+    throw createJournalModeError(preferredMode, fallbackMode);
+  }
+
+  db.pragma(`journal_mode = ${fallbackMode}`);
+}
+
+function normalizeJournalMode(value: unknown, fallback: string): string {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  return normalized || fallback;
+}
+
+function shouldFallbackJournalMode(error: unknown, preferredMode: string): boolean {
+  if (preferredMode !== "WAL") {
+    return false;
+  }
+
+  const code = String((error as { code?: unknown })?.code ?? "").trim().toUpperCase();
+  return code === "SQLITE_IOERR_SHMOPEN";
+}
+
+function createJournalModeError(preferredMode: string, fallbackMode: string) {
+  return new Error(
+    `Failed to enable SQLite journal mode ${preferredMode}; fallback mode resolves to the same value (${fallbackMode}).`,
+  );
 }

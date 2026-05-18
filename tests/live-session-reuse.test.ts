@@ -140,6 +140,59 @@ test("same-session summary reuse does not copy processed paste-link fallbacks in
   }
 });
 
+test("same-session summary reuse sanitizes promotional outro summaries", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-live-reuse-promotional-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const sourceVideo = upsertVideo(db, {
+      bvid: "BVSOURCEPROMO1",
+      aid: 2016,
+      title: "Anchor Session 2026.04.11 20.29.51",
+      pageCount: 1,
+    });
+    const targetVideo = upsertVideo(db, {
+      bvid: "BVTARGETPROMO1",
+      aid: 2209,
+      title: "Anchor Session 2026.04.11 20.29.51",
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: sourceVideo.id,
+      pageNo: 1,
+      cid: 3100,
+      partTitle: "Anchor Session 2026.04.11 20.29.51",
+      durationSec: 2,
+      summaryText: "<1P> 1#00:00 片尾结束语，提示观众点赞、订阅、转发、打赏支持明镜与点点栏目",
+      summaryHash: "hash-source-promo-1",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: targetVideo.id,
+      pageNo: 1,
+      cid: 4100,
+      partTitle: "Anchor Session 2026.04.11 20.29.51",
+      durationSec: 2,
+      isDeleted: false,
+    });
+
+    const targetParts = listVideoParts(db, targetVideo.id);
+    const reuseSource = findReusableSummarySource(db, targetVideo, targetParts);
+    assert.equal(reuseSource?.video.bvid, "BVSOURCEPROMO1");
+
+    const reusedPages = reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
+    assert.deepEqual(reusedPages, [1]);
+
+    const [reusedPart] = listVideoParts(db, targetVideo.id);
+    assert.equal(String(reusedPart?.summary_text ?? "").trim(), "<1P>");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("ensureSubtitleForPart reuses same-session subtitles across variants with different page counts", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-subtitle-reuse-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

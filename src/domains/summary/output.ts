@@ -1,5 +1,6 @@
 import { formatSummaryTime, parseSrt } from "../subtitle/srt-utils";
 import { parseSummaryBlocks } from "./format";
+import { sanitizeSummaryText } from "../../shared/summary-quality";
 
 const SUMMARY_TIMESTAMP_PATTERN = /^(?:(?<page>\d+)#)?(?<timestamp>\d{2}:\d{2}(?::\d{2})?)\s+(?<content>.+)$/u;
 
@@ -8,7 +9,7 @@ export function normalizeSummaryOutput(
   pageNo: number,
   options: { subtitleText?: string | null } = {},
 ) {
-  const normalized = String(text ?? "").replace(/\r\n/g, "\n").trim();
+  const normalized = sanitizeSummaryText(text);
   if (!normalized) {
     return "";
   }

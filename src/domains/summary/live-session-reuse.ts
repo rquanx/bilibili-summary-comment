@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   hasRawSummaryText,
   listVideoParts,
@@ -98,7 +100,7 @@ export function reusePartSummaries(db, targetVideoId, sourceParts) {
 
   for (const match of reusableMatches) {
     const summaryText = normalizeStoredSummaryText(match.sourcePart.summary_text) ?? "";
-    const summaryHash = String(match.sourcePart.summary_hash ?? "").trim();
+    const summaryHash = createHash("sha1").update(summaryText ? `${summaryText}\n` : "").digest("hex");
     savePartSummary(db, targetVideoId, match.targetPageNo, {
       summaryText,
       summaryHash,
