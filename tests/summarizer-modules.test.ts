@@ -183,6 +183,13 @@ test("shouldRetrySummaryRequest only matches transient network and gateway error
 
   assert.equal(
     shouldRetrySummaryRequest({
+      error: new Error("Summary request transport failed: other side closed | endpoint=https://opencode.ai/zen/go/v1/chat/completions | model=kimi-k2.5 | format=openai-chat"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryRequest({
       error: new Error("Summary request failed: 429 Too Many Requests"),
     }),
     false,
@@ -395,6 +402,42 @@ test("requestSummaryWithFallback falls back to glm-5 after kimi network retries 
       calls.push(args.model);
       if (args.model === "kimi-k2.5") {
         throw new Error("fetch failed");
+      }
+      return "<2P> 2#00:00 fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
+  assert.deepEqual(sleepCalls, [1500, 3000]);
+  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "kimi-network-error");
+  assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
+});
+
+test("requestSummaryWithFallback falls back to glm-5 after kimi 'other side closed' retries are exhausted", async () => {
+  const calls = [];
+  const sleepCalls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "key-123",
+      apiBaseUrl: "https://opencode.ai/zen/go/v1",
+      apiFormat: "openai-chat",
+    },
+    sleepImpl: async (timeoutMs) => {
+      sleepCalls.push(timeoutMs);
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "kimi-k2.5") {
+        throw new Error("Summary request transport failed: other side closed | endpoint=https://opencode.ai/zen/go/v1/chat/completions | model=kimi-k2.5 | format=openai-chat");
       }
       return "<2P> 2#00:00 fallback summary";
     },

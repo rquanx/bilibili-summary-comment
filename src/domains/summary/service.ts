@@ -19,7 +19,7 @@ const SUMMARY_CONTENT_FILTER_PATTERN = /content[_ -]?filter/iu;
 const SUMMARY_HIGH_RISK_PATTERN = /high risk/iu;
 const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
 const SUMMARY_FETCH_FAILED_PATTERN = /fetch failed/iu;
-const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network error|headers timeout|body timeout)/iu;
+const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|socket closed|other side closed|network error|headers timeout|body timeout)/iu;
 const SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN = /(?:408 Request Timeout|425 Too Early|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)/iu;
 const EMPTY_SUMMARY_MAX_DURATION_SEC = 3;
 
