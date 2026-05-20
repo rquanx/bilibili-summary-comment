@@ -2,6 +2,10 @@ const SUMMARY_MARKER_INLINE_PATTERN = /^(<\d+P>)(?:\s+(.*))?$/u;
 const SUMMARY_MARKER_ONLY_PATTERN = /^<\d+P>$/u;
 const SUMMARY_TIMESTAMP_PREFIX_PATTERN = /^(?:\d+#)?\d{2}:\d{2}(?::\d{2})?\s+/u;
 const SUMMARY_EXACT_PROMOTIONAL_PATTERN = /\u8bf7\u4e0d\u541d\u70b9\u8d5e\u8ba2\u9605\u8ba2\u9605\u8f6c\u53d1\u6253\u8d4f\u652f\u6301\u660e\u955c\u4e0e\u70b9\u70b9\u680f\u76ee/u;
+const SUMMARY_SHORT_DURATION_PATTERN = /(?:^|[\s，,])(?:该|本)?分?P?(?:时长)?仅\d+秒(?:钟)?/u;
+const SUMMARY_NO_SUBTITLE_PATTERN = /无(?:可用)?字幕(?:记录|内容)?|无字幕(?:记录|内容)?|未见字幕|没有字幕/u;
+const SUMMARY_NO_CONTENT_PATTERN = /无法提取有效内容(?:或看点)?|无有效内容(?:或看点)?|无可概括内容/u;
+const SUMMARY_TRANSITION_PATTERN = /转场|片头|片尾|过渡片段|空白片段/u;
 const CTA_KEYWORD_PATTERNS = [
   /\u70b9\u8d5e/u,
   /\u8ba2\u9605/u,
@@ -35,7 +39,7 @@ export function sanitizeSummaryText(text: string | null | undefined) {
         continue;
       }
 
-      if (!isLikelyPromotionalSummaryContent(stripSummaryTimingPrefix(inlineContent))) {
+      if (!isSkippableSummaryContent(stripSummaryTimingPrefix(inlineContent))) {
         sanitizedLines.push(`${marker} ${inlineContent}`.trim());
       } else {
         sanitizedLines.push(marker);
@@ -43,7 +47,7 @@ export function sanitizeSummaryText(text: string | null | undefined) {
       continue;
     }
 
-    if (isLikelyPromotionalSummaryContent(stripSummaryTimingPrefix(trimmedLine))) {
+    if (isSkippableSummaryContent(stripSummaryTimingPrefix(trimmedLine))) {
       continue;
     }
 
@@ -80,8 +84,28 @@ export function isLikelyPromotionalSummaryContent(text: string | null | undefine
   return ctaKeywordCount >= 3 || (OUTRO_PATTERN.test(normalized) && ctaKeywordCount >= 2);
 }
 
+export function isLikelyNonContentSummaryContent(text: string | null | undefined) {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const hasShortDuration = SUMMARY_SHORT_DURATION_PATTERN.test(normalized);
+  const hasNoSubtitle = SUMMARY_NO_SUBTITLE_PATTERN.test(normalized);
+  const hasNoContent = SUMMARY_NO_CONTENT_PATTERN.test(normalized);
+  const hasTransitionCue = SUMMARY_TRANSITION_PATTERN.test(normalized);
+
+  return (hasShortDuration && (hasNoSubtitle || hasNoContent))
+    || (hasNoSubtitle && hasTransitionCue)
+    || (hasNoContent && hasTransitionCue);
+}
+
 function stripSummaryTimingPrefix(text: string) {
   return String(text ?? "").trim().replace(SUMMARY_TIMESTAMP_PREFIX_PATTERN, "");
+}
+
+function isSkippableSummaryContent(text: string) {
+  return isLikelyPromotionalSummaryContent(text) || isLikelyNonContentSummaryContent(text);
 }
 
 function normalizeSummaryCueText(text: string | null | undefined) {

@@ -660,6 +660,13 @@ test("getPreferredSummaryText hides marker-only summaries from rendered artifact
     }),
     "<1P> 1#00:00 real summary",
   );
+  assert.equal(
+    getPreferredSummaryText({
+      summary_text: "<1P>\n1#00:00 该分P时长仅8秒，无可用字幕记录",
+      summary_text_processed: null,
+    }),
+    "",
+  );
 });
 
 test("resolveSummaryPromptProfile merges defaults, preset, and user overrides", () => {
@@ -840,6 +847,70 @@ test("normalizeSummaryOutput removes promotional outro summaries", () => {
   );
 
   assert.equal(normalized, "<1P>");
+});
+
+test("summarizePartFromSubtitle skips short parts with no usable subtitle cues before calling the LLM", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-empty-short-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const subtitlePath = path.join(tempRoot, "p1.srt");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  fs.writeFileSync(subtitlePath, "", "utf8");
+
+  const db = openDatabase(dbPath);
+  let requestCallCount = 0;
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVshortempty1",
+      aid: 123499,
+      title: "Short Empty Subtitle Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 111,
+      partTitle: "P1",
+      durationSec: 8,
+      isDeleted: false,
+    });
+
+    const result = await summarizePartFromSubtitle({
+      db,
+      videoId: video.id,
+      bvid: video.bvid,
+      pageNo: 1,
+      cid: 111,
+      partTitle: "P1",
+      durationSec: 8,
+      subtitlePath,
+      model: "gpt-test",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+      workRoot,
+      requestSummaryImpl: async () => {
+        requestCallCount += 1;
+        return "<1P> 1#00:00 should not be generated";
+      },
+    });
+
+    assert.equal(requestCallCount, 0);
+    assert.equal(result.summaryText, "");
+    assert.equal(String(result.dbRow?.summary_text ?? "").trim(), "<1P>");
+
+    const workDir = resolveVideoWorkDir(video, workRoot, repoRoot);
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p01.md"), "utf8"),
+      "",
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
 });
 
 test("splitSummaryForComments splits oversized page blocks into multiple comment-safe chunks", () => {
@@ -1693,6 +1764,71 @@ test("writeSummaryArtifacts hides marker-only summaries during rebuild publish p
       durationSec: 30,
       summaryText: "<2P>\n2#00:00 regular summary",
       summaryHash: "hash-regular",
+      isDeleted: false,
+    });
+
+    const artifacts = writeSummaryArtifacts(db, rebuildVideo, workRoot, {
+      promptConfigPath: null,
+    });
+    const workDir = resolveVideoWorkDir(rebuildVideo, workRoot, repoRoot);
+
+    assert.equal(
+      fs.readFileSync(artifacts.summaryPath, "utf8").trim(),
+      "<2P>\n2#00:00 regular summary",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p01.md"), "utf8"),
+      "",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "summary-p02.md"), "utf8").trim(),
+      "<2P>\n2#00:00 regular summary",
+    );
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("writeSummaryArtifacts hides short no-subtitle placeholder summaries during rebuild publish preparation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-rebuild-placeholder-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
+  const repoRoot = process.cwd();
+  const repoWorkRoot = path.join(repoRoot, workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVrebuildblank1",
+      aid: 789116,
+      title: "Rebuild Placeholder Hidden Test",
+      pageCount: 2,
+    });
+    const rebuildVideo = {
+      ...video,
+      publish_needs_rebuild: 1,
+    };
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 331,
+      partTitle: "P1",
+      durationSec: 8,
+      summaryText: "<1P>\n1#00:00 该分P时长仅8秒，无可用字幕记录",
+      summaryHash: "hash-placeholder",
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 332,
+      partTitle: "P2",
+      durationSec: 30,
+      summaryText: "<2P>\n2#00:00 regular summary",
+      summaryHash: "hash-regular-2",
       isDeleted: false,
     });
 

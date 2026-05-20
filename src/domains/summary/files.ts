@@ -7,6 +7,7 @@ import {
   getPreferredSummaryText,
   listPendingPublishParts,
   listVideoParts,
+  normalizeStoredSummaryText,
   reindexSummaryTextToPage,
   savePartPrompt,
 } from "../../infra/db/index";
@@ -339,7 +340,7 @@ function getAlignedSummaryText(
 ): string {
   const summaryText = useProcessedSummaryText
     ? getPreferredSummaryText(part)
-    : String(part.summary_text ?? "").trim();
+    : normalizeStoredSummaryText(part.summary_text) ?? "";
   if (isSummaryMarkerOnly(summaryText)) {
     return "";
   }

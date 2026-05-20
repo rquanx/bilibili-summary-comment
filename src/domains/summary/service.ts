@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { parseSrt } from "../subtitle/srt-utils";
+import { inspectSubtitleQuality } from "../subtitle/quality";
 import { getVideoById, savePartSummary } from "../../infra/db/index";
 import { writePartPromptArtifact, writePartSummaryArtifact } from "./files";
 import { requestSummary } from "./client";
@@ -21,7 +22,7 @@ const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
 const SUMMARY_FETCH_FAILED_PATTERN = /fetch failed/iu;
 const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|socket closed|other side closed|network error|headers timeout|body timeout)/iu;
 const SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN = /(?:408 Request Timeout|425 Too Early|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)/iu;
-const EMPTY_SUMMARY_MAX_DURATION_SEC = 3;
+const EMPTY_SUMMARY_MAX_DURATION_SEC = 20;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
@@ -181,10 +182,10 @@ export async function summarizePartFromSubtitle({
   let promptPath = null;
   try {
     const subtitleText = fs.readFileSync(subtitlePath, "utf8");
-    const cueCount = parseSrt(subtitleText).length;
+    const subtitleInspection = inspectSubtitleForSummary(subtitleText);
     if (shouldStoreEmptySummaryForPart({
       durationSec,
-      cueCount,
+      cueCount: subtitleInspection.usableCueCount,
     })) {
       const emptySummaryText = buildEmptySummaryMarker(pageNo);
       const normalized = `${emptySummaryText}\n`;
@@ -219,9 +220,11 @@ export async function summarizePartFromSubtitle({
         partTitle,
         message: `Skipped summary output for trivial short part P${pageNo}`,
         details: {
-          reason: "trivial-short-part",
+          reason: "short-part-without-usable-subtitles",
           durationSec,
-          cueCount,
+          cueCount: subtitleInspection.originalCueCount,
+          usableCueCount: subtitleInspection.usableCueCount,
+          removedCueCount: subtitleInspection.removedCueCount,
           subtitlePath,
           summaryPath: partSummaryPath,
         },
@@ -273,7 +276,7 @@ export async function summarizePartFromSubtitle({
       pageNo,
       partTitle,
       durationSec,
-      subtitleText,
+      subtitleText: subtitleInspection.effectiveSubtitleText,
       promptText: null,
       subtitlePath,
       promptProfile,
@@ -285,7 +288,7 @@ export async function summarizePartFromSubtitle({
       pageNo,
       partTitle,
       durationSec,
-      subtitleText,
+      subtitleText: subtitleInspection.effectiveSubtitleText,
       segments: null,
       promptProfile,
       model,
@@ -320,7 +323,7 @@ export async function summarizePartFromSubtitle({
     const pageSummary = summaryAttempt.summaryText;
 
     const normalizedSummary = normalizeSummaryOutput(pageSummary, pageNo, {
-      subtitleText,
+      subtitleText: subtitleInspection.effectiveSubtitleText,
     });
     const normalized = `${normalizedSummary}\n`;
     const summaryHash = createHash("sha1").update(normalized).digest("hex");
@@ -350,7 +353,9 @@ export async function summarizePartFromSubtitle({
         requestedModel: model,
         fallbackUsed: summaryAttempt.fallbackUsed,
         fallbackReason: summaryAttempt.fallbackReason,
-        cueCount,
+        cueCount: subtitleInspection.originalCueCount,
+        usableCueCount: subtitleInspection.usableCueCount,
+        removedCueCount: subtitleInspection.removedCueCount,
         summaryHash,
         promptPath,
         summaryPath: partSummaryPath,
@@ -462,6 +467,20 @@ function shouldStoreEmptySummaryForPart({
   return Number(durationSec) > 0
     && Number(durationSec) <= EMPTY_SUMMARY_MAX_DURATION_SEC
     && Number(cueCount) === 0;
+}
+
+function inspectSubtitleForSummary(subtitleText: string) {
+  const qualityCheck = inspectSubtitleQuality(subtitleText);
+  const effectiveSubtitleText = qualityCheck.removedCueCount > 0
+    ? qualityCheck.sanitizedSrt
+    : subtitleText;
+
+  return {
+    originalCueCount: qualityCheck.totalCueCount,
+    usableCueCount: parseSrt(effectiveSubtitleText).length,
+    removedCueCount: qualityCheck.removedCueCount,
+    effectiveSubtitleText,
+  };
 }
 
 function buildEmptySummaryMarker(pageNo: number) {

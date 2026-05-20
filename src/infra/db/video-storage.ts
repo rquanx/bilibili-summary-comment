@@ -59,7 +59,7 @@ export function listVideos(db: Db): VideoRecord[] {
 }
 
 export function listVideosPendingPublish(db: Db): VideoRecord[] {
-  return getDrizzleDb(db).all<VideoRecord>(sql`
+  const candidates = getDrizzleDb(db).all<VideoRecord>(sql`
     SELECT v.*
     FROM ${videos} v
     WHERE v.publish_needs_rebuild = 1
@@ -79,6 +79,14 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
       COALESCE(v.last_scan_at, v.updated_at, v.created_at) ASC,
       v.id ASC
   `);
+
+  return candidates.filter((video) => {
+    if (Number(video.publish_needs_rebuild) === 1) {
+      return true;
+    }
+
+    return listPendingPublishParts(db, video.id).length > 0;
+  });
 }
 
 export function listVideosOlderThan(db: Db, cutoffIso: string): VideoRecord[] {
@@ -370,7 +378,7 @@ export function listPendingSummaryParts(db: Db, videoId: number): VideoPartRecor
 }
 
 export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecord[] {
-  return getDrizzleDb(db).all<VideoPartRecord>(sql`
+  const candidates = getDrizzleDb(db).all<VideoPartRecord>(sql`
     SELECT * FROM video_parts
     WHERE video_id = ${videoId}
       AND is_deleted = 0
@@ -381,6 +389,8 @@ export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecor
       AND published = 0
     ORDER BY page_no ASC
   `);
+
+  return candidates.filter((part) => Boolean(getPreferredSummaryText(part)));
 }
 
 export function savePartSummary(
