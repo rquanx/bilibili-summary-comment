@@ -645,6 +645,21 @@ test("buildSummaryPromptInput keeps the base prompt generic across stream types"
   assert.doesNotMatch(promptInput.systemPrompt, /优先保留观众最可能想回看的节目性内容/u);
 });
 
+test("buildSummaryPromptInput tells the model to omit nonessential controversial content and downplay required mentions", () => {
+  const promptInput = buildSummaryPromptInput({
+    pageNo: 4,
+    partTitle: "P4",
+    durationSec: 300,
+    subtitleText: "raw subtitle text",
+    segments: [],
+  });
+
+  assert.match(promptInput.systemPrompt, /不影响主线理解的内容，直接省略/u);
+  assert.match(promptInput.systemPrompt, /不要专门留痕/u);
+  assert.match(promptInput.systemPrompt, /用最短、最平的方式带过/u);
+  assert.match(promptInput.systemPrompt, /只保留理解主线必需的信息/u);
+});
+
 test("getPreferredSummaryText hides marker-only summaries from rendered artifacts", () => {
   assert.equal(
     getPreferredSummaryText({
