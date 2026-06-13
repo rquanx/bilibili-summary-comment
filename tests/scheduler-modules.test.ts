@@ -819,6 +819,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
       dbPath,
       workRoot: "work",
       repoRoot: tempRoot,
+      gapThresholdSeconds: 5,
       now: new Date("2026-04-12T03:00:00.000Z"),
       collectRecentUploadsImpl: async () => ({
         summaryUsers: [{ mid: 123, source: "123" }],

@@ -13,7 +13,7 @@ import { collectRecentUploadsFromUsers } from "./uploads";
 const PART_TIMESTAMP_RE = /^(?<title>.*?)(?<date>\d{4}\.\d{2}\.\d{2})\s+(?<time>\d{2}\.\d{2}(?:\.\d{2})?)\s*$/u;
 
 export const DEFAULT_GAP_CHECK_SINCE_HOURS = 24;
-export const DEFAULT_GAP_THRESHOLD_SECONDS = 5;
+export const DEFAULT_GAP_THRESHOLD_SECONDS = 60;
 
 interface GapCheckVideoPart {
   pageNo: number;

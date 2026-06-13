@@ -89,7 +89,7 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 - 每小时 `05` 分：
   扫描数据库里的待发布视频，串行执行 publish sweep；除了真正待发布的视频，也会顺带检查最近 24 小时内已发布视频的评论线程是否仍然健康。
 - 每小时 `10` 分：
-  对最近投稿执行缺段巡检；如果分 P 标题中的时间戳之间存在超过 `5` 秒的缺口，会把结果写入当天快照，并在配置了 `SERVER_CHAN_SEND_KEY` 时只通知“新发现”的缺口。
+  对最近投稿执行缺段巡检；如果分 P 标题中的时间戳之间存在超过 `1` 分钟的缺口，会把结果写入当天快照，并在配置了 `SERVER_CHAN_SEND_KEY` 时只通知“新发现”的缺口。
 - 每天 `03:15`：
   检查 `.auth/bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新授权信息。
 - 每天 `03:45`：
