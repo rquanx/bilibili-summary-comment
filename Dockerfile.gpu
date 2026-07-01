@@ -2,6 +2,10 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ARG NODE_MAJOR=24
 ARG FASTER_WHISPER_XXL_URL=https://github.com/Purfview/whisper-standalone-win/releases/download/Faster-Whisper-XXL/Faster-Whisper-XXL_r245.4_linux.7z
+ARG TORCH_VERSION=2.11.0+cu128
+ARG TORCHAUDIO_VERSION=2.11.0+cu128
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG PRELOAD_FUNASR_MODELS=1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -12,6 +16,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     BILI_AUTH_FILE=.auth/bili-auth.json \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    MODELSCOPE_CACHE=/opt/funasr/modelscope \
+    FUNASR_MODEL=paraformer-zh \
+    FUNASR_VAD_MODEL=fsmn-vad \
+    FUNASR_PUNC_MODEL=ct-punc \
+    FUNASR_DEVICE=auto \
+    FUNASR_LANGUAGE=zh \
     VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN=/opt/videocaptioner/bin/Faster-Whisper-XXL \
     VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH=/opt/videocaptioner/models/faster-whisper-large-v3-turbo \
     VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE=cuda \
@@ -49,7 +59,18 @@ COPY requirements.txt ./
 
 RUN python3 -m venv .3.11 \
   && ./.3.11/bin/python -m pip install --upgrade pip \
+  && ./.3.11/bin/python -m pip install \
+    "torch==${TORCH_VERSION}" \
+    "torchaudio==${TORCHAUDIO_VERSION}" \
+    --index-url "${PYTORCH_INDEX_URL}" \
   && ./.3.11/bin/python -m pip install -r requirements.txt
+
+COPY tools/asr/preload_funasr_models.py ./tools/asr/preload_funasr_models.py
+
+RUN mkdir -p /opt/funasr/modelscope \
+  && if [ "${PRELOAD_FUNASR_MODELS}" = "1" ]; then \
+    ./.3.11/bin/python tools/asr/preload_funasr_models.py --cache-dir /opt/funasr/modelscope; \
+  fi
 
 COPY package.json package-lock.json ./
 
@@ -57,7 +78,7 @@ RUN npm ci
 
 COPY . .
 
-RUN mkdir -p /app/work /app/.auth
+RUN mkdir -p /app/work /app/.auth /opt/funasr/modelscope
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

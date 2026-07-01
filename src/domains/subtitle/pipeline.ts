@@ -41,7 +41,7 @@ export async function ensureSubtitleForPart({
   durationSec = 0,
   workRoot = "work",
   venvPath = ".3.11",
-  asr = "faster-whisper",
+  asr = "funasr",
   progress = null,
   eventLogger = null,
   tryDownloadBiliSubtitleImpl = tryDownloadBiliSubtitle,

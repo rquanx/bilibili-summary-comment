@@ -175,7 +175,7 @@ npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --pub
 
 ```bash
 npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --force-summary
-npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --asr bijian
+npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --asr faster-whisper
 npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --venv-path .3.11
 ```
 
@@ -292,7 +292,17 @@ npm run typecheck
 - Python 虚拟环境是否正确创建
 - `videocaptioner`、`yt-dlp` 是否安装成功
 
-默认 ASR 是 `faster-whisper`，失败后会自动回退到 `bijian`、`jianying`。
+默认 ASR 是 `funasr`，失败后会自动回退到 `faster-whisper`、`bijian`、`jianying`。
+
+FunASR 默认使用 `paraformer-zh`、`fsmn-vad` 和 `ct-punc`，用于生成带时间轴的中文 SRT。可以通过环境变量覆盖：
+
+```dotenv
+FUNASR_MODEL=paraformer-zh
+FUNASR_PUNC_MODEL=ct-punc
+FUNASR_DEVICE=auto
+FUNASR_LANGUAGE=zh
+FUNASR_HOTWORD=专有名词1 专有名词2
+```
 
 ### 3. 调度能启动，但不会扫描任何视频
 

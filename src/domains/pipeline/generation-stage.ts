@@ -17,7 +17,7 @@ export async function runGenerationStage({
   cookieFile = null,
   workRoot = "work",
   venvPath = ".3.11",
-  asr = "faster-whisper",
+  asr = "funasr",
   summaryConfig,
   forceSummary = false,
   eventLogger = null,

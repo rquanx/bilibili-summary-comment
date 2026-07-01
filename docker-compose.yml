@@ -28,6 +28,12 @@ services:
       SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
       SQLITE_JOURNAL_MODE_FALLBACK: ${SQLITE_JOURNAL_MODE_FALLBACK:-DELETE}
       BILI_AUTH_FILE: .auth/bili-auth.json
+      MODELSCOPE_CACHE: /opt/funasr/modelscope
+      FUNASR_MODEL: ${FUNASR_MODEL:-paraformer-zh}
+      FUNASR_VAD_MODEL: ${FUNASR_VAD_MODEL:-fsmn-vad}
+      FUNASR_PUNC_MODEL: ${FUNASR_PUNC_MODEL:-ct-punc}
+      FUNASR_DEVICE: ${FUNASR_DEVICE:-auto}
+      FUNASR_LANGUAGE: ${FUNASR_LANGUAGE:-zh}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -54,6 +60,12 @@ services:
       BILI_AUTH_FILE: .auth/bili-auth.json
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      MODELSCOPE_CACHE: /opt/funasr/modelscope
+      FUNASR_MODEL: ${FUNASR_MODEL:-paraformer-zh}
+      FUNASR_VAD_MODEL: ${FUNASR_VAD_MODEL:-fsmn-vad}
+      FUNASR_PUNC_MODEL: ${FUNASR_PUNC_MODEL:-ct-punc}
+      FUNASR_DEVICE: ${FUNASR_DEVICE:-cuda:0}
+      FUNASR_LANGUAGE: ${FUNASR_LANGUAGE:-zh}
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN: /opt/videocaptioner/bin/Faster-Whisper-XXL
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH: /opt/videocaptioner/models/faster-whisper-large-v3-turbo
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE: cuda

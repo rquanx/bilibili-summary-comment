@@ -10,3 +10,5 @@ work
 .env
 cookie.txt
 npm-debug.log
+__pycache__
+*.pyc

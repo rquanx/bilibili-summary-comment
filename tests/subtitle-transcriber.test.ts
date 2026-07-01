@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildDirectFasterWhisperArgs, buildTranscribeArgs, transcribeWithRetries } from "../src/domains/subtitle/transcriber";
+import { buildAsrFallbackPlan, buildDirectFasterWhisperArgs, buildFunAsrArgs, buildTranscribeArgs, transcribeWithRetries } from "../src/domains/subtitle/transcriber";
 
 function createProgressRecorder() {
   const messages: string[] = [];
@@ -29,6 +29,86 @@ test("buildTranscribeArgs requests Chinese transcription", () => {
   const languageIndex = args.indexOf("--language");
   assert.notEqual(languageIndex, -1);
   assert.equal(args[languageIndex + 1], "zh");
+});
+
+test("buildFunAsrArgs requests Chinese transcription", () => {
+  const args = buildFunAsrArgs({
+    audioPath: "audio.m4a",
+    subtitlePath: "subtitle.srt",
+  });
+
+  assert.deepEqual(args.slice(0, 3), ["audio.m4a", "-o", "subtitle.srt"]);
+  const languageIndex = args.indexOf("--language");
+  assert.notEqual(languageIndex, -1);
+  assert.equal(args[languageIndex + 1], "zh");
+});
+
+test("buildAsrFallbackPlan tries FunASR before existing ASR fallbacks", () => {
+  assert.deepEqual(buildAsrFallbackPlan("funasr"), ["funasr", "faster-whisper", "bijian", "jianying"]);
+  assert.deepEqual(buildAsrFallbackPlan(undefined), ["funasr", "faster-whisper", "bijian", "jianying"]);
+});
+
+test("transcribeWithRetries skips FunASR retries when the dependency is missing", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subtitle-funasr-missing-"));
+  const subtitlePath = path.join(tempRoot, "subtitle.srt");
+  const calls: Array<{ moduleName: string; engine: string | null }> = [];
+
+  try {
+    await transcribeWithRetries({
+      audioPath: path.join(tempRoot, "audio.m4a"),
+      subtitlePath,
+      asr: "funasr",
+      bvid: "BVfunasrMissing",
+      videoTitle: "FunASR Missing Dependency Test",
+      cid: 5,
+      pageNo: 5,
+      partTitle: "P5",
+      workRoot: tempRoot,
+      venvPath: ".3.11",
+      progress: null,
+      eventLogger: null,
+      resolveLocalFasterWhisperConfigImpl: () => null,
+      resolveLocalFasterWhisperExecutableConfigImpl: () => null,
+      withTranscriptionQueueLockImpl: async (_options, callback) => callback(),
+      notifyTranscriptionFailureImpl: async () => {},
+      runTranscribeCommandImpl: async (moduleName, args) => {
+        const asrIndex = args.indexOf("--asr");
+        calls.push({
+          moduleName,
+          engine: asrIndex >= 0 ? String(args[asrIndex + 1] ?? "") : null,
+        });
+
+        if (moduleName === "tools.asr.funasr_transcribe") {
+          const error = new Error("FunASR is not installed") as Error & { stderr?: string };
+          error.stderr = "FunASR is not installed";
+          throw error;
+        }
+
+        if (String(args[asrIndex + 1] ?? "") === "faster-whisper") {
+          fs.writeFileSync(subtitlePath, [
+            "1",
+            "00:00:00,000 --> 00:00:02,000",
+            "FunASR missing fallback subtitle",
+            "",
+          ].join("\n"), "utf8");
+          return {
+            code: 0,
+            stdout: "",
+            stderr: "",
+          };
+        }
+
+        throw new Error(`Unexpected fallback ${String(args[asrIndex + 1] ?? "")}`);
+      },
+    });
+
+    assert.deepEqual(calls, [
+      { moduleName: "tools.asr.funasr_transcribe", engine: null },
+      { moduleName: "videocaptioner", engine: "faster-whisper" },
+    ]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("buildDirectFasterWhisperArgs normalizes local binary arguments", () => {

@@ -16,6 +16,8 @@ import { delay, formatErrorMessage, formatTranscriptionTarget } from "./utils";
 const TRANSCRIPTION_RETRY_LIMIT = 3;
 const TRANSCRIPTION_RETRY_DELAY_MS = 10_000;
 const EXPECTED_TRANSCRIPTION_LANGUAGE = "zh";
+const DEFAULT_ASR_ENGINE = "funasr";
+const FUNASR_TRANSCRIBE_MODULE = "tools.asr.funasr_transcribe";
 const WINDOWS_FAIL_FAST_EXIT_CODE = 3221226505;
 const WINDOWS_FAIL_FAST_SIGNED_EXIT_CODE = -1073740791;
 
@@ -116,7 +118,28 @@ export async function transcribeWithRetries({
             `Running transcription with ASR ${engine} (${attempt}/${TRANSCRIPTION_RETRY_LIMIT}): ${transcriptionLabel}`,
           );
 
-          if (shouldUseDirectFasterWhisper(engine, localFasterWhisperExecutable)) {
+          if (engine === "funasr") {
+            const funAsrArgs = buildFunAsrArgs({
+              audioPath,
+              subtitlePath,
+            });
+            await runTranscribeCommandImpl(FUNASR_TRANSCRIBE_MODULE, funAsrArgs, {
+              venvPath,
+              streamOutput: true,
+              outputStream: progress?.rawOutputStream ?? progress?.outputStream,
+              logger: progress?.logger ?? null,
+              logContext: {
+                scope: "subtitle",
+                action: "asr-command",
+                bvid,
+                pageNo,
+                cid,
+                partTitle,
+                engine,
+                attempt,
+              },
+            });
+          } else if (shouldUseDirectFasterWhisper(engine, localFasterWhisperExecutable)) {
             const directArgs = buildDirectFasterWhisperArgs({
               audioPath,
               subtitlePath,
@@ -399,6 +422,15 @@ export async function transcribeWithRetries({
           `ASR ${engine} failed (${attempt}/${TRANSCRIPTION_RETRY_LIMIT}): ${message}`,
         );
 
+        if (engine === "funasr" && isMissingFunAsrDependencyError(error) && engineIndex < engines.length - 1) {
+          progress?.logPartStage?.(
+            pageNo,
+            "Subtitle",
+            "FunASR dependency is missing, preparing fallback without retrying this engine",
+          );
+          break;
+        }
+
         if (attempt < TRANSCRIPTION_RETRY_LIMIT) {
           eventLogger?.log({
             scope: "subtitle",
@@ -457,8 +489,12 @@ export async function transcribeWithRetries({
   );
 }
 
-function buildAsrFallbackPlan(asr: unknown): string[] {
-  const preferred = String(asr ?? "").trim() || "faster-whisper";
+export function buildAsrFallbackPlan(asr: unknown): string[] {
+  const preferred = String(asr ?? "").trim().toLowerCase() || DEFAULT_ASR_ENGINE;
+  if (preferred === "funasr" || preferred === "fun-asr") {
+    return ["funasr", "faster-whisper", "bijian", "jianying"];
+  }
+
   if (preferred === "faster-whisper") {
     return ["faster-whisper", "bijian", "jianying"];
   }
@@ -468,6 +504,49 @@ function buildAsrFallbackPlan(asr: unknown): string[] {
   }
 
   return [preferred];
+}
+
+export function buildFunAsrArgs({
+  audioPath,
+  subtitlePath,
+}: {
+  audioPath: string;
+  subtitlePath: string;
+}): string[] {
+  const args = [
+    audioPath,
+    "-o",
+    subtitlePath,
+    "--language",
+    firstNonEmptyString(process.env.FUNASR_LANGUAGE) ?? EXPECTED_TRANSCRIPTION_LANGUAGE,
+  ];
+
+  const model = firstNonEmptyString(process.env.FUNASR_MODEL);
+  if (model) {
+    args.push("--model", model);
+  }
+
+  const vadModel = firstNonEmptyString(process.env.FUNASR_VAD_MODEL);
+  if (vadModel) {
+    args.push("--vad-model", vadModel);
+  }
+
+  const puncModel = firstNonEmptyString(process.env.FUNASR_PUNC_MODEL);
+  if (puncModel) {
+    args.push("--punc-model", puncModel);
+  }
+
+  const device = firstNonEmptyString(process.env.FUNASR_DEVICE);
+  if (device) {
+    args.push("--device", device);
+  }
+
+  const hotword = firstNonEmptyString(process.env.FUNASR_HOTWORD);
+  if (hotword) {
+    args.push("--hotword", hotword);
+  }
+
+  return args;
 }
 
 export function buildTranscribeArgs({
@@ -677,6 +756,15 @@ function readCommandExitCode(error: unknown): number | null {
   return Number.isFinite(code) ? code : null;
 }
 
+function isMissingFunAsrDependencyError(error: unknown): boolean {
+  const output = [
+    (error as { message?: unknown } | null | undefined)?.message,
+    (error as { stderr?: unknown } | null | undefined)?.stderr,
+    (error as { stdout?: unknown } | null | undefined)?.stdout,
+  ].map((value) => String(value ?? "")).join("\n");
+  return /FunASR is not installed|No module named ['"]?funasr/i.test(output);
+}
+
 function getDirectFasterWhisperGeneratedSubtitlePath({
   audioPath,
   subtitlePath,
@@ -723,4 +811,9 @@ function finalizeDirectFasterWhisperOutput({
   if (fs.existsSync(generatedSubtitlePath)) {
     fs.copyFileSync(generatedSubtitlePath, subtitlePath);
   }
+}
+
+function firstNonEmptyString(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
 }

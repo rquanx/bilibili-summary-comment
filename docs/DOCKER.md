@@ -6,6 +6,8 @@
 
 - 基于 `nvidia/cuda` + `cudnn` 运行时镜像
 - 镜像内预装 Linux 版 `Faster-Whisper-XXL`
+- 镜像内安装 CUDA 版 PyTorch、FunASR
+- 默认预下载 FunASR 的 `paraformer-zh`、`fsmn-vad`、`ct-punc` 模型
 - 默认对齐 `large-v3-turbo`、`cuda`、`silero-v4`、`0.4`
 - 可以直接复用你 Windows 本机已下载的模型目录
 
@@ -22,6 +24,12 @@
 
 GPU 服务额外会使用：
 
+- `MODELSCOPE_CACHE=/opt/funasr/modelscope`
+- `FUNASR_MODEL=paraformer-zh`
+- `FUNASR_VAD_MODEL=fsmn-vad`
+- `FUNASR_PUNC_MODEL=ct-punc`
+- `FUNASR_DEVICE=cuda:0`
+- `FUNASR_LANGUAGE=zh`
 - `VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_BIN=/opt/videocaptioner/bin/Faster-Whisper-XXL`
 - `VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH=/opt/videocaptioner/models/faster-whisper-large-v3-turbo`
 - `VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE=cuda`
@@ -64,6 +72,16 @@ docker compose logs -f video-pipeline
 
 先确认 Docker 已经能看到 NVIDIA runtime。你这台机器当前满足这一点。
 
+默认 ASR 已经是 `funasr`。GPU 镜像会在构建时预下载 FunASR 模型，所以部署后可以直接跑，不需要第一次任务再临时下载 ModelScope 模型。
+
+如果你想跳过构建期模型下载，可以这样构建：
+
+```bash
+docker compose build --build-arg PRELOAD_FUNASR_MODELS=0 video-pipeline-gpu
+```
+
+跳过预下载后，第一次执行 ASR 会把模型下载到容器内的 `MODELSCOPE_CACHE`。重新构建镜像后需要重新下载，除非你自己额外挂载 `/opt/funasr/modelscope`。
+
 ### 1. 直接复用本机 VideoCaptioner 的模型目录
 
 在 `.env` 里增加：
@@ -87,6 +105,20 @@ docker compose build video-pipeline-gpu
 ```
 
 ### 3. 先单独验证 FasterWhisper
+
+默认会使用 FunASR：
+
+```bash
+docker compose run --rm video-pipeline-gpu npm run pipeline -- --bvid BVxxxxxxxxxx
+```
+
+如果要显式指定：
+
+```bash
+docker compose run --rm video-pipeline-gpu npm run pipeline -- --bvid BVxxxxxxxxxx --asr funasr
+```
+
+如果你仍要验证 FasterWhisper：
 
 跑单条视频：
 
@@ -146,7 +178,8 @@ docker run --rm -it \
 ## 说明
 
 - 镜像内已安装 Node 24、Python 3、`ffmpeg`、`videocaptioner`、`yt-dlp`
-- `video-pipeline-gpu` 镜像额外内置了 Linux 版 `Faster-Whisper-XXL`
+- 普通镜像显式安装 CPU 版 PyTorch；`video-pipeline-gpu` 显式安装 CUDA 版 PyTorch
+- `video-pipeline-gpu` 镜像额外内置了 Linux 版 `Faster-Whisper-XXL`，并默认预下载 FunASR 模型
 - `.env` 不会打进镜像，运行时通过 `--env-file .env` 或 `docker-compose.yml` 的 `env_file` 注入
 - 如果你只想执行单次命令，用 `docker compose run --rm video-pipeline ...`
 - Windows 本机的 `faster-whisper-xxl.exe` 不能直接在 Linux 容器里跑；GPU 服务走的是 Linux 版二进制，但可以复用同一份模型文件

@@ -46,7 +46,7 @@ export async function runVideoPipeline(
   const logDay = args["log-day"] ?? process.env.PIPELINE_LOG_DAY ?? null;
   const logGroup = args["log-group"] ?? process.env.PIPELINE_LOG_GROUP ?? null;
   const venvPath = args["venv-path"] ?? ".3.11";
-  const asr = args.asr ?? "faster-whisper";
+  const asr = args.asr ?? "funasr";
   const startupLockCleanup = cleanupStaleRuntimeLocks({
     workRoot,
     dbPath,

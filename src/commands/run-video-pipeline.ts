@@ -21,7 +21,7 @@ const command = addSummaryApiOptions(
             description: "Run the full subtitle, summary, and publish pipeline for one video.",
           })
             .option("--venv-path <path>", "Optional. Python virtual environment path. Default: .3.11")
-            .option("--asr <engine>", "Optional. VideoCaptioner ASR engine. Default: faster-whisper")
+            .option("--asr <engine>", "Optional. ASR engine. Default: funasr")
             .option("--publish", "Optional. Publish pending summaries after generation.")
             .option("--force-fresh-thread", "Optional. For rebuild publishes, delete the old summary thread and recreate it from scratch without reusing visible comments.")
             .option("--force-summary", "Optional. Regenerate summaries even if already present."),

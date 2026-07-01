@@ -1,6 +1,8 @@
 node_modules
 dist
 work
+__pycache__/
+*.pyc
 .3.11
 summary.md
 .env
