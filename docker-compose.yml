@@ -70,7 +70,7 @@ services:
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_MODEL_PATH: /opt/videocaptioner/models/faster-whisper-large-v3-turbo
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_DEVICE: cuda
       VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_METHOD: silero-v4
-      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD: "0.4"
+      VIDEOCAPTIONER_LOCAL_FASTER_WHISPER_VAD_THRESHOLD: "0.7"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
