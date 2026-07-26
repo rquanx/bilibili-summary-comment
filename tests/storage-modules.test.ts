@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -374,6 +375,66 @@ test("openDatabase falls back from WAL when shm open fails", () => {
   }
 });
 
+test("SQLite busy timeout waits for an external writer and completes the pending write", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-sqlite-busy-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const originalBusyTimeout = process.env.SQLITE_BUSY_TIMEOUT_MS;
+  process.env.SQLITE_BUSY_TIMEOUT_MS = "1000";
+
+  let db: ReturnType<typeof openDatabase> | null = null;
+  try {
+    db = openDatabase(dbPath);
+    const video = upsertVideo(db, {
+      bvid: "BVBUSYTEST1",
+      aid: 888002,
+      title: "Busy Timeout Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 999002,
+      partTitle: "P1",
+      durationSec: 60,
+      isDeleted: false,
+    });
+
+    const lockHolder = spawn(process.execPath, ["-e", `
+      const Database = require("better-sqlite3");
+      const db = new Database(process.argv[1]);
+      db.pragma("journal_mode = WAL");
+      db.exec("BEGIN IMMEDIATE");
+      process.stdout.write("locked\\n");
+      setTimeout(() => {
+        db.exec("COMMIT");
+        db.close();
+      }, 250);
+    `, dbPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    await waitForChildOutput(lockHolder, "locked");
+    const startedAt = Date.now();
+    const savedPart = savePartSummary(db, video.id, 1, {
+      summaryText: "Summary written after external lock release.",
+      summaryHash: "busy-timeout-test",
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(savedPart?.summary_text, "Summary written after external lock release.");
+    assert.ok(elapsedMs >= 150, `expected write to wait for external lock, took ${elapsedMs}ms`);
+    assert.equal(await waitForChildExit(lockHolder), 0);
+  } finally {
+    db?.close?.();
+    if (originalBusyTimeout === undefined) {
+      delete process.env.SQLITE_BUSY_TIMEOUT_MS;
+    } else {
+      process.env.SQLITE_BUSY_TIMEOUT_MS = originalBusyTimeout;
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("recent reprocess run storage records successes and can query the latest successful candidate", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-reprocess-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -422,6 +483,44 @@ test("recent reprocess run storage records successes and can query the latest su
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+function waitForChildOutput(child: ReturnType<typeof spawn>, expected: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    let errorOutput = "";
+    const timeout = setTimeout(() => {
+      reject(new Error(`Timed out waiting for child process output: ${errorOutput}`));
+    }, 5_000);
+
+    child.stdout?.on("data", (chunk) => {
+      output += String(chunk);
+      if (output.includes(expected)) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.stderr?.on("data", (chunk) => {
+      errorOutput += String(chunk);
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (!output.includes(expected)) {
+        clearTimeout(timeout);
+        reject(new Error(`Child process exited before acquiring the lock (${code}): ${errorOutput}`));
+      }
+    });
+  });
+}
+
+function waitForChildExit(child: ReturnType<typeof spawn>): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code));
+  });
+}
 
 test("invalidateSummaries previews and clears stored summaries while marking publish rebuild", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-invalidate-summary-"));

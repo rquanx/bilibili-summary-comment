@@ -17,6 +17,7 @@ const DB_PATH_SYMBOL = Symbol.for("video-pipeline.dbPath");
 const activeWriteLocks = new Map<string, { depth: number; release: () => void }>();
 const DEFAULT_SQLITE_JOURNAL_MODE = "WAL";
 const DEFAULT_SQLITE_JOURNAL_MODE_FALLBACK = "DELETE";
+const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 
 type DbWithPath = Db & {
   [DB_PATH_SYMBOL]?: string;
@@ -38,7 +39,7 @@ export function openDatabase(databasePath: string): Db {
 
   withDatabaseWriteLock(db, () => {
     applyConfiguredJournalMode(db);
-    db.pragma("busy_timeout = 5000");
+    db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(process.env.SQLITE_BUSY_TIMEOUT_MS)}`);
     db.pragma("foreign_keys = ON");
     migrateDatabase(db);
   });
@@ -216,6 +217,15 @@ function applyConfiguredJournalMode(db: Db) {
 function normalizeJournalMode(value: unknown, fallback: string): string {
   const normalized = String(value ?? "").trim().toUpperCase();
   return normalized || fallback;
+}
+
+function resolveBusyTimeoutMs(value: unknown): number {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) {
+    return DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+  }
+
+  return Math.max(0, Math.min(Math.floor(normalized), 120_000));
 }
 
 function shouldFallbackJournalMode(error: unknown, preferredMode: string): boolean {

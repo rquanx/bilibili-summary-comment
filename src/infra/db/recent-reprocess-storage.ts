@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { withDatabaseWriteLock } from "./database";
 import { getDrizzleDb } from "./orm";
 import { recentReprocessRuns } from "./schema";
 import type { Db, RecentReprocessRunInsert, RecentReprocessRunRecord } from "./types";
@@ -7,55 +8,57 @@ export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert):
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const finishedAt = normalizeOptionalString(input.finishedAt) ?? now;
-  orm.run(sql`
-    INSERT INTO recent_reprocess_runs (
-      video_id,
-      bvid,
-      video_title,
-      candidate_key,
-      reasons_json,
-      paste_pages_json,
-      status,
-      error_message,
-      details_json,
-      created_at,
-      updated_at,
-      finished_at
-    )
-    VALUES (
-      ${normalizeNullableNumber(input.videoId)},
-      ${String(input.bvid ?? "").trim()},
-      ${normalizeOptionalString(input.videoTitle)},
-      ${String(input.candidateKey ?? "").trim()},
-      ${JSON.stringify(normalizeStringList(input.reasons))},
-      ${JSON.stringify(normalizeNumberList(input.pastePages))},
-      ${input.status},
-      ${normalizeOptionalString(input.errorMessage)},
-      ${input.details === undefined ? null : JSON.stringify(input.details)},
-      ${now},
-      ${now},
-      ${finishedAt}
-    )
-  `);
+  return withDatabaseWriteLock(db, () => {
+    orm.run(sql`
+      INSERT INTO recent_reprocess_runs (
+        video_id,
+        bvid,
+        video_title,
+        candidate_key,
+        reasons_json,
+        paste_pages_json,
+        status,
+        error_message,
+        details_json,
+        created_at,
+        updated_at,
+        finished_at
+      )
+      VALUES (
+        ${normalizeNullableNumber(input.videoId)},
+        ${String(input.bvid ?? "").trim()},
+        ${normalizeOptionalString(input.videoTitle)},
+        ${String(input.candidateKey ?? "").trim()},
+        ${JSON.stringify(normalizeStringList(input.reasons))},
+        ${JSON.stringify(normalizeNumberList(input.pastePages))},
+        ${input.status},
+        ${normalizeOptionalString(input.errorMessage)},
+        ${input.details === undefined ? null : JSON.stringify(input.details)},
+        ${now},
+        ${now},
+        ${finishedAt}
+      )
+    `);
 
-  return orm.get<RecentReprocessRunRecord>(sql`
-    SELECT
-      id,
-      video_id,
-      bvid,
-      video_title,
-      candidate_key,
-      reasons_json,
-      paste_pages_json,
-      status,
-      error_message,
-      details_json,
-      created_at,
-      updated_at,
-      finished_at
-    FROM ${recentReprocessRuns}
-    WHERE ${recentReprocessRuns.id} = last_insert_rowid()
-  `) as RecentReprocessRunRecord;
+    return orm.get<RecentReprocessRunRecord>(sql`
+      SELECT
+        id,
+        video_id,
+        bvid,
+        video_title,
+        candidate_key,
+        reasons_json,
+        paste_pages_json,
+        status,
+        error_message,
+        details_json,
+        created_at,
+        updated_at,
+        finished_at
+      FROM ${recentReprocessRuns}
+      WHERE ${recentReprocessRuns.id} = last_insert_rowid()
+    `) as RecentReprocessRunRecord;
+  });
 }
 
 export function getLatestSuccessfulRecentReprocessRunByCandidateKey(
