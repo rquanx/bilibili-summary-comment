@@ -10,3 +10,5 @@ cookie.txt
 bili-auth*.json
 .auth/
 .tmp-tests
+temp
+.trending
