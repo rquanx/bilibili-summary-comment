@@ -213,6 +213,10 @@ function resolveWorkLockStaleMs(lockName: string): number | null {
     return COMMENT_PUBLISH_QUEUE_STALE_MS;
   }
 
+  if (lockName === "historical-summary-cursor.json.lock") {
+    return VIDEO_PIPELINE_LOCK_STALE_MS;
+  }
+
   return null;
 }
 

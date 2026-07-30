@@ -1928,9 +1928,7 @@ export async function postSummaryThread({
     throw createCliError("No comment chunks generated from summary");
   }
 
-  let rootRpid = forcedRootRpid
-    ?? existingRootRpid
-    ?? (allowExistingCommentAdoption ? topCommentState.topComment?.rpid ?? null : null);
+  let rootRpid = forcedRootRpid ?? existingRootRpid ?? null;
   const initialRootRpid = rootRpid;
   const createdComments = [];
   const warnings = [];
@@ -1977,12 +1975,12 @@ export async function postSummaryThread({
     allowExistingCommentAdoption
     && !forcedRootRpid
     && !existingRootRpid
-    && rootRpid
     && topCommentState.topComment
     && commentMessageMatches(topCommentState.topComment.message, pendingChunks[0]?.message ?? "")
   ) {
     const adoptedRootChunk = pendingChunks.shift();
     if (adoptedRootChunk) {
+      rootRpid = normalizeCommentRpid(topCommentState.topComment.rpid);
       adoptedPages.push(...adoptedRootChunk.pages);
       reusedExistingRootComment = true;
     }

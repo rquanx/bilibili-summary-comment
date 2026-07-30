@@ -3,6 +3,7 @@ import { DEFAULT_AUTH_FILE } from "../../domains/bili/auth";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const positiveIntegerLikeSchema = z.coerce.number().int().positive();
+const nonNegativeIntegerLikeSchema = z.coerce.number().int().nonnegative();
 const optionalTrimmedStringSchema = z
   .union([z.string(), z.undefined(), z.null()])
   .transform((value) => {
@@ -36,6 +37,9 @@ const schedulerConfigSchema = z.object({
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
   summaryConcurrency: positiveIntegerLikeSchema,
+  historicalSummaryDailyLimit: positiveIntegerLikeSchema,
+  historicalSummaryConcurrency: positiveIntegerLikeSchema,
+  historicalRequestDelayMs: nonNegativeIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
   dbPath: nonEmptyStringSchema,
@@ -53,6 +57,9 @@ interface AppConfigOptions extends Record<string, unknown> {
   ["work-root"]?: unknown;
   ["cleanup-days"]?: unknown;
   ["summary-concurrency"]?: unknown;
+  ["historical-summary-daily-limit"]?: unknown;
+  ["historical-summary-concurrency"]?: unknown;
+  ["historical-request-delay-ms"]?: unknown;
   ["summary-users"]?: unknown;
   ["cookie-file"]?: unknown;
   ["summary-since-hours"]?: unknown;
@@ -87,6 +94,18 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
     summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
+    historicalSummaryDailyLimit:
+      options["historical-summary-daily-limit"]
+      ?? process.env.HISTORICAL_SUMMARY_DAILY_LIMIT
+      ?? 200,
+    historicalSummaryConcurrency:
+      options["historical-summary-concurrency"]
+      ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
+      ?? 2,
+    historicalRequestDelayMs:
+      options["historical-request-delay-ms"]
+      ?? process.env.HISTORICAL_SUMMARY_REQUEST_DELAY_MS
+      ?? 2000,
     refreshDays: options["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30,
     cleanupDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",

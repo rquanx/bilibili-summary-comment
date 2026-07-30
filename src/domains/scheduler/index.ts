@@ -18,3 +18,12 @@ export { runPipelineForBvid, readCookieString } from "./pipeline-runner";
 export { parseSummaryUsers, extractBiliMid, normalizePipelineUserKey } from "./user-targets";
 export { runPendingVideoPublishSweep } from "./publish";
 export { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "./uploads";
+export {
+  DEFAULT_HISTORICAL_REQUEST_DELAY_MS,
+  DEFAULT_HISTORICAL_SUMMARY_CONCURRENCY,
+  DEFAULT_HISTORICAL_SUMMARY_DAILY_LIMIT,
+  isPinnedSummaryComment,
+  persistHistoricalSummaryCursor,
+  readHistoricalSummaryCursor,
+  runHistoricalSummaryBackfill,
+} from "./historical-summary";

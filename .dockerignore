@@ -6,6 +6,8 @@ dist
 work
 .videocaptioner
 .tmp-tests
+temp
+.trending
 .vscode
 .env
 cookie.txt

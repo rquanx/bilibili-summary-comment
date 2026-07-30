@@ -17,6 +17,7 @@ import {
 import { createCoalescedRunner } from "../domains/scheduler/coalesced-runner";
 import {
   cleanupOldWorkDirectories,
+  runHistoricalSummaryBackfill,
   runPendingVideoPublishSweep,
   runRecentVideoGapCheck,
   syncSummaryUsersRecentVideos,
@@ -30,18 +31,21 @@ const command = addWorkRootOption(
   addDatabaseOption(
     createCliCommand({
       name: "run-scheduler",
-      description: "Run the recurring refresh, summary, and cleanup scheduler.",
+      description: "Run the recurring refresh, summary, historical backfill, publish, and cleanup scheduler.",
     })
       .option("--cookie-file <path>", "Optional. Cookie file path.")
       .option("--auth-file <path>", "Optional. TV auth file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
       .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg)
+      .option("--historical-summary-daily-limit <count>", "Optional. Historical pipeline starts per calendar day. Default: 200", parsePositiveIntegerArg)
+      .option("--historical-summary-concurrency <count>", "Optional. Historical max concurrent pipelines. Default: 2", parsePositiveIntegerArg)
+      .option("--historical-request-delay-ms <ms>", "Optional. Minimum delay between historical Bilibili requests. Default: 2000")
       .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
       .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
-      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | publish | gap-check | cleanup | all."),
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | historical-summary | publish | gap-check | cleanup | all."),
   ),
 );
 
@@ -137,6 +141,14 @@ await runCli({
     }
 
     async function runSummaryTask() {
+      if (runningTasks.has("historical-summary")) {
+        log("Skip summary: historical-summary task is still running");
+        return {
+          action: "skip-summary",
+          reason: "historical-summary-running",
+        };
+      }
+
       const startedAt = new Date();
       const logDay = formatLogDay(startedAt);
       const logGroup = createLogGroupName("summary", null, startedAt);
@@ -270,12 +282,88 @@ await runCli({
       };
     }
 
+    async function runHistoricalSummaryTask() {
+      if (runningTasks.has("summary")) {
+        log("Skip historical-summary: recent summary task is still running");
+        return {
+          action: "skip-historical-summary",
+          reason: "recent-summary-running",
+        };
+      }
+
+      const startedAt = new Date();
+      const logDay = formatLogDay(startedAt);
+      const logGroup = createLogGroupName("historical-summary", null, startedAt);
+      const historicalLogger = createWorkFileLogger({
+        workRoot: config.workRoot,
+        name: "scheduler",
+        label: "historical-summary",
+        day: logDay,
+        group: logGroup,
+        context: {
+          scope: "scheduler",
+          task: "historical-summary",
+          schedulerLogPath: schedulerLogger.filePath,
+        },
+      });
+      log(`[historical-summary] run log: ${historicalLogger.filePath}`);
+      const result = await runHistoricalSummaryBackfill({
+        summaryUsers: config.summaryUsers,
+        authFile: config.authFile,
+        dbPath: config.dbPath,
+        workRoot: config.workRoot,
+        timezone: config.timezone ?? null,
+        dailyLimit: config.historicalSummaryDailyLimit,
+        maxConcurrent: config.historicalSummaryConcurrency,
+        requestDelayMs: config.historicalRequestDelayMs,
+        logDay,
+        logGroup,
+        logger: historicalLogger,
+        onLog(message) {
+          historicalLogger.progress(message);
+          writeConsole(`[historical-summary] ${message}`);
+        },
+      });
+      historicalLogger.info("Historical summary sweep finished", {
+        targetDate: result.targetDate,
+        uploads: result.uploads.length,
+        processed: result.runs.length,
+        skippedPinnedSummary: result.skippedPinnedSummary.length,
+        failures: result.failures.length,
+        blockedMids: result.blockedMids,
+        advanced: result.advanced,
+        quotaUsed: result.quotaUsed,
+        dailyLimit: result.dailyLimit,
+        cursorPath: result.cursorPath,
+      });
+      log(
+        `Historical summary sweep finished: processed=${result.runs.length}, pinned=${result.skippedPinnedSummary.length}, failures=${result.failures.length}, quota=${result.quotaUsed}/${result.dailyLimit}`,
+      );
+      if (result.runs.length > 0) {
+        log("Historical summaries generated; requesting one publish sweep");
+        await publishRunner();
+      }
+      return {
+        action: "historical-summary",
+        targetDate: result.targetDate,
+        uploads: result.uploads.length,
+        runs: result.runs.length,
+        skippedPinnedSummary: result.skippedPinnedSummary.length,
+        failures: result.failures.length,
+        blockedMids: result.blockedMids,
+        advanced: result.advanced,
+        quotaUsed: result.quotaUsed,
+        dailyLimit: result.dailyLimit,
+        cursorPath: result.cursorPath,
+      };
+    }
+
     async function runCleanupTask() {
-      if (runningTasks.has("summary") || runningTasks.has("publish")) {
-        log("Skip work cleanup: summary or publish task is still running");
+      if (runningTasks.has("summary") || runningTasks.has("historical-summary") || runningTasks.has("publish")) {
+        log("Skip work cleanup: summary, historical-summary, or publish task is still running");
         return {
           action: "skip-cleanup",
-          reason: "summary-or-publish-running",
+          reason: "pipeline-or-publish-running",
         };
       }
 
@@ -406,6 +494,7 @@ await runCli({
         };
       },
     });
+    const historicalSummaryRunner = runExclusive("historical-summary", runHistoricalSummaryTask);
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
     const gapCheckRunner = runExclusive("gap-check", runGapCheckTask);
 
@@ -413,6 +502,7 @@ await runCli({
       const result = await runOnce(args.once, {
         refreshRunner,
         summaryRunner,
+        historicalSummaryRunner,
         publishRunner,
         gapCheckRunner,
         cleanupRunner,
@@ -425,6 +515,19 @@ await runCli({
       };
     }
 
+    const scheduledTasks = [
+      cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
+      cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
+      cron.schedule("* * * * *", historicalSummaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
+      cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
+    ];
+
+    log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
+    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every-minute with persistent 24h pacing");
+    attachSignalHandlers(scheduledTasks, log);
+
     if (args["run-on-start"]) {
       await refreshRunner();
       await summaryRunner();
@@ -433,25 +536,15 @@ await runCli({
       await cleanupRunner();
     }
 
-    const scheduledTasks = [
-      cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
-      cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
-      cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
-      cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
-      cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
-    ];
-
-    log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45");
-
-    attachSignalHandlers(scheduledTasks, log);
-
     return {
       ok: true,
       mode: "daemon",
       timezone: config.timezone ?? "system",
       summaryUsers: config.summaryUsers,
       summaryConcurrency: config.summaryConcurrency,
+      historicalSummaryDailyLimit: config.historicalSummaryDailyLimit,
+      historicalSummaryConcurrency: config.historicalSummaryConcurrency,
+      historicalRequestDelayMs: config.historicalRequestDelayMs,
       publishTask: "serial",
       refreshDays: config.refreshDays,
       cleanupDays: config.cleanupDays,
@@ -482,6 +575,8 @@ async function runOnce(target, runners) {
       return [await runners.refreshRunner()];
     case "summary":
       return [await runners.summaryRunner()];
+    case "historical-summary":
+      return [await runners.historicalSummaryRunner()];
     case "publish":
       return [await runners.publishRunner()];
     case "gap-check":
@@ -492,6 +587,7 @@ async function runOnce(target, runners) {
       return [
         await runners.refreshRunner(),
         await runners.summaryRunner(),
+        await runners.historicalSummaryRunner(),
         await runners.publishRunner(),
         await runners.gapCheckRunner(),
         await runners.cleanupRunner(),
