@@ -71,11 +71,58 @@ test("buildSummaryHttpRequest creates chat-completions payloads", () => {
   assert.equal(request.headers.authorization, "Bearer key-123");
   assert.deepEqual(JSON.parse(request.body), {
     model: "gpt-test",
+    stream: true,
     messages: [
       { role: "system", content: "system" },
       { role: "user", content: "user" },
     ],
   });
+});
+
+test("buildSummaryHttpRequest closes the connection for retry attempts", () => {
+  const request = buildSummaryHttpRequest({
+    apiFormat: "openai-chat",
+    model: "gpt-test",
+    apiKey: "key-123",
+    systemPrompt: "system",
+    userPrompt: "user",
+    forceFreshConnection: true,
+  });
+
+  assert.equal(request.headers.connection, "close");
+});
+
+test("requestSummary reads OpenAI chat-completions SSE output", async () => {
+  const encoder = new TextEncoder();
+  const responseBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"<1P> 1#00:00 "}}]}\n\n'));
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"streamed summary"}}]}\n\n'));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
+  const summaryText = await requestSummary({
+    pageNo: 1,
+    partTitle: "P1",
+    durationSec: 120,
+    subtitleText: "raw subtitle text",
+    segments: [],
+    promptProfile: null,
+    model: "gpt-test",
+    apiKey: "key-123",
+    apiBaseUrl: "https://example.com/v1",
+    apiFormat: "openai-chat",
+    fetchImpl: async () => new Response(responseBody, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    }),
+  });
+
+  assert.equal(summaryText, "<1P> 1#00:00 streamed summary");
 });
 
 test("requestSummary surfaces endpoint, model, and nested cause details for transport failures", async () => {
@@ -184,6 +231,13 @@ test("shouldRetrySummaryRequest only matches transient network and gateway error
   assert.equal(
     shouldRetrySummaryRequest({
       error: new Error("Summary request transport failed: other side closed | endpoint=https://opencode.ai/zen/go/v1/chat/completions | model=kimi-k2.5 | format=openai-chat"),
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldRetrySummaryRequest({
+      error: new Error("Summary request transport failed: terminated | endpoint=https://opencode.ai/zen/go/v1/chat/completions | model=deepseek-v4-pro | format=openai-chat"),
     }),
     true,
   );
@@ -347,6 +401,7 @@ test("requestSummaryWithFallback retries 429 responses once before surfacing the
 test("requestSummaryWithFallback retries transient network failures on the same model before succeeding", async () => {
   const calls = [];
   const sleepCalls = [];
+  const freshConnectionCalls = [];
   const result = await requestSummaryWithFallback({
     requestArgs: {
       pageNo: 2,
@@ -365,6 +420,7 @@ test("requestSummaryWithFallback retries transient network failures on the same 
     },
     requestSummaryImpl: async (args) => {
       calls.push(args.model);
+      freshConnectionCalls.push(args.forceFreshConnection);
       if (calls.length < 3) {
         throw new Error("fetch failed");
       }
@@ -373,7 +429,8 @@ test("requestSummaryWithFallback retries transient network failures on the same 
   });
 
   assert.deepEqual(calls, ["gpt-test", "gpt-test", "gpt-test"]);
-  assert.deepEqual(sleepCalls, [1500, 3000]);
+  assert.deepEqual(freshConnectionCalls, [false, true, true]);
+  assert.deepEqual(sleepCalls, [5000, 15000]);
   assert.equal(result.modelUsed, "gpt-test");
   assert.equal(result.fallbackUsed, false);
   assert.equal(result.summaryText, "<2P> 2#00:00 recovered summary");
@@ -407,8 +464,8 @@ test("requestSummaryWithFallback falls back to glm-5 after kimi network retries 
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
-  assert.deepEqual(sleepCalls, [1500, 3000]);
+  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
+  assert.deepEqual(sleepCalls, [5000, 15000, 45000]);
   assert.equal(result.modelUsed, "glm-5");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-network-error");
@@ -443,8 +500,8 @@ test("requestSummaryWithFallback falls back to glm-5 after kimi 'other side clos
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
-  assert.deepEqual(sleepCalls, [1500, 3000]);
+  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
+  assert.deepEqual(sleepCalls, [5000, 15000, 45000]);
   assert.equal(result.modelUsed, "glm-5");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-network-error");

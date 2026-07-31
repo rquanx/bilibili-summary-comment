@@ -12,6 +12,7 @@ export async function requestSummary({
   apiKey,
   apiBaseUrl,
   apiFormat,
+  forceFreshConnection = false,
   fetchImpl = fetch,
 }) {
   const { systemPrompt, userPrompt } = buildSummaryPromptInput({
@@ -33,6 +34,7 @@ export async function requestSummary({
         apiKey,
         systemPrompt,
         userPrompt,
+        forceFreshConnection,
       }),
     );
   } catch (error) {
@@ -54,8 +56,19 @@ export async function requestSummary({
     throw error;
   }
 
-  const data = await response.json();
-  const text = extractSummaryText(data, api.apiFormat);
+  let text;
+  try {
+    text = api.apiFormat === "openai-chat"
+      ? await readOpenAiChatCompletionResponse(response)
+      : extractSummaryText(await response.json(), api.apiFormat);
+  } catch (error) {
+    throw buildSummaryTransportError(error, {
+      endpointUrl: api.endpointUrl,
+      model,
+      apiFormat: api.apiFormat,
+    });
+  }
+
   if (!text.trim()) {
     const error = new Error("Summary response did not contain text output.");
     attachSummaryRequestContext(error, {
@@ -284,16 +297,29 @@ function buildBaseSystemPromptLines(pageNo) {
   ];
 }
 
-export function buildSummaryHttpRequest({ apiFormat, model, apiKey, systemPrompt, userPrompt }) {
+export function buildSummaryHttpRequest({
+  apiFormat,
+  model,
+  apiKey,
+  systemPrompt,
+  userPrompt,
+  forceFreshConnection = false,
+}) {
+  const connectionHeaders = forceFreshConnection
+    ? { connection: "close" }
+    : {};
+
   if (apiFormat === "openai-chat") {
     return {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
+        ...connectionHeaders,
       },
       body: JSON.stringify({
         model,
+        stream: true,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
@@ -310,6 +336,7 @@ export function buildSummaryHttpRequest({ apiFormat, model, apiKey, systemPrompt
         authorization: `Bearer ${apiKey}`,
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
+        ...connectionHeaders,
       },
       body: JSON.stringify({
         model,
@@ -330,6 +357,7 @@ export function buildSummaryHttpRequest({ apiFormat, model, apiKey, systemPrompt
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
+      ...connectionHeaders,
     },
     body: JSON.stringify({
       model,
@@ -345,6 +373,86 @@ export function buildSummaryHttpRequest({ apiFormat, model, apiKey, systemPrompt
       ],
     }),
   };
+}
+
+async function readOpenAiChatCompletionResponse(response) {
+  const contentType = String(response.headers?.get?.("content-type") ?? "").toLowerCase();
+  if (!contentType.includes("text/event-stream")) {
+    return extractSummaryText(await response.json(), "openai-chat");
+  }
+
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    throw new Error("Streaming summary response did not contain a readable body.");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let outputText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+
+    const lines = buffer.split(/\r?\n/u);
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const chunkText = extractOpenAiStreamLineText(line);
+      if (chunkText === null) {
+        continue;
+      }
+      outputText += chunkText;
+    }
+
+    if (done) {
+      break;
+    }
+  }
+
+  const finalChunkText = extractOpenAiStreamLineText(buffer);
+  if (finalChunkText !== null) {
+    outputText += finalChunkText;
+  }
+
+  return outputText;
+}
+
+function extractOpenAiStreamLineText(line) {
+  const normalizedLine = String(line ?? "").trim();
+  if (!normalizedLine.startsWith("data:")) {
+    return null;
+  }
+
+  const payload = normalizedLine.slice("data:".length).trim();
+  if (!payload || payload === "[DONE]") {
+    return null;
+  }
+
+  const data = JSON.parse(payload);
+  const choice = data?.choices?.[0];
+  return extractTextContent(choice?.delta?.content)
+    || extractTextContent(choice?.message?.content)
+    || (typeof choice?.text === "string" ? choice.text : "");
+}
+
+function extractTextContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      return typeof item?.text === "string" ? item.text : "";
+    })
+    .join("");
 }
 
 export function extractSummaryText(data, apiFormat) {
