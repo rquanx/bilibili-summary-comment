@@ -23,6 +23,8 @@ const SUMMARY_FETCH_FAILED_PATTERN = /fetch failed/iu;
 const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|socket closed|other side closed|network error|headers timeout|body timeout|\bterminated\b)/iu;
 const SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN = /(?:408 Request Timeout|425 Too Early|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)/iu;
 const EMPTY_SUMMARY_MAX_DURATION_SEC = 20;
+const CLI_PROXY_FALLBACK_REASON = "cli-proxy-request-failed";
+const CLI_PROXY_MAX_ATTEMPTS = 4;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
@@ -54,6 +56,7 @@ export function shouldRetrySummaryRequest({ error }) {
 
 export async function requestSummaryWithFallback({
   requestArgs,
+  preferredRequestArgs = null,
   requestSummaryImpl = requestSummary,
   requestGeminiSummaryImpl = requestSummaryWithGeminiSdk,
   onFallback = null,
@@ -62,6 +65,42 @@ export async function requestSummaryWithFallback({
   maxRequestAttempts = SUMMARY_REQUEST_MAX_ATTEMPTS,
   sleepImpl = delay,
 }) {
+  const fallbackHistory = [];
+
+  if (preferredRequestArgs) {
+    try {
+      const summaryText = await requestSummaryWithRetries({
+        requestArgs: preferredRequestArgs,
+        requestImpl: requestSummaryImpl,
+        sleepImpl,
+        maxAttempts: CLI_PROXY_MAX_ATTEMPTS,
+        onRetry,
+        provider: "cli-proxy",
+      });
+      return {
+        summaryText,
+        modelUsed: preferredRequestArgs.model,
+        providerUsed: "cli-proxy",
+        fallbackUsed: false,
+        fallbackReason: null,
+        fallbackHistory,
+      };
+    } catch (error) {
+      const fallbackEntry = {
+        failedProvider: "cli-proxy",
+        failedModel: preferredRequestArgs.model,
+        fallbackProvider: "opencode",
+        fallbackModel: requestArgs.model,
+        fallbackReason: CLI_PROXY_FALLBACK_REASON,
+      };
+      fallbackHistory.push(fallbackEntry);
+      await onFallback?.({
+        ...fallbackEntry,
+        error,
+      });
+    }
+  }
+
   try {
     const summaryText = await requestSummaryWithRetries({
       requestArgs,
@@ -74,8 +113,10 @@ export async function requestSummaryWithFallback({
     return {
       summaryText,
       modelUsed: requestArgs.model,
-      fallbackUsed: false,
-      fallbackReason: null,
+      providerUsed: "opencode",
+      fallbackUsed: fallbackHistory.length > 0,
+      fallbackReason: fallbackHistory.at(-1)?.fallbackReason ?? null,
+      fallbackHistory,
     };
   } catch (error) {
     const fallbackTarget = resolveSummaryFallbackTarget({
@@ -88,10 +129,19 @@ export async function requestSummaryWithFallback({
     }
 
     await onFallback?.({
+      failedProvider: "opencode",
       failedModel: requestArgs.model,
+      fallbackProvider: fallbackTarget.provider ?? "opencode",
       fallbackModel: fallbackTarget.model,
       fallbackReason: fallbackTarget.reason,
       error,
+    });
+    fallbackHistory.push({
+      failedProvider: "opencode",
+      failedModel: requestArgs.model,
+      fallbackProvider: fallbackTarget.provider ?? "opencode",
+      fallbackModel: fallbackTarget.model,
+      fallbackReason: fallbackTarget.reason,
     });
 
     const fallbackRequestArgs = {
@@ -113,8 +163,10 @@ export async function requestSummaryWithFallback({
     return {
       summaryText,
       modelUsed: fallbackTarget.model,
+      providerUsed: fallbackTarget.provider ?? "opencode",
       fallbackUsed: true,
       fallbackReason: fallbackTarget.reason,
+      fallbackHistory,
     };
   }
 }
@@ -169,6 +221,7 @@ export async function summarizePartFromSubtitle({
   apiKey,
   apiBaseUrl,
   apiFormat,
+  cliProxy = null,
   promptConfigPath = null,
   ownerMid = null,
   ownerName = null,
@@ -178,8 +231,11 @@ export async function summarizePartFromSubtitle({
   requestGeminiSummaryImpl = requestSummaryWithGeminiSdk,
   geminiApiKey = process.env.GEMINI_KEY ?? "",
 }) {
-  if (!apiKey) {
-    throw new Error("Missing summary API key. Set SUMMARY_API_KEY or OPENAI_API_KEY.");
+  const cliProxyEnabled = Boolean(cliProxy?.enabled && String(cliProxy?.apiKey ?? "").trim());
+  if (!apiKey && !(cliProxyEnabled && cliProxy?.apiKey)) {
+    throw new Error(
+      "Missing summary API key. Set SUMMARY_CLI_PROXY_API_KEY, SUMMARY_API_KEY, or OPENAI_API_KEY.",
+    );
   }
 
   let promptPath = null;
@@ -254,8 +310,9 @@ export async function summarizePartFromSubtitle({
       partTitle,
       message: `Starting LLM summary for P${pageNo}`,
       details: {
-        model,
-        apiFormat,
+        model: cliProxyEnabled ? cliProxy.model : model,
+        provider: cliProxyEnabled ? "cli-proxy" : "opencode",
+        apiFormat: cliProxyEnabled ? cliProxy.apiFormat : apiFormat,
         subtitlePath,
       },
     });
@@ -301,10 +358,26 @@ export async function summarizePartFromSubtitle({
     };
     const summaryAttempt = await requestSummaryWithFallback({
       requestArgs: summaryRequest,
+      preferredRequestArgs: cliProxyEnabled
+        ? {
+            ...summaryRequest,
+            model: cliProxy.model,
+            apiKey: cliProxy.apiKey,
+            apiBaseUrl: cliProxy.apiBaseUrl,
+            apiFormat: cliProxy.apiFormat,
+          }
+        : null,
       requestSummaryImpl,
       requestGeminiSummaryImpl,
       geminiApiKey,
-      onFallback: async ({ failedModel, fallbackModel, fallbackReason, error }) => {
+      onFallback: async ({
+        failedProvider,
+        failedModel,
+        fallbackProvider,
+        fallbackModel,
+        fallbackReason,
+        error,
+      }) => {
         eventLogger?.log({
           scope: "summary",
           action: "llm-fallback",
@@ -312,9 +385,11 @@ export async function summarizePartFromSubtitle({
           pageNo,
           cid,
           partTitle,
-          message: `Retrying summary with fallback model ${fallbackModel}`,
+          message: `Summary fallback from ${failedProvider} to ${fallbackProvider}`,
           details: {
+            failedProvider,
             failedModel,
+            fallbackProvider,
             fallbackModel,
             fallbackReason,
             originalError: error instanceof Error ? error.message : String(error ?? ""),
@@ -353,9 +428,12 @@ export async function summarizePartFromSubtitle({
       message: `LLM summary ready for P${pageNo}`,
       details: {
         model: summaryAttempt.modelUsed,
+        provider: summaryAttempt.providerUsed,
         requestedModel: model,
+        preferredModel: cliProxyEnabled ? cliProxy.model : null,
         fallbackUsed: summaryAttempt.fallbackUsed,
         fallbackReason: summaryAttempt.fallbackReason,
+        fallbackHistory: summaryAttempt.fallbackHistory,
         cueCount: subtitleInspection.originalCueCount,
         usableCueCount: subtitleInspection.usableCueCount,
         removedCueCount: subtitleInspection.removedCueCount,
@@ -381,7 +459,9 @@ export async function summarizePartFromSubtitle({
         details: {
           requestedModel: model,
           modelUsed: summaryAttempt.modelUsed,
+          providerUsed: summaryAttempt.providerUsed,
           fallbackReason: summaryAttempt.fallbackReason,
+          fallbackHistory: summaryAttempt.fallbackHistory,
           subtitlePath,
         },
       });
@@ -395,6 +475,7 @@ export async function summarizePartFromSubtitle({
       summaryPath: partSummaryPath,
       dbRow: saved,
       modelUsed: summaryAttempt.modelUsed,
+      providerUsed: summaryAttempt.providerUsed,
       fallbackUsed: summaryAttempt.fallbackUsed,
     };
   } catch (error) {

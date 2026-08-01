@@ -45,7 +45,29 @@ test("resolveSummaryConfig normalizes args and env values", () => {
   assert.equal(config.apiKey, "key-123");
   assert.equal(config.apiBaseUrl, "https://example.com/v1");
   assert.equal(config.apiFormat, "openai-chat");
+  assert.equal(config.cliProxy.enabled, false);
+  assert.equal(config.cliProxy.model, "gpt-5.6-luna");
+  assert.equal(config.cliProxy.apiBaseUrl, "http://host.docker.internal:8317/v1");
+  assert.equal(config.cliProxy.apiFormat, "responses");
   assert.equal(config.promptConfigPath, "config/custom-prompts.json");
+});
+
+test("resolveSummaryConfig enables CLI Proxy when its API key is configured", () => {
+  const config = resolveSummaryConfig({}, {
+    SUMMARY_API_KEY: "opencode-key",
+    SUMMARY_CLI_PROXY_API_KEY: "cli-proxy-key",
+    SUMMARY_CLI_PROXY_API_BASE_URL: "http://127.0.0.1:8317/v1/",
+    SUMMARY_CLI_PROXY_MODEL: "gpt-5.6-luna",
+    SUMMARY_CLI_PROXY_API_FORMAT: "RESPONSES",
+  });
+
+  assert.deepEqual(config.cliProxy, {
+    enabled: true,
+    model: "gpt-5.6-luna",
+    apiKey: "cli-proxy-key",
+    apiBaseUrl: "http://127.0.0.1:8317/v1",
+    apiFormat: "responses",
+  });
 });
 
 test("resolveSummaryApiTarget infers responses endpoint in auto mode", () => {
@@ -306,6 +328,118 @@ test("shouldRetrySummaryWithGeminiFlash only matches high-risk content filter er
     }),
     false,
   );
+});
+
+test("requestSummaryWithFallback uses CLI Proxy before opencode", async () => {
+  const calls = [];
+  const result = await requestSummaryWithFallback({
+    preferredRequestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "gpt-5.6-luna",
+      apiKey: "cli-proxy-key",
+      apiBaseUrl: "http://host.docker.internal:8317/v1",
+      apiFormat: "responses",
+    },
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "opencode-key",
+      apiBaseUrl: "https://opencode.ai/zen/go/v1",
+      apiFormat: "openai-chat",
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push({
+        model: args.model,
+        apiKey: args.apiKey,
+        apiBaseUrl: args.apiBaseUrl,
+        apiFormat: args.apiFormat,
+      });
+      return "<2P> 2#00:00 CLI Proxy summary";
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    model: "gpt-5.6-luna",
+    apiKey: "cli-proxy-key",
+    apiBaseUrl: "http://host.docker.internal:8317/v1",
+    apiFormat: "responses",
+  }]);
+  assert.equal(result.modelUsed, "gpt-5.6-luna");
+  assert.equal(result.providerUsed, "cli-proxy");
+  assert.equal(result.fallbackUsed, false);
+  assert.deepEqual(result.fallbackHistory, []);
+});
+
+test("requestSummaryWithFallback retries CLI Proxy three times before falling back to opencode", async () => {
+  const calls = [];
+  const fallbackCalls = [];
+  const sleepCalls = [];
+  const result = await requestSummaryWithFallback({
+    preferredRequestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "gpt-5.6-luna",
+      apiKey: "cli-proxy-key",
+      apiBaseUrl: "http://host.docker.internal:8317/v1",
+      apiFormat: "responses",
+    },
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "kimi-k2.5",
+      apiKey: "opencode-key",
+      apiBaseUrl: "https://opencode.ai/zen/go/v1",
+      apiFormat: "openai-chat",
+    },
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "gpt-5.6-luna") {
+        throw new Error("fetch failed");
+      }
+      return "<2P> 2#00:00 opencode summary";
+    },
+    onFallback: async (fallback) => {
+      fallbackCalls.push(fallback);
+    },
+    sleepImpl: async (timeoutMs) => {
+      sleepCalls.push(timeoutMs);
+    },
+  });
+
+  assert.deepEqual(calls, [
+    "gpt-5.6-luna",
+    "gpt-5.6-luna",
+    "gpt-5.6-luna",
+    "gpt-5.6-luna",
+    "kimi-k2.5",
+  ]);
+  assert.deepEqual(sleepCalls, [5000, 15000, 45000]);
+  assert.equal(fallbackCalls.length, 1);
+  assert.equal(fallbackCalls[0].failedProvider, "cli-proxy");
+  assert.equal(fallbackCalls[0].fallbackProvider, "opencode");
+  assert.equal(result.modelUsed, "kimi-k2.5");
+  assert.equal(result.providerUsed, "opencode");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.fallbackReason, "cli-proxy-request-failed");
+  assert.equal(result.fallbackHistory.length, 1);
 });
 
 test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_tokens errors", async () => {

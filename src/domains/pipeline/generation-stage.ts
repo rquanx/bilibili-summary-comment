@@ -188,7 +188,10 @@ export async function runGenerationStage({
       reused: subtitleResult.reused,
     });
 
-    progress?.logPart(currentIndex, part, "Generating summary", `model ${summaryConfig.model}`);
+    const requestedSummaryModel = summaryConfig.cliProxy.enabled
+      ? summaryConfig.cliProxy.model
+      : summaryConfig.model;
+    progress?.logPart(currentIndex, part, "Generating summary", `model ${requestedSummaryModel}`);
     let summaryResult;
     try {
       summaryResult = await summarizePartFromSubtitleImpl({
@@ -203,6 +206,7 @@ export async function runGenerationStage({
         apiKey: summaryConfig.apiKey,
         apiBaseUrl: summaryConfig.apiBaseUrl,
         apiFormat: summaryConfig.apiFormat,
+        cliProxy: summaryConfig.cliProxy,
         promptConfigPath: summaryConfig.promptConfigPath,
         ownerMid: summaryOwnerMid,
         ownerName: summaryOwnerName,

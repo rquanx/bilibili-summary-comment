@@ -5,6 +5,13 @@ const summaryConfigSchema = z.object({
   apiKey: z.string(),
   apiBaseUrl: z.string().trim().url(),
   apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
+  cliProxy: z.object({
+    enabled: z.boolean(),
+    model: z.string().trim().min(1),
+    apiKey: z.string(),
+    apiBaseUrl: z.string().trim().url(),
+    apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
+  }),
   promptConfigPath: z.string().trim().min(1).nullable(),
 });
 
@@ -19,6 +26,8 @@ interface SummaryConfigArgs extends Record<string, unknown> {
 }
 
 export function resolveSummaryConfig(args: SummaryConfigArgs = {}, env = process.env): SummaryConfig {
+  const cliProxyApiKey = String(env.SUMMARY_CLI_PROXY_API_KEY ?? "").trim();
+
   return summaryConfigSchema.parse({
     model: args.model ?? env.SUMMARY_MODEL ?? env.OPENAI_MODEL ?? "gpt-4o-mini",
     apiKey: args["api-key"] ?? env.SUMMARY_API_KEY ?? env.OPENAI_API_KEY ?? "",
@@ -28,6 +37,15 @@ export function resolveSummaryConfig(args: SummaryConfigArgs = {}, env = process
     apiFormat: normalizeSummaryApiFormat(
       args["api-format"] ?? env.SUMMARY_API_FORMAT ?? env.OPENAI_API_FORMAT ?? "auto",
     ),
+    cliProxy: {
+      enabled: normalizeBoolean(env.SUMMARY_CLI_PROXY_ENABLED, Boolean(cliProxyApiKey)),
+      model: env.SUMMARY_CLI_PROXY_MODEL ?? "gpt-5.6-luna",
+      apiKey: cliProxyApiKey,
+      apiBaseUrl: normalizeSummaryApiBaseUrl(
+        env.SUMMARY_CLI_PROXY_API_BASE_URL ?? "http://host.docker.internal:8317/v1",
+      ),
+      apiFormat: normalizeSummaryApiFormat(env.SUMMARY_CLI_PROXY_API_FORMAT ?? "responses"),
+    },
     promptConfigPath: normalizeOptionalSummaryPromptConfigPath(
       args["prompt-config"] ?? env.SUMMARY_PROMPT_CONFIG ?? "config/summary-prompts.json",
     ),
@@ -49,4 +67,12 @@ export function normalizeSummaryApiFormat(value: unknown): SummaryConfig["apiFor
 function normalizeOptionalSummaryPromptConfigPath(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function normalizeBoolean(value: unknown, defaultValue: boolean): boolean {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return defaultValue;
+  }
+
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
 }
