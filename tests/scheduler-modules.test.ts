@@ -1242,7 +1242,7 @@ test("runPipelineForBvid appends the video link to command failures", async () =
   );
 });
 
-test("listVideosPendingPublish returns append work before rebuild work", () => {
+test("listVideosPendingPublish returns newest videos first regardless of publish mode", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-list-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -1250,7 +1250,7 @@ test("listVideosPendingPublish returns append work before rebuild work", () => {
   try {
     const appendVideo = upsertVideo(db, {
       bvid: "BVAPPEND",
-      aid: 1,
+      aid: 2,
       title: "Append",
       ownerMid: 123,
       pageCount: 1,
@@ -1268,7 +1268,7 @@ test("listVideosPendingPublish returns append work before rebuild work", () => {
 
     const rebuildVideo = upsertVideo(db, {
       bvid: "BVREBUILD",
-      aid: 2,
+      aid: 1,
       title: "Rebuild",
       ownerMid: 456,
       pageCount: 1,
@@ -1282,7 +1282,7 @@ test("listVideosPendingPublish returns append work before rebuild work", () => {
   }
 });
 
-test("runPendingVideoPublishSweep publishes queued videos serially and stops after the first failure", async () => {
+test("runPendingVideoPublishSweep stops scheduling new work after the first failure", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-sweep-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
@@ -1292,7 +1292,7 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
   try {
     const appendVideo = upsertVideo(db, {
       bvid: "BVAPPENDSWEEP",
-      aid: 1,
+      aid: 2,
       title: "Append Sweep",
       ownerMid: 123,
       pageCount: 1,
@@ -1310,7 +1310,7 @@ test("runPendingVideoPublishSweep publishes queued videos serially and stops aft
 
     const rebuildVideo = upsertVideo(db, {
       bvid: "BVREBUILDSWEEP",
-      aid: 2,
+      aid: 1,
       title: "Rebuild Sweep",
       ownerMid: 456,
       pageCount: 1,
@@ -1539,9 +1539,9 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
     });
 
     assert.deepEqual(result.tasks.map((item) => item.video.bvid), [
-      "BVNOCOOLDOWN",
-      "BVWITHCOOLDOWN",
       "BVAFTERCOOLDOWN",
+      "BVWITHCOOLDOWN",
+      "BVNOCOOLDOWN",
     ]);
     assert.deepEqual(sleepCalls, [1234, 1234]);
   } finally {
@@ -1550,7 +1550,7 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
   }
 });
 
-test("runPendingVideoPublishSweep runs at most two publish tasks concurrently", async () => {
+test("runPendingVideoPublishSweep runs two tasks concurrently and lets newly queued videos jump ahead", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
@@ -1618,31 +1618,55 @@ test("runPendingVideoPublishSweep runs at most two publish tasks concurrently", 
     while (started.length < 2) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    assert.deepEqual(started, ["BVCONC1", "BVCONC2"]);
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3"]);
     assert.equal(running.size, 2);
 
-    waiters.get("BVCONC1")?.();
+    const newestVideo = upsertVideo(db, {
+      bvid: "BVCONC5",
+      aid: 5,
+      title: "BVCONC5",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: newestVideo.id,
+      pageNo: 1,
+      cid: 105,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nBVCONC5",
+      published: false,
+      isDeleted: false,
+    });
+
+    waiters.get("BVCONC4")?.();
     while (started.length < 3) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    assert.deepEqual(started, ["BVCONC1", "BVCONC2", "BVCONC3"]);
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC5"]);
     assert.equal(running.size, 2);
 
-    waiters.get("BVCONC2")?.();
+    waiters.get("BVCONC3")?.();
     while (started.length < 4) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    assert.deepEqual(started, ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4"]);
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC5", "BVCONC2"]);
     assert.equal(running.size, 2);
 
-    for (const bvid of ["BVCONC3", "BVCONC4"]) {
-      waiters.get(bvid)?.();
+    waiters.get("BVCONC5")?.();
+    while (started.length < 5) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC5", "BVCONC2", "BVCONC1"]);
+    assert.equal(running.size, 2);
+
+    waiters.get("BVCONC2")?.();
+    waiters.get("BVCONC1")?.();
 
     const result = await sweepPromise;
     assert.equal(result.aborted, false);
     assert.deepEqual(result.failures, []);
-    assert.deepEqual(finished.sort(), ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4"]);
+    assert.deepEqual(finished.sort(), ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4", "BVCONC5"]);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

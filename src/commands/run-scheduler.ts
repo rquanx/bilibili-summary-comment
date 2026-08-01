@@ -545,7 +545,7 @@ await runCli({
       historicalSummaryDailyLimit: config.historicalSummaryDailyLimit,
       historicalSummaryConcurrency: config.historicalSummaryConcurrency,
       historicalRequestDelayMs: config.historicalRequestDelayMs,
-      publishTask: "serial",
+      publishTask: "max-concurrency-2-newest-first",
       refreshDays: config.refreshDays,
       cleanupDays: config.cleanupDays,
     };

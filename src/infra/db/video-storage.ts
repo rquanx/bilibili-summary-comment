@@ -75,9 +75,9 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
           AND p.published = 0
       )
     ORDER BY
-      CASE WHEN v.publish_needs_rebuild = 1 THEN 1 ELSE 0 END ASC,
-      COALESCE(v.last_scan_at, v.updated_at, v.created_at) ASC,
-      v.id ASC
+      v.aid DESC,
+      v.created_at DESC,
+      v.id DESC
   `);
 
   return candidates.filter((video) => {

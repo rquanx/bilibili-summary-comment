@@ -19,6 +19,7 @@ export interface PendingPublishTask {
   video: VideoRecord;
   authFile: string;
   publishMode: "append" | "rebuild";
+  uploadedAtUnix: number | null;
 }
 
 export interface PendingPublishFailure {
@@ -80,31 +81,22 @@ export async function runPendingVideoPublishSweep({
   sleepImpl?: (timeoutMs: number) => Promise<void>;
 } = {}) {
   const targets = parseSummaryUsersImpl(summaryUsers);
+  const authFileByMid = buildAuthFileByMid(targets, authFile, findAuthFileForUserImpl);
+  const fallbackAuthFile = authFileByMid.size === 1 ? [...authFileByMid.values()][0] : null;
   const db = openDatabase(dbPath);
   let tasks: PendingPublishTask[] = [];
 
   try {
-    const authFileByMid = buildAuthFileByMid(targets, authFile, findAuthFileForUserImpl);
-    const fallbackAuthFile = authFileByMid.size === 1 ? [...authFileByMid.values()][0] : null;
     const videos = listVideosPendingPublishImpl(db);
 
-    tasks = videos.flatMap((video) => {
-      const resolvedAuthFile = resolveAuthFileForVideo(video, authFileByMid, fallbackAuthFile);
-      if (!resolvedAuthFile) {
-        onLog(
-          `Skip publish for ${video.bvid} (${video.title || "untitled"}): no auth file mapped for owner ${String(video.owner_mid ?? "unknown")}`,
-        );
-        return [];
-      }
-
-      return [{
-        video,
-        authFile: resolvedAuthFile,
-        publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
-      }];
+    tasks = buildPendingPublishTasks({
+      videos,
+      authFileByMid,
+      fallbackAuthFile,
+      onLog,
     });
 
-    const queuedBvids = new Set(tasks.map((task) => task.video.bvid));
+    const taskByBvid = new Map(tasks.map((task) => [task.video.bvid, task]));
     const recentUploads = await collectRecentUploadsImpl({
       summaryUsers,
       authFile,
@@ -112,7 +104,13 @@ export async function runPendingVideoPublishSweep({
     });
 
     for (const upload of recentUploads.uploads) {
-      if (!upload?.bvid || queuedBvids.has(upload.bvid)) {
+      if (!upload?.bvid) {
+        continue;
+      }
+
+      const queuedTask = taskByBvid.get(upload.bvid);
+      if (queuedTask) {
+        queuedTask.uploadedAtUnix = upload.createdAtUnix;
         continue;
       }
 
@@ -133,12 +131,15 @@ export async function runPendingVideoPublishSweep({
         video,
         authFile: resolvedAuthFile,
         publishMode: "append",
+        uploadedAtUnix: upload.createdAtUnix,
       });
-      queuedBvids.add(video.bvid);
+      taskByBvid.set(video.bvid, tasks[tasks.length - 1]);
     }
   } finally {
     db.close?.();
   }
+
+  tasks.sort(comparePendingPublishTasks);
 
   if (tasks.length === 0) {
     onLog("No videos are waiting for publish");
@@ -168,6 +169,19 @@ export async function runPendingVideoPublishSweep({
     withCommentPublishQueueLockImpl,
     computePublishCooldownMsImpl,
     sleepImpl,
+    refreshPendingTasks: () => {
+      const refreshDb = openDatabase(dbPath);
+      try {
+        return buildPendingPublishTasks({
+          videos: listVideosPendingPublishImpl(refreshDb),
+          authFileByMid,
+          fallbackAuthFile,
+          onLog,
+        });
+      } finally {
+        refreshDb.close?.();
+      }
+    },
     onAbort() {
       aborted = true;
     },
@@ -179,6 +193,63 @@ export async function runPendingVideoPublishSweep({
     failures,
     aborted,
   };
+}
+
+function buildPendingPublishTasks({
+  videos,
+  authFileByMid,
+  fallbackAuthFile,
+  onLog,
+}: {
+  videos: VideoRecord[];
+  authFileByMid: Map<number, string>;
+  fallbackAuthFile: string | null;
+  onLog: (message: string) => void;
+}): PendingPublishTask[] {
+  return videos.flatMap((video) => {
+    const resolvedAuthFile = resolveAuthFileForVideo(video, authFileByMid, fallbackAuthFile);
+    if (!resolvedAuthFile) {
+      onLog(
+        `Skip publish for ${video.bvid} (${video.title || "untitled"}): no auth file mapped for owner ${String(video.owner_mid ?? "unknown")}`,
+      );
+      return [];
+    }
+
+    return [{
+      video,
+      authFile: resolvedAuthFile,
+      publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
+      uploadedAtUnix: null,
+    }];
+  });
+}
+
+function comparePendingPublishTasks(left: PendingPublishTask, right: PendingPublishTask) {
+  const leftUploadedAt = Number(left.uploadedAtUnix ?? 0);
+  const rightUploadedAt = Number(right.uploadedAtUnix ?? 0);
+  if (leftUploadedAt > 0 || rightUploadedAt > 0) {
+    if (leftUploadedAt <= 0) {
+      return 1;
+    }
+    if (rightUploadedAt <= 0) {
+      return -1;
+    }
+    if (leftUploadedAt !== rightUploadedAt) {
+      return rightUploadedAt - leftUploadedAt;
+    }
+  }
+
+  const aidDiff = Number(right.video.aid ?? 0) - Number(left.video.aid ?? 0);
+  if (aidDiff !== 0) {
+    return aidDiff;
+  }
+
+  const createdAtDiff = Date.parse(right.video.created_at) - Date.parse(left.video.created_at);
+  if (Number.isFinite(createdAtDiff) && createdAtDiff !== 0) {
+    return createdAtDiff;
+  }
+
+  return right.video.id - left.video.id;
 }
 
 function buildAuthFileByMid(
@@ -245,6 +316,7 @@ async function runPendingPublishTasksWithConcurrency({
   withCommentPublishQueueLockImpl,
   computePublishCooldownMsImpl,
   sleepImpl,
+  refreshPendingTasks,
   onAbort,
 }: {
   tasks: PendingPublishTask[];
@@ -260,13 +332,17 @@ async function runPendingPublishTasksWithConcurrency({
   withCommentPublishQueueLockImpl: typeof withCommentPublishQueueLock;
   computePublishCooldownMsImpl: (publishMode: "append" | "rebuild") => number;
   sleepImpl: (timeoutMs: number) => Promise<void>;
+  refreshPendingTasks: () => PendingPublishTask[];
   onAbort: () => void;
 }) {
   const maxConcurrent = Math.min(PUBLISH_SWEEP_MAX_CONCURRENCY, tasks.length);
-  let nextTaskIndex = 0;
+  const pendingTasks = [...tasks];
+  const queuedBvids = new Set(pendingTasks.map((task) => task.video.bvid));
+  const processedBvids = new Set<string>();
+  let completedTaskCount = 0;
   let stopScheduling = false;
 
-  onLog(`Publishing ${tasks.length} queued video(s) with up to ${maxConcurrent} concurrent task(s)`);
+  onLog(`Publishing ${tasks.length} queued video(s) with up to ${maxConcurrent} concurrent task(s), newest first`);
 
   const worker = async () => {
     while (true) {
@@ -274,13 +350,26 @@ async function runPendingPublishTasksWithConcurrency({
         return;
       }
 
-      const index = nextTaskIndex;
-      if (index >= tasks.length) {
+      for (const refreshedTask of refreshPendingTasks()) {
+        const bvid = refreshedTask.video.bvid;
+        if (processedBvids.has(bvid) || queuedBvids.has(bvid)) {
+          continue;
+        }
+        pendingTasks.push(refreshedTask);
+        tasks.push(refreshedTask);
+        queuedBvids.add(bvid);
+      }
+
+      pendingTasks.sort(comparePendingPublishTasks);
+      tasks.sort(comparePendingPublishTasks);
+
+      const task = pendingTasks.shift();
+      if (!task) {
         return;
       }
-      nextTaskIndex += 1;
-
-      const task = tasks[index];
+      queuedBvids.delete(task.video.bvid);
+      processedBvids.add(task.video.bvid);
+      completedTaskCount += 1;
       const scopedLogger = logger?.child({
         task: "publish",
         bvid: task.video.bvid,
@@ -288,7 +377,7 @@ async function runPendingPublishTasksWithConcurrency({
       }) ?? null;
 
       onLog(
-        `Publishing ${task.video.bvid} (${task.video.title || "untitled"}) [${task.publishMode}] ${index + 1}/${tasks.length}`,
+        `Publishing ${task.video.bvid} (${task.video.title || "untitled"}) [${task.publishMode}] ${completedTaskCount}/${tasks.length}`,
       );
 
       try {
