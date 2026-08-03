@@ -55,8 +55,10 @@ CRON_TIMEZONE=Asia/Shanghai
   逗号或换行分隔的 Bilibili 用户空间链接，或直接填写 UID。
 - `SUMMARY_SINCE_HOURS`
   扫描最近多少小时的投稿，默认 `24`。
+- `PIPELINE_CONCURRENCY`
+  调度器中最近视频与历史回补共享的流水线并发数，默认 `2`；最近视频优先取得下一个空闲槽位。
 - `SUMMARY_PIPELINE_CONCURRENCY`
-  同时最多跑多少条视频流水线，默认 `3`。
+  独立最近视频命令的流水线并发数，默认 `2`。
 - `BILI_AUTH_FILE`
   TV 登录授权文件路径，默认 `.auth/bili-auth.json`。
 - `BILI_COOKIE_FILE`

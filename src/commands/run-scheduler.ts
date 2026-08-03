@@ -14,7 +14,14 @@ import {
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "../domains/bili/auth";
-import { createCoalescedRunner } from "../domains/scheduler/coalesced-runner";
+import {
+  createCoalescedRunner,
+  requestDetachedRun,
+} from "../domains/scheduler/coalesced-runner";
+import {
+  createPriorityTaskLimiter,
+  PIPELINE_TASK_PRIORITY,
+} from "../domains/scheduler/priority-task-limiter";
 import {
   cleanupOldWorkDirectories,
   runHistoricalSummaryBackfill,
@@ -37,9 +44,10 @@ const command = addWorkRootOption(
       .option("--auth-file <path>", "Optional. TV auth file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
-      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg)
+      .option("--pipeline-concurrency <count>", "Optional. Shared recent and historical pipeline concurrency. Default: 2", parsePositiveIntegerArg)
+      .option("--summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
       .option("--historical-summary-daily-limit <count>", "Optional. Historical pipeline starts per calendar day. Default: 200", parsePositiveIntegerArg)
-      .option("--historical-summary-concurrency <count>", "Optional. Historical max concurrent pipelines. Default: 2", parsePositiveIntegerArg)
+      .option("--historical-summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
       .option("--historical-request-delay-ms <ms>", "Optional. Minimum delay between historical Bilibili requests. Default: 2000")
       .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
@@ -57,6 +65,9 @@ await runCli({
     config.authFile = resolveBiliAuthFile(config.authFile);
     const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
     const runningTasks = new Set<string>();
+    const pipelineTaskLimiter = createPriorityTaskLimiter({
+      maxConcurrent: config.pipelineConcurrency,
+    });
     const schedulerLogger = createWorkFileLogger({
       workRoot: config.workRoot,
       name: "scheduler",
@@ -141,14 +152,6 @@ await runCli({
     }
 
     async function runSummaryTask() {
-      if (runningTasks.has("historical-summary")) {
-        log("Skip summary: historical-summary task is still running");
-        return {
-          action: "skip-summary",
-          reason: "historical-summary-running",
-        };
-      }
-
       const startedAt = new Date();
       const logDay = formatLogDay(startedAt);
       const logGroup = createLogGroupName("summary", null, startedAt);
@@ -172,12 +175,15 @@ await runCli({
         authFile: config.authFile,
         cookieFile: resolvedCookieFile ?? undefined,
         sinceHours: config.summarySinceHours,
-        maxConcurrent: config.summaryConcurrency,
+        maxConcurrent: config.pipelineConcurrency,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
         logDay,
         logGroup,
         publish: false,
+        runPipelineTask(task) {
+          return pipelineTaskLimiter.run(PIPELINE_TASK_PRIORITY.recent, task);
+        },
         logger: summaryLogger,
         onLog(message) {
           summaryLogger.progress(message);
@@ -186,7 +192,14 @@ await runCli({
         onPipelineSucceeded({ upload }) {
           const label = upload.title || upload.bvid || "untitled";
           log(`Summary pipeline completed for ${upload.bvid} (${label}); requesting immediate publish sweep`);
-          void publishRunner();
+          requestDetachedRun({
+            task: publishRunner,
+            onFailure(error) {
+              log(`Failed to request publish after recent summary: ${getErrorMessage(error)}`, {
+                level: "error",
+              });
+            },
+          });
         },
       });
       summaryLogger.info("Summary sweep finished", {
@@ -283,14 +296,6 @@ await runCli({
     }
 
     async function runHistoricalSummaryTask() {
-      if (runningTasks.has("summary")) {
-        log("Skip historical-summary: recent summary task is still running");
-        return {
-          action: "skip-historical-summary",
-          reason: "recent-summary-running",
-        };
-      }
-
       const startedAt = new Date();
       const logDay = formatLogDay(startedAt);
       const logGroup = createLogGroupName("historical-summary", null, startedAt);
@@ -314,8 +319,12 @@ await runCli({
         workRoot: config.workRoot,
         timezone: config.timezone ?? null,
         dailyLimit: config.historicalSummaryDailyLimit,
-        maxConcurrent: config.historicalSummaryConcurrency,
+        maxConcurrent: config.pipelineConcurrency,
+        maxPipelineStartsPerRun: config.pipelineConcurrency,
         requestDelayMs: config.historicalRequestDelayMs,
+        runPipelineTask(task) {
+          return pipelineTaskLimiter.run(PIPELINE_TASK_PRIORITY.historical, task);
+        },
         logDay,
         logGroup,
         logger: historicalLogger,
@@ -341,7 +350,14 @@ await runCli({
       );
       if (result.runs.length > 0) {
         log("Historical summaries generated; requesting one publish sweep");
-        await publishRunner();
+        requestDetachedRun({
+          task: publishRunner,
+          onFailure(error) {
+            log(`Failed to request publish after historical summary: ${getErrorMessage(error)}`, {
+              level: "error",
+            });
+          },
+        });
       }
       return {
         action: "historical-summary",
@@ -525,7 +541,10 @@ await runCli({
     ];
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
-    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every-minute with persistent 24h pacing");
+    log(
+      `Pipeline slots: total=${pipelineTaskLimiter.capacity}, shared-by=recent+historical, priority=recent-first`,
+    );
+    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every-minute with recent-video pipeline priority");
     attachSignalHandlers(scheduledTasks, log);
 
     if (args["run-on-start"]) {
@@ -541,9 +560,8 @@ await runCli({
       mode: "daemon",
       timezone: config.timezone ?? "system",
       summaryUsers: config.summaryUsers,
-      summaryConcurrency: config.summaryConcurrency,
+      pipelineConcurrency: config.pipelineConcurrency,
       historicalSummaryDailyLimit: config.historicalSummaryDailyLimit,
-      historicalSummaryConcurrency: config.historicalSummaryConcurrency,
       historicalRequestDelayMs: config.historicalRequestDelayMs,
       publishTask: "max-concurrency-2-newest-first",
       refreshDays: config.refreshDays,

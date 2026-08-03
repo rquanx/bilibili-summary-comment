@@ -36,9 +36,8 @@ const schedulerConfigSchema = z.object({
   cookieFile: optionalTrimmedStringSchema,
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
-  summaryConcurrency: positiveIntegerLikeSchema,
+  pipelineConcurrency: positiveIntegerLikeSchema,
   historicalSummaryDailyLimit: positiveIntegerLikeSchema,
-  historicalSummaryConcurrency: positiveIntegerLikeSchema,
   historicalRequestDelayMs: nonNegativeIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
@@ -56,6 +55,7 @@ interface AppConfigOptions extends Record<string, unknown> {
   timezone?: unknown;
   ["work-root"]?: unknown;
   ["cleanup-days"]?: unknown;
+  ["pipeline-concurrency"]?: unknown;
   ["summary-concurrency"]?: unknown;
   ["historical-summary-daily-limit"]?: unknown;
   ["historical-summary-concurrency"]?: unknown;
@@ -81,7 +81,7 @@ export function resolveSummaryUsersConfig(options: AppConfigOptions = {}): Summa
     authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? DEFAULT_AUTH_FILE,
     cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     sinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
-    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
+    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 2,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",
     workRoot: options["work-root"] ?? process.env.WORK_ROOT ?? "work",
   });
@@ -93,15 +93,18 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
-    summaryConcurrency: options["summary-concurrency"] ?? process.env.SUMMARY_PIPELINE_CONCURRENCY ?? 3,
+    pipelineConcurrency:
+      options["pipeline-concurrency"]
+      ?? process.env.PIPELINE_CONCURRENCY
+      ?? options["historical-summary-concurrency"]
+      ?? options["summary-concurrency"]
+      ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
+      ?? process.env.SUMMARY_PIPELINE_CONCURRENCY
+      ?? 2,
     historicalSummaryDailyLimit:
       options["historical-summary-daily-limit"]
       ?? process.env.HISTORICAL_SUMMARY_DAILY_LIMIT
       ?? 200,
-    historicalSummaryConcurrency:
-      options["historical-summary-concurrency"]
-      ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
-      ?? 2,
     historicalRequestDelayMs:
       options["historical-request-delay-ms"]
       ?? process.env.HISTORICAL_SUMMARY_REQUEST_DELAY_MS

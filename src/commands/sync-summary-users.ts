@@ -21,7 +21,7 @@ const command = addWorkRootOption(
       .option("--cookie-file <path>", "Optional. Cookie file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. How many recent hours to scan.", parsePositiveIntegerArg)
-      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg),
+      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 2", parsePositiveIntegerArg),
   ),
 );
 

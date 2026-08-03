@@ -7,6 +7,20 @@ interface CoalescedRunnerOptions<TResult> {
   onAfterSuccess?: (result: TResult) => void;
 }
 
+interface DetachedRunOptions {
+  task: () => Promise<unknown> | unknown;
+  onFailure?: (error: unknown) => void;
+}
+
+export function requestDetachedRun({
+  task,
+  onFailure = () => {},
+}: DetachedRunOptions) {
+  void Promise.resolve()
+    .then(task)
+    .catch(onFailure);
+}
+
 export function createCoalescedRunner<TResult>({
   name,
   runningTasks,

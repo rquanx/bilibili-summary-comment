@@ -1,6 +1,6 @@
 import { normalizePipelineUserKey } from "./user-targets";
 
-export const SUMMARY_PIPELINE_MAX_CONCURRENCY = 3;
+export const SUMMARY_PIPELINE_MAX_CONCURRENCY = 2;
 
 export interface PipelineUpload {
   mid?: string | number | null;
@@ -15,6 +15,8 @@ export type PipelineFailureResult<TUpload extends PipelineUpload> = TUpload & {
   message: string;
   details?: Record<string, unknown>;
 };
+
+export type PipelineTaskRunner = <T>(task: () => Promise<T>) => Promise<T>;
 
 interface RunPipelinesWithConcurrencyOptions<TUpload extends PipelineUpload, TResult> {
   uploads?: TUpload[];

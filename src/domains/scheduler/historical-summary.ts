@@ -14,6 +14,7 @@ import {
 } from "../../shared/runtime-locks";
 import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
 import { runPipelinesWithConcurrency } from "./concurrency";
+import type { PipelineTaskRunner } from "./concurrency";
 import { runPipelineForBvid } from "./pipeline-runner";
 import { parseSummaryUsers } from "./user-targets";
 import type { FileLogger } from "../../shared/logger";
@@ -102,6 +103,7 @@ interface RunHistoricalSummaryBackfillOptions {
   createClientImpl?: typeof createClient;
   getGuestTopCommentImpl?: typeof getGuestTopComment;
   runPipelineForBvidImpl?: typeof runPipelineForBvid;
+  runPipelineTask?: PipelineTaskRunner;
   sleepImpl?: (timeoutMs: number) => Promise<void>;
 }
 
@@ -151,6 +153,7 @@ async function runHistoricalSummaryBackfillUnlocked({
   createClientImpl = createClient,
   getGuestTopCommentImpl = getGuestTopComment,
   runPipelineForBvidImpl = runPipelineForBvid,
+  runPipelineTask = (task) => task(),
   sleepImpl = delay,
 }: RunHistoricalSummaryBackfillOptions = {}) {
   const targets = parseSummaryUsers(summaryUsers);
@@ -335,21 +338,22 @@ async function runHistoricalSummaryBackfillUnlocked({
       persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
 
       const uploadAuthFile = String(upload.authFile ?? authFile).trim();
-      const result = await runPipelineForBvidImpl({
-        authFile: uploadAuthFile,
-        cookieFile: null,
-        dbPath,
-        workRoot,
-        bvid: upload.bvid,
-        logDay,
-        logGroup,
-        publish: false,
-        logger: logger?.child({
-          task: "historical-summary",
+      const result = await runPipelineTask(() =>
+        runPipelineForBvidImpl({
+          authFile: uploadAuthFile,
+          cookieFile: null,
+          dbPath,
+          workRoot,
           bvid: upload.bvid,
-          mid: upload.mid,
-        }) ?? null,
-      });
+          logDay,
+          logGroup,
+          publish: false,
+          logger: logger?.child({
+            task: "historical-summary",
+            bvid: upload.bvid,
+            mid: upload.mid,
+          }) ?? null,
+        }));
 
       cursor.quotaUsed += 1;
       completedBvids.add(upload.bvid);

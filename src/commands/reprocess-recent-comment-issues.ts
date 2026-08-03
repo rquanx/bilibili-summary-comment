@@ -37,7 +37,7 @@ const command = addWorkRootOption(
       .option("--bvids <bvids>", "Optional. Comma-separated BV ids to process exclusively.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", `Optional. Recent upload window in hours. Default: ${DEFAULT_RECENT_REPROCESS_HOURS}`, parsePositiveIntegerArg)
-      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 3", parsePositiveIntegerArg)
+      .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 2", parsePositiveIntegerArg)
       .option("--dry-run", "Optional. Only print matched videos without modifying the database or running pipelines."),
   ),
 );

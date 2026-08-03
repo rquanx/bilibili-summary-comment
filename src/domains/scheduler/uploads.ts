@@ -7,6 +7,7 @@ import { formatErrorMessage } from "../subtitle/utils";
 import { parseSummaryUsers } from "./user-targets";
 import type { PipelineUpload } from "./concurrency";
 import type { PipelineRunResult, PipelineFailureResult } from "./concurrency";
+import type { PipelineTaskRunner } from "./concurrency";
 import type { PipelineProcessResult } from "./pipeline-runner";
 import type { SummaryUserTarget } from "./user-targets";
 import type { FileLogger } from "../../shared/logger";
@@ -63,6 +64,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
     failures: Array<PipelineFailureResult<RecentUpload>>;
   }>;
   runPipelineForBvidImpl?: typeof runPipelineForBvid;
+  runPipelineTask?: PipelineTaskRunner;
 }
 
 export async function collectRecentUploadsFromUsers({
@@ -177,6 +179,7 @@ export async function syncSummaryUsersRecentVideos({
   collectRecentUploadsImpl = collectRecentUploadsFromUsers,
   runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
   runPipelineForBvidImpl = runPipelineForBvid,
+  runPipelineTask = (task) => task(),
 }: SyncSummaryUsersRecentVideosOptions = {}) {
   const collected = await collectRecentUploadsImpl({
     summaryUsers,
@@ -221,6 +224,7 @@ export async function syncSummaryUsersRecentVideos({
     onPipelineSucceeded,
     runPipelinesWithConcurrencyImpl,
     runPipelineForBvidImpl,
+    runPipelineTask,
   });
 
   return {
@@ -244,6 +248,7 @@ export async function runRecentUploadsPipelines({
   onPipelineSucceeded = undefined,
   runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
   runPipelineForBvidImpl = runPipelineForBvid,
+  runPipelineTask = (task) => task(),
 }: Omit<SyncSummaryUsersRecentVideosOptions, "summaryUsers" | "authFile" | "sinceHours" | "collectRecentUploadsImpl"> & {
   uploads?: RecentUpload[];
 }) {
@@ -267,21 +272,22 @@ export async function runRecentUploadsPipelines({
     },
     async runUpload(upload) {
       onLog(`Running pipeline for ${upload.bvid} (${upload.title || "untitled"}) [user ${upload.mid}]`);
-      const result = await runPipelineForBvidImpl({
-        authFile: upload.authFile ?? null,
-        cookieFile: null,
-        dbPath,
-        workRoot,
-        bvid: upload.bvid,
-        logDay,
-        logGroup,
-        publish,
-        forceFreshThread,
-        logger: logger?.child({
+      const result = await runPipelineTask(() =>
+        runPipelineForBvidImpl({
+          authFile: upload.authFile ?? null,
+          cookieFile: null,
+          dbPath,
+          workRoot,
           bvid: upload.bvid,
-          mid: upload.mid,
-        }) ?? null,
-      });
+          logDay,
+          logGroup,
+          publish,
+          forceFreshThread,
+          logger: logger?.child({
+            bvid: upload.bvid,
+            mid: upload.mid,
+          }) ?? null,
+        }));
 
       if (onPipelineSucceeded) {
         void Promise.resolve(onPipelineSucceeded({

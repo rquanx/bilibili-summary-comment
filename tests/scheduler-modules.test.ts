@@ -5,9 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
 import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { resolveSchedulerConfig } from "../src/infra/config/app-config";
 import { resolveAuthFileForUser } from "../src/domains/scheduler/auth-files";
-import { createCoalescedRunner } from "../src/domains/scheduler/coalesced-runner";
+import {
+  createCoalescedRunner,
+  requestDetachedRun,
+} from "../src/domains/scheduler/coalesced-runner";
 import { runPipelinesWithConcurrency } from "../src/domains/scheduler/concurrency";
+import { createPriorityTaskLimiter } from "../src/domains/scheduler/priority-task-limiter";
 import { resolveCookieFileForUser } from "../src/domains/scheduler/cookie-files";
 import { parseSummaryUsers } from "../src/domains/scheduler/user-targets";
 import * as schedulerTasks from "../src/domains/scheduler/index";
@@ -30,6 +35,22 @@ test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
     { mid: 123, source: "123" },
     { mid: 456, source: "https://space.bilibili.com/456" },
   ]);
+});
+
+test("resolveSchedulerConfig uses one shared pipeline concurrency", () => {
+  const explicit = resolveSchedulerConfig({
+    "pipeline-concurrency": 4,
+    "summary-concurrency": 3,
+    "historical-summary-concurrency": 2,
+  });
+  const legacy = resolveSchedulerConfig({
+    "historical-summary-concurrency": 2,
+  });
+
+  assert.equal(explicit.pipelineConcurrency, 4);
+  assert.equal(legacy.pipelineConcurrency, 2);
+  assert.equal("summaryConcurrency" in explicit, false);
+  assert.equal("historicalSummaryConcurrency" in explicit, false);
 });
 
 test("resolveCookieFileForUser falls back from indexed cookie to cookie_1 then base cookie", () => {
@@ -372,7 +393,7 @@ test("syncSummaryUsersRecentVideos keeps same-user title variants and queues ear
     true,
   );
   assert.equal(
-    logMessages.includes("Running up to 3 pipelines concurrently with variant-aware serialization"),
+    logMessages.includes("Running up to 2 pipelines concurrently with variant-aware serialization"),
     true,
   );
   assert.equal(observedSchedulingKeys[0], observedSchedulingKeys[1]);
@@ -1070,6 +1091,79 @@ test("createCoalescedRunner runs the success hook after each successful run", as
   assert.equal(await firstRun, 2);
   assert.equal(runCount, 2);
   assert.deepEqual(successResults, [1, 2]);
+});
+
+test("requestDetachedRun does not keep the requesting task occupied", async () => {
+  let releaseDetachedTask: (() => void) | undefined;
+  let detachedTaskFinished = false;
+
+  requestDetachedRun({
+    async task() {
+      await new Promise<void>((resolve) => {
+        releaseDetachedTask = resolve;
+      });
+      detachedTaskFinished = true;
+    },
+  });
+
+  await Promise.resolve();
+  assert.equal(detachedTaskFinished, false);
+  assert.equal(typeof releaseDetachedTask, "function");
+
+  releaseDetachedTask?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(detachedTaskFinished, true);
+});
+
+test("createPriorityTaskLimiter gives the next free slot to recent video work", async () => {
+  const limiter = createPriorityTaskLimiter({
+    maxConcurrent: 2,
+  });
+  const started: string[] = [];
+  const releases = new Map<string, () => void>();
+
+  const runTask = (name: string, priority: number) =>
+    limiter.run(priority, async () => {
+      started.push(name);
+      await new Promise<void>((resolve) => {
+        releases.set(name, resolve);
+      });
+      return name;
+    });
+
+  const historyOne = runTask("history-1", 10);
+  const historyTwo = runTask("history-2", 10);
+  const historyThree = runTask("history-3", 10);
+  const recentOne = runTask("recent-1", 0);
+  const recentTwo = runTask("recent-2", 0);
+
+  await Promise.resolve();
+  assert.deepEqual(started, ["history-1", "history-2"]);
+
+  releases.get("history-1")?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started, ["history-1", "history-2", "recent-1"]);
+
+  releases.get("history-2")?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started, ["history-1", "history-2", "recent-1", "recent-2"]);
+
+  releases.get("recent-1")?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started, [
+    "history-1",
+    "history-2",
+    "recent-1",
+    "recent-2",
+    "history-3",
+  ]);
+
+  releases.get("recent-2")?.();
+  releases.get("history-3")?.();
+  assert.deepEqual(
+    await Promise.all([historyOne, historyTwo, historyThree, recentOne, recentTwo]),
+    ["history-1", "history-2", "history-3", "recent-1", "recent-2"],
+  );
 });
 
 test("cleanupOldWorkDirectories removes only safe candidate directories", async () => {
