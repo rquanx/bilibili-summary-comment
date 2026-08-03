@@ -4,6 +4,7 @@ import path from "node:path";
 import { getRepoRoot } from "./runtime-tools";
 
 export const RUNTIME_LOCK_HEARTBEAT_MS = 30_000;
+export const FOREIGN_HOST_LOCK_STALE_MS = RUNTIME_LOCK_HEARTBEAT_MS * 3;
 export const VIDEO_PIPELINE_LOCK_WAIT_MS = 5_000;
 export const VIDEO_PIPELINE_LOCK_STALE_MS = 10 * 60_000;
 export const TRANSCRIPTION_QUEUE_WAIT_MS = 5_000;
@@ -64,6 +65,20 @@ export function isOwnerProcessAlive(
   }
 
   return isProcessAlive(ownerPid);
+}
+
+export function resolveHeartbeatLockStaleMs(
+  owner: { hostname?: unknown } | null | undefined,
+  configuredStaleMs: number,
+  currentHostname = os.hostname(),
+) {
+  const ownerHostname = normalizeHostname(owner?.hostname);
+  const safeConfiguredStaleMs = Math.max(1, Number(configuredStaleMs) || 1);
+  if (ownerHostname && currentHostname && ownerHostname !== currentHostname) {
+    return Math.min(safeConfiguredStaleMs, FOREIGN_HOST_LOCK_STALE_MS);
+  }
+
+  return safeConfiguredStaleMs;
 }
 
 export function cleanupStaleRuntimeLocks({

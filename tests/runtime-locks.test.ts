@@ -3,7 +3,30 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { cleanupStaleRuntimeLocks } from "../src/shared/runtime-locks";
+import {
+  cleanupStaleRuntimeLocks,
+  FOREIGN_HOST_LOCK_STALE_MS,
+  resolveHeartbeatLockStaleMs,
+} from "../src/shared/runtime-locks";
+
+test("resolveHeartbeatLockStaleMs limits abandoned locks from another container", () => {
+  assert.equal(
+    resolveHeartbeatLockStaleMs(
+      { hostname: "old-container" },
+      10 * 60_000,
+      "new-container",
+    ),
+    FOREIGN_HOST_LOCK_STALE_MS,
+  );
+  assert.equal(
+    resolveHeartbeatLockStaleMs(
+      { hostname: "current-container" },
+      10 * 60_000,
+      "current-container",
+    ),
+    10 * 60_000,
+  );
+});
 
 test("cleanupStaleRuntimeLocks removes stale work locks and database write locks on startup", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-runtime-locks-"));

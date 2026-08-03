@@ -4,6 +4,7 @@ import {
   createProcessLockOwner,
   isOwnerProcessAlive,
   RUNTIME_LOCK_HEARTBEAT_MS,
+  resolveHeartbeatLockStaleMs,
   VIDEO_PIPELINE_LOCK_STALE_MS,
   VIDEO_PIPELINE_LOCK_WAIT_MS,
 } from "../../shared/runtime-locks";
@@ -162,7 +163,7 @@ function isStaleVideoPipelineLock(lockPath: string, staleMs: number) {
 
   try {
     const stats = fs.statSync(statTarget);
-    return Date.now() - stats.mtimeMs > staleMs;
+    return Date.now() - stats.mtimeMs > resolveHeartbeatLockStaleMs(owner, staleMs);
   } catch {
     return false;
   }

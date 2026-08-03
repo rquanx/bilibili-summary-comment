@@ -4,6 +4,7 @@ import {
   createProcessLockOwner,
   isOwnerProcessAlive,
   RUNTIME_LOCK_HEARTBEAT_MS,
+  resolveHeartbeatLockStaleMs,
   TRANSCRIPTION_QUEUE_STALE_MS,
   TRANSCRIPTION_QUEUE_WAIT_MS,
 } from "../../shared/runtime-locks";
@@ -125,7 +126,8 @@ function isStaleTranscriptionQueueLock(lockPath) {
 
   try {
     const stats = fs.statSync(statTarget);
-    return Date.now() - stats.mtimeMs > TRANSCRIPTION_QUEUE_STALE_MS;
+    return Date.now() - stats.mtimeMs
+      > resolveHeartbeatLockStaleMs(owner, TRANSCRIPTION_QUEUE_STALE_MS);
   } catch {
     return false;
   }

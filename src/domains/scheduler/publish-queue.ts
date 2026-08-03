@@ -6,6 +6,7 @@ import {
   createProcessLockOwner,
   isOwnerProcessAlive,
   RUNTIME_LOCK_HEARTBEAT_MS,
+  resolveHeartbeatLockStaleMs,
 } from "../../shared/runtime-locks";
 import { getRepoRoot } from "../../shared/runtime-tools";
 
@@ -125,7 +126,8 @@ function isStaleCommentPublishQueueLock(lockPath: string) {
 
   try {
     const stats = fs.statSync(statTarget);
-    return Date.now() - stats.mtimeMs > COMMENT_PUBLISH_QUEUE_STALE_MS;
+    return Date.now() - stats.mtimeMs
+      > resolveHeartbeatLockStaleMs(owner, COMMENT_PUBLISH_QUEUE_STALE_MS);
   } catch {
     return false;
   }
