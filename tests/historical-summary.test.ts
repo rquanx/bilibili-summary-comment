@@ -16,6 +16,36 @@ test("isPinnedSummaryComment only recognizes summary marker blocks", () => {
   assert.equal(isPinnedSummaryComment(""), false);
 });
 
+test("historical backfill recovers an abandoned lock from another container", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-foreign-lock-"));
+  const cursorPath = path.join(tempRoot, "cursor.json");
+  const lockPath = `${cursorPath}.lock`;
+  const staleTime = Date.now() - (2 * 60_000);
+
+  try {
+    fs.mkdirSync(lockPath, { recursive: true });
+    const ownerPath = path.join(lockPath, "owner.json");
+    fs.writeFileSync(ownerPath, JSON.stringify({
+      pid: process.pid,
+      hostname: "old-container",
+      cursorPath,
+      updatedAt: new Date(staleTime).toISOString(),
+    }), "utf8");
+    fs.utimesSync(ownerPath, staleTime / 1000, staleTime / 1000);
+
+    const result = await runHistoricalSummaryBackfill({
+      summaryUsers: "",
+      cursorPath,
+      repoRoot: tempRoot,
+    });
+
+    assert.deepEqual(result.runs, []);
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("historical backfill checks the live webpage comment API before processing", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-live-check-"));
   const cursorPath = path.join(tempRoot, "cursor.json");

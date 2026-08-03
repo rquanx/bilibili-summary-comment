@@ -11,6 +11,7 @@ import {
   createProcessLockOwner,
   isOwnerProcessAlive,
   RUNTIME_LOCK_HEARTBEAT_MS,
+  resolveHeartbeatLockStaleMs,
 } from "../../shared/runtime-locks";
 import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
 import { runPipelinesWithConcurrency } from "./concurrency";
@@ -723,7 +724,8 @@ function isStaleHistoricalSummaryLock(lockPath: string, ownerPath: string) {
 
   try {
     const stats = fs.statSync(fs.existsSync(ownerPath) ? ownerPath : lockPath);
-    return Date.now() - stats.mtimeMs > HISTORICAL_LOCK_STALE_MS;
+    return Date.now() - stats.mtimeMs
+      > resolveHeartbeatLockStaleMs(owner, HISTORICAL_LOCK_STALE_MS);
   } catch {
     return false;
   }
