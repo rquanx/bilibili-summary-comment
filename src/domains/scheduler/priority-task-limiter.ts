@@ -22,6 +22,19 @@ export function createPriorityTaskLimiter({
   const queue: QueuedTask[] = [];
   let activeCount = 0;
   let nextSequence = 0;
+  let drainScheduled = false;
+
+  function scheduleDrain() {
+    if (drainScheduled) {
+      return;
+    }
+
+    drainScheduled = true;
+    setTimeout(() => {
+      drainScheduled = false;
+      drain();
+    }, 0);
+  }
 
   function drain() {
     while (activeCount < capacity && queue.length > 0) {
@@ -40,7 +53,7 @@ export function createPriorityTaskLimiter({
         .then(next.resolve, next.reject)
         .finally(() => {
           activeCount -= 1;
-          drain();
+          scheduleDrain();
         });
     }
   }

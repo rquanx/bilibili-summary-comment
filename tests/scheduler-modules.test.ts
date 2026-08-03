@@ -1141,15 +1141,21 @@ test("createPriorityTaskLimiter gives the next free slot to recent video work", 
   assert.deepEqual(started, ["history-1", "history-2"]);
 
   releases.get("history-1")?.();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  while (started.length < 3) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   assert.deepEqual(started, ["history-1", "history-2", "recent-1"]);
 
   releases.get("history-2")?.();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  while (started.length < 4) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   assert.deepEqual(started, ["history-1", "history-2", "recent-1", "recent-2"]);
 
   releases.get("recent-1")?.();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  while (started.length < 5) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   assert.deepEqual(started, [
     "history-1",
     "history-2",
@@ -1164,6 +1170,45 @@ test("createPriorityTaskLimiter gives the next free slot to recent video work", 
     await Promise.all([historyOne, historyTwo, historyThree, recentOne, recentTwo]),
     ["history-1", "history-2", "history-3", "recent-1", "recent-2"],
   );
+});
+
+test("createPriorityTaskLimiter lets follow-up recent work queue before backfill takes a released slot", async () => {
+  const limiter = createPriorityTaskLimiter({
+    maxConcurrent: 1,
+  });
+  const started: string[] = [];
+  let releaseFirstHistory: (() => void) | undefined;
+  let releaseSecondHistory: (() => void) | undefined;
+
+  const firstHistory = limiter.run(10, async () => {
+    started.push("history-1");
+    await new Promise<void>((resolve) => {
+      releaseFirstHistory = resolve;
+    });
+  });
+  const secondHistory = limiter.run(10, async () => {
+    started.push("history-2");
+    await new Promise<void>((resolve) => {
+      releaseSecondHistory = resolve;
+    });
+  });
+
+  await Promise.resolve();
+  releaseFirstHistory?.();
+  await firstHistory;
+  await Promise.resolve();
+
+  const recent = limiter.run(0, async () => {
+    started.push("recent");
+  });
+  await recent;
+
+  assert.deepEqual(started, ["history-1", "recent"]);
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  releaseSecondHistory?.();
+  await secondHistory;
+  assert.deepEqual(started, ["history-1", "recent", "history-2"]);
 });
 
 test("cleanupOldWorkDirectories removes only safe candidate directories", async () => {
