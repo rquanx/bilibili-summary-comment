@@ -188,7 +188,7 @@ export async function runGenerationStage({
       reused: subtitleResult.reused,
     });
 
-    const requestedSummaryModel = summaryConfig.cliProxy.enabled
+    const requestedSummaryModel = summaryConfig.cliProxy?.enabled
       ? summaryConfig.cliProxy.model
       : summaryConfig.model;
     progress?.logPart(currentIndex, part, "Generating summary", `model ${requestedSummaryModel}`);

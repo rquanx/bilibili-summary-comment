@@ -606,9 +606,7 @@ export function readHistoricalSummaryCursor(
       pageHints: normalizePageHints(parsed.pageHints),
       nextPageHints: normalizePageHints(parsed.nextPageHints),
       pendingUploads: normalizeHistoricalCursorUploads(parsed.pendingUploads),
-      completedBvids: Array.isArray(parsed.completedBvids)
-        ? [...new Set(parsed.completedBvids.map((item) => String(item ?? "").trim()).filter(Boolean))]
-        : [],
+      completedBvids: normalizeStringList(parsed.completedBvids),
       quotaDate: normalizeDateKey(parsed.quotaDate) ?? initialTargetDate,
       quotaUsed: Math.max(0, Math.floor(Number(parsed.quotaUsed) || 0)),
       nextProcessAt: normalizeIsoTimestamp(parsed.nextProcessAt),
@@ -894,6 +892,18 @@ function normalizeIsoTimestamp(value: unknown): string | null {
   return normalized && Number.isFinite(Date.parse(normalized))
     ? new Date(normalized).toISOString()
     : null;
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(
+    value
+      .map((item): string => String(item ?? "").trim())
+      .filter((item): item is string => item.length > 0),
+  )];
 }
 
 function normalizeOptionalPositiveInteger(value: unknown): number | null {
