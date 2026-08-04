@@ -74,7 +74,9 @@ CRON_TIMEZONE=Asia/Shanghai
 - `CRON_TIMEZONE`
   cron 时区，例如 `Asia/Shanghai`。
 - `SERVER_CHAN_SEND_KEY`
-  可选。转写连续失败后，或缺段巡检发现新的缺段时，用于发送 ServerChan 通知。
+  可选。转写连续失败、缺段巡检发现新的缺段，或评论发布持续停滞时，用于发送 ServerChan 通知。
+- `COMMENT_STALL_ALERT_MINUTES`
+  存在待总结、待发布或需要重建评论串的视频时，连续多少分钟没有成功创建新评论后告警，默认 `60`。
 
 命令行参数也可以覆盖这些环境变量，例如：
 
@@ -90,6 +92,8 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
   扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，但这里的流水线会以 `publish=false` 运行，只负责生成 / 更新摘要与发布状态。
 - 每小时 `05` 分：
   扫描数据库里的待发布视频，串行执行 publish sweep；除了真正待发布的视频，也会顺带检查最近 24 小时内已发布视频的评论线程是否仍然健康。
+- 每 5 分钟（从每小时 `02` 分开始）：
+  检查待总结和待发布队列。如果连续 `COMMENT_STALL_ALERT_MINUTES` 分钟没有成功创建新评论，则发送一次 ServerChan 告警；同一轮停滞不会重复通知。
 - 每小时 `10` 分：
   对最近投稿执行缺段巡检；如果分 P 标题中的时间戳之间存在超过 `1` 分钟的缺口，会把结果写入当天快照，并在配置了 `SERVER_CHAN_SEND_KEY` 时只通知“新发现”的缺口。
 - 每天 `03:15`：

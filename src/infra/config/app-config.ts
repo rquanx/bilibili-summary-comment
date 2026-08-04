@@ -39,6 +39,7 @@ const schedulerConfigSchema = z.object({
   pipelineConcurrency: positiveIntegerLikeSchema,
   historicalSummaryDailyLimit: positiveIntegerLikeSchema,
   historicalRequestDelayMs: nonNegativeIntegerLikeSchema,
+  commentStallAlertMinutes: positiveIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
   dbPath: nonEmptyStringSchema,
@@ -60,6 +61,7 @@ interface AppConfigOptions extends Record<string, unknown> {
   ["historical-summary-daily-limit"]?: unknown;
   ["historical-summary-concurrency"]?: unknown;
   ["historical-request-delay-ms"]?: unknown;
+  ["comment-stall-alert-minutes"]?: unknown;
   ["summary-users"]?: unknown;
   ["cookie-file"]?: unknown;
   ["summary-since-hours"]?: unknown;
@@ -109,6 +111,10 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
       options["historical-request-delay-ms"]
       ?? process.env.HISTORICAL_SUMMARY_REQUEST_DELAY_MS
       ?? 2000,
+    commentStallAlertMinutes:
+      options["comment-stall-alert-minutes"]
+      ?? process.env.COMMENT_STALL_ALERT_MINUTES
+      ?? 60,
     refreshDays: options["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30,
     cleanupDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",

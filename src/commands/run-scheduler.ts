@@ -24,6 +24,7 @@ import {
 } from "../domains/scheduler/priority-task-limiter";
 import {
   cleanupOldWorkDirectories,
+  runCommentPublishStallAlert,
   runHistoricalSummaryBackfill,
   runPendingVideoPublishSweep,
   runRecentVideoGapCheck,
@@ -49,11 +50,12 @@ const command = addWorkRootOption(
       .option("--historical-summary-daily-limit <count>", "Optional. Historical pipeline starts per calendar day. Default: 200", parsePositiveIntegerArg)
       .option("--historical-summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
       .option("--historical-request-delay-ms <ms>", "Optional. Minimum delay between historical Bilibili requests. Default: 2000")
+      .option("--comment-stall-alert-minutes <minutes>", "Optional. Alert after this many minutes without a successful new comment. Default: 60", parsePositiveIntegerArg)
       .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
       .option("--cleanup-days <days>", "Optional. Remove work dirs older than this many days.", parsePositiveIntegerArg)
       .option("--timezone <timezone>", "Optional. Cron timezone.")
       .option("--run-on-start", "Optional. Run due tasks once before entering the scheduler loop.")
-      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | historical-summary | publish | gap-check | cleanup | all."),
+      .option("--once <task>", "Optional. Run one task and exit: refresh | summary | historical-summary | publish | comment-stall-alert | gap-check | cleanup | all."),
   ),
 );
 
@@ -431,6 +433,42 @@ await runCli({
       };
     }
 
+    async function runCommentStallAlertTask() {
+      const result = await runCommentPublishStallAlert({
+        dbPath: config.dbPath,
+        workRoot: config.workRoot,
+        thresholdMinutes: config.commentStallAlertMinutes,
+        onLog(message) {
+          log(`[comment-stall-alert] ${message}`, {
+            level: message.startsWith("Failed") ? "error" : "warn",
+          });
+        },
+      });
+
+      if (result.notified) {
+        log(
+          `Comment stall alert sent: pending=${result.candidates.length}, stalled=${result.stalledMinutes}m`,
+          {
+            level: "warn",
+            details: {
+              task: "comment-stall-alert",
+              statePath: result.statePath,
+              pendingBvids: result.candidates.map((candidate) => candidate.bvid),
+            },
+          },
+        );
+      }
+
+      return {
+        action: "comment-stall-alert",
+        notified: result.notified,
+        reason: result.reason,
+        pending: result.candidates.length,
+        stalledMinutes: result.stalledMinutes,
+        statePath: result.statePath,
+      };
+    }
+
     const runExclusive = (name, task) => async () => {
       if (runningTasks.has(name)) {
         log(`Skip ${name}: previous run still in progress`);
@@ -513,6 +551,7 @@ await runCli({
     const historicalSummaryRunner = runExclusive("historical-summary", runHistoricalSummaryTask);
     const cleanupRunner = runExclusive("cleanup", runCleanupTask);
     const gapCheckRunner = runExclusive("gap-check", runGapCheckTask);
+    const commentStallAlertRunner = runExclusive("comment-stall-alert", runCommentStallAlertTask);
 
     if (args.once) {
       const result = await runOnce(args.once, {
@@ -521,6 +560,7 @@ await runCli({
         historicalSummaryRunner,
         publishRunner,
         gapCheckRunner,
+        commentStallAlertRunner,
         cleanupRunner,
       });
       return {
@@ -534,6 +574,7 @@ await runCli({
     const scheduledTasks = [
       cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
+      cron.schedule("2-59/5 * * * *", commentStallAlertRunner, buildCronOptions(config.timezone)),
       cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
       cron.schedule("* * * * *", historicalSummaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
@@ -544,13 +585,14 @@ await runCli({
     log(
       `Pipeline slots: total=${pipelineTaskLimiter.capacity}, shared-by=recent+historical, priority=recent-first`,
     );
-    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every-minute with recent-video pipeline priority");
+    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every-minute with recent-video pipeline priority");
     attachSignalHandlers(scheduledTasks, log);
 
     if (args["run-on-start"]) {
       await refreshRunner();
       await summaryRunner();
       await publishRunner();
+      await commentStallAlertRunner();
       await gapCheckRunner();
       await cleanupRunner();
     }
@@ -563,6 +605,7 @@ await runCli({
       pipelineConcurrency: config.pipelineConcurrency,
       historicalSummaryDailyLimit: config.historicalSummaryDailyLimit,
       historicalRequestDelayMs: config.historicalRequestDelayMs,
+      commentStallAlertMinutes: config.commentStallAlertMinutes,
       publishTask: "max-concurrency-2-newest-first",
       refreshDays: config.refreshDays,
       cleanupDays: config.cleanupDays,
@@ -597,6 +640,8 @@ async function runOnce(target, runners) {
       return [await runners.historicalSummaryRunner()];
     case "publish":
       return [await runners.publishRunner()];
+    case "comment-stall-alert":
+      return [await runners.commentStallAlertRunner()];
     case "gap-check":
       return [await runners.gapCheckRunner()];
     case "cleanup":
@@ -607,6 +652,7 @@ async function runOnce(target, runners) {
         await runners.summaryRunner(),
         await runners.historicalSummaryRunner(),
         await runners.publishRunner(),
+        await runners.commentStallAlertRunner(),
         await runners.gapCheckRunner(),
         await runners.cleanupRunner(),
       ];

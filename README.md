@@ -219,6 +219,7 @@ SUMMARY_MODEL=glm-5
 - `HISTORICAL_SUMMARY_DAILY_LIMIT`：历史回补任务每天最多启动的视频流水线总数，默认 `200`
 - `HISTORICAL_SUMMARY_CONCURRENCY`：历史回补任务的并发数，默认 `2`；同一 UP 主仍保持串行
 - `HISTORICAL_SUMMARY_REQUEST_DELAY_MS`：历史投稿扫描和网页置顶评论检查之间的最小请求间隔，默认 `2000`
+- `COMMENT_STALL_ALERT_MINUTES`：存在待总结或待发布视频时，连续多少分钟没有成功发出新评论后触发告警，默认 `60`
 - `BILI_AUTH_FILE`：授权文件路径，默认 `.auth/bili-auth.json`
 - `BILI_COOKIE_FILE`：可选。cookie 文件路径；仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用
 - `BILI_REFRESH_DAYS`：授权超过多少天后触发刷新，默认 `30`
@@ -226,7 +227,7 @@ SUMMARY_MODEL=glm-5
 - `PIPELINE_DB_PATH`：SQLite 路径，默认 `work/pipeline.sqlite3`
 - `WORK_ROOT`：工作目录根路径，默认 `work`
 - `CRON_TIMEZONE`：cron 时区，例如 `Asia/Shanghai`
-- `SERVER_CHAN_SEND_KEY`：可选，转写连续失败或缺段巡检发现新缺口时通过 ServerChan 发送通知
+- `SERVER_CHAN_SEND_KEY`：可选，转写连续失败、缺段巡检发现新缺口或评论发布持续停滞时通过 ServerChan 发送通知
 
 ## 常用命令
 
@@ -403,6 +404,7 @@ tsx src/commands/run-scheduler.ts --once all
 - 历史扫描按用户轮转请求，并通过 `HISTORICAL_SUMMARY_REQUEST_DELAY_MS` 控制全局最小间隔；每天最多启动 `HISTORICAL_SUMMARY_DAILY_LIMIT` 条历史视频流水线，默认总量为 `200`。默认按约 `7 分 12 秒/条` 均匀分布到 24 小时，不会在启动或整点集中跑满额度
 - Docker 使用的 `npm run start` 不会在容器启动流程中直接跑一整批历史回补；后台调度器启动后会按上述持久化时间间隔持续补全。`--once historical-summary` / `--once all` 也会遵守同一额度和下一次执行时间
 - 缺段巡检会把当天快照写到 `work/logs/gap-check/YYYY-MM-DD.json`
+- 评论停滞告警每 5 分钟检查一次；有待总结、待发布或需要重建评论串的视频时，如果连续 `COMMENT_STALL_ALERT_MINUTES` 分钟没有成功创建新评论，会发送一次 ServerChan 通知。同一轮停滞只通知一次，成功发出评论或待处理队列清空后自动重置。状态保存在 `work/state/comment-publish-stall-alert.json`
 
 调度细节见 [SCHEDULE.md](./docs/SCHEDULE.md)。
 

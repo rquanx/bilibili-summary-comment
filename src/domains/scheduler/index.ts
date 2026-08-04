@@ -1,6 +1,17 @@
 export { SUMMARY_PIPELINE_MAX_CONCURRENCY, runPipelinesWithConcurrency } from "./concurrency";
 export { buildAuthFileCandidates, findAuthFileForUser, resolveAuthFileForUser } from "./auth-files";
 export { cleanupOldWorkDirectories } from "./cleanup";
+export {
+  buildCommentStallNotification,
+  COMMENT_STALL_ALERT_STATE_FILE,
+  DEFAULT_COMMENT_STALL_ALERT_MINUTES,
+  evaluateCommentPublishStallState,
+  getLatestSuccessfulCommentAt,
+  listPendingCommentCandidates,
+  readCommentStallAlertState,
+  resolveCommentStallAlertStatePath,
+  runCommentPublishStallAlert,
+} from "./comment-stall-alert";
 export { buildCookieFileCandidates, findCookieFileForUser, resolveCookieFileForUser } from "./cookie-files";
 export {
   DEFAULT_GAP_CHECK_SINCE_HOURS,
