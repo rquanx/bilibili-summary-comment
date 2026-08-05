@@ -1,5 +1,10 @@
 import { DEFAULT_AUTH_FILE } from "../bili/auth";
-import { getVideoByIdentity, listVideosPendingPublish, openDatabase } from "../../infra/db/index";
+import {
+  getVideoByIdentity,
+  listPendingPublishParts,
+  listVideosPendingPublish,
+  openDatabase,
+} from "../../infra/db/index";
 import { findAuthFileForUser } from "./auth-files";
 import { runPipelineForBvid } from "./pipeline-runner";
 import { withCommentPublishQueueLock } from "./publish-queue";
@@ -20,6 +25,7 @@ export interface PendingPublishTask {
   authFile: string;
   publishMode: "append" | "rebuild";
   uploadedAtUnix: number | null;
+  queueRevision: string;
 }
 
 export interface PendingPublishFailure {
@@ -90,6 +96,7 @@ export async function runPendingVideoPublishSweep({
     const videos = listVideosPendingPublishImpl(db);
 
     tasks = buildPendingPublishTasks({
+      db,
       videos,
       authFileByMid,
       fallbackAuthFile,
@@ -132,6 +139,7 @@ export async function runPendingVideoPublishSweep({
         authFile: resolvedAuthFile,
         publishMode: "append",
         uploadedAtUnix: upload.createdAtUnix,
+        queueRevision: `healthcheck:${upload.createdAtUnix}:${video.updated_at}`,
       });
       taskByBvid.set(video.bvid, tasks[tasks.length - 1]);
     }
@@ -173,6 +181,7 @@ export async function runPendingVideoPublishSweep({
       const refreshDb = openDatabase(dbPath);
       try {
         return buildPendingPublishTasks({
+          db: refreshDb,
           videos: listVideosPendingPublishImpl(refreshDb),
           authFileByMid,
           fallbackAuthFile,
@@ -196,11 +205,13 @@ export async function runPendingVideoPublishSweep({
 }
 
 function buildPendingPublishTasks({
+  db,
   videos,
   authFileByMid,
   fallbackAuthFile,
   onLog,
 }: {
+  db: ReturnType<typeof openDatabase>;
   videos: VideoRecord[];
   authFileByMid: Map<number, string>;
   fallbackAuthFile: string | null;
@@ -220,7 +231,27 @@ function buildPendingPublishTasks({
       authFile: resolvedAuthFile,
       publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
       uploadedAtUnix: null,
+      queueRevision: createPublishQueueRevision(db, video),
     }];
+  });
+}
+
+function createPublishQueueRevision(
+  db: ReturnType<typeof openDatabase>,
+  video: VideoRecord,
+) {
+  const pendingParts = listPendingPublishParts(db, video.id);
+  return JSON.stringify({
+    publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
+    rebuildReason: video.publish_rebuild_reason,
+    rebuildUpdatedAt: Number(video.publish_needs_rebuild) === 1 ? video.updated_at : null,
+    parts: pendingParts.map((part) => [
+      part.id,
+      part.page_no,
+      part.cid,
+      part.summary_hash,
+      part.updated_at,
+    ]),
   });
 }
 
@@ -338,7 +369,8 @@ async function runPendingPublishTasksWithConcurrency({
   const maxConcurrent = Math.min(PUBLISH_SWEEP_MAX_CONCURRENCY, tasks.length);
   const pendingTasks = [...tasks];
   const queuedBvids = new Set(pendingTasks.map((task) => task.video.bvid));
-  const processedBvids = new Set<string>();
+  const activeBvids = new Set<string>();
+  const completedRevisionByBvid = new Map<string, string>();
   let completedTaskCount = 0;
   let stopScheduling = false;
 
@@ -352,7 +384,11 @@ async function runPendingPublishTasksWithConcurrency({
 
       for (const refreshedTask of refreshPendingTasks()) {
         const bvid = refreshedTask.video.bvid;
-        if (processedBvids.has(bvid) || queuedBvids.has(bvid)) {
+        if (
+          activeBvids.has(bvid)
+          || queuedBvids.has(bvid)
+          || completedRevisionByBvid.get(bvid) === refreshedTask.queueRevision
+        ) {
           continue;
         }
         pendingTasks.push(refreshedTask);
@@ -368,7 +404,7 @@ async function runPendingPublishTasksWithConcurrency({
         return;
       }
       queuedBvids.delete(task.video.bvid);
-      processedBvids.add(task.video.bvid);
+      activeBvids.add(task.video.bvid);
       completedTaskCount += 1;
       const scopedLogger = logger?.child({
         task: "publish",
@@ -409,6 +445,7 @@ async function runPendingPublishTasksWithConcurrency({
           publishMode: task.publishMode,
           result,
         });
+        completedRevisionByBvid.set(task.video.bvid, task.queueRevision);
 
         if (didPublishCreateComments(result) && !stopScheduling) {
           const cooldownMs = computePublishCooldownMsImpl(task.publishMode);
@@ -426,6 +463,8 @@ async function runPendingPublishTasksWithConcurrency({
         onAbort();
         onLog(`Publish failed for ${task.video.bvid}; stopping the remaining queue to avoid repeated write pressure`);
         return;
+      } finally {
+        activeBvids.delete(task.video.bvid);
       }
     }
   };

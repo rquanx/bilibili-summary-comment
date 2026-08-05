@@ -1690,6 +1690,92 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
   }
 });
 
+test("runPendingVideoPublishSweep requeues a processed video when new pending parts appear", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-requeue-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
+  const db = openDatabase(dbPath);
+  const publishedPages: number[][] = [];
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVREQUEUE",
+      aid: 1,
+      title: "Requeue",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst",
+      published: false,
+      isDeleted: false,
+    });
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot,
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth-1.json");
+      },
+      runPipelineForBvidImpl: async () => {
+        const pendingPages = listPendingPublishParts(db, video.id).map((part) => part.page_no);
+        publishedPages.push(pendingPages);
+        db.prepare(`
+          UPDATE video_parts
+          SET published = 1,
+              published_at = ?
+          WHERE video_id = ?
+            AND page_no IN (${pendingPages.map(() => "?").join(", ")})
+        `).run(new Date().toISOString(), video.id, ...pendingPages);
+
+        if (publishedPages.length === 1) {
+          upsertVideoPart(db, {
+            videoId: video.id,
+            pageNo: 2,
+            cid: 102,
+            partTitle: "P2",
+            durationSec: 10,
+            summaryText: "<2P>\nsecond",
+            published: false,
+            isDeleted: false,
+          });
+        }
+
+        return {
+          ok: true,
+          publishResult: {
+            action: "append-replies",
+            createdComments: [{ rpid: publishedPages.length }],
+          },
+        };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(publishedPages, [[1], [2]]);
+    assert.deepEqual(result.tasks.map((item) => item.video.bvid), ["BVREQUEUE", "BVREQUEUE"]);
+    assert.equal(result.aborted, false);
+    assert.deepEqual(result.failures, []);
+    assert.equal(listPendingPublishParts(db, video.id).length, 0);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runPendingVideoPublishSweep runs two tasks concurrently and lets newly queued videos jump ahead", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
