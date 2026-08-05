@@ -178,7 +178,7 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
       aid: 987001,
       title: "Publish Stage Test",
       pageCount: 2,
-      rootCommentRpid: null,
+      rootCommentRpid: 555001,
       topCommentRpid: 555001,
     });
 
@@ -220,7 +220,7 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
       rpid: 555002,
       root: 555002,
       parent: 555002,
-      message: "old top thread",
+      message: "<1P>\n1#00:00 duplicate old summary",
     });
     await harness.client.reply.top({
       oid: video.aid,
@@ -241,7 +241,7 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
                 top: {
                   rpid: 555002,
                   content: {
-                    message: "old top thread",
+                    message: "<1P>\n1#00:00 duplicate old summary",
                   },
                 },
               },
@@ -312,6 +312,294 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [1, 1]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [900001, 900001]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPublishStage preserves a manual top comment and creates an unpinned summary root", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-preserved-top-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const summaryPath = path.join(tempRoot, "summary.md");
+  const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
+  const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const summary = "<1P>\n1#00:00 first page summary";
+    fs.writeFileSync(summaryPath, `${summary}\n`, "utf8");
+    fs.writeFileSync(pendingSummaryPath, `${summary}\n`, "utf8");
+
+    const video = upsertVideo(db, {
+      bvid: "BVpublishPreserveTop",
+      aid: 987101,
+      title: "Preserved Manual Top",
+      pageCount: 1,
+      topCommentRpid: 700001,
+      preservedTopCommentRpid: 700001,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: summary,
+      summaryHash: createSummaryHash(summary),
+      published: false,
+      isDeleted: false,
+    });
+
+    const harness = createGuestFetchHarness(940001);
+    harness.comments.set(700001, {
+      rpid: 700001,
+      root: 700001,
+      parent: 700001,
+      message: "<1P> 视频异常说明，请以重新上传版本为准",
+    });
+    await harness.client.reply.top({
+      oid: video.aid,
+      type: 1,
+      rpid: 700001,
+      action: 1,
+    });
+    let topCalls = 0;
+    const client = {
+      reply: {
+        ...harness.client.reply,
+        async top(payload) {
+          topCalls += 1;
+          return harness.client.reply.top(payload);
+        },
+      },
+    };
+
+    const result = await runPublishStage({
+      client,
+      db,
+      video,
+      artifacts: {
+        summaryPath,
+        pendingSummaryPath,
+      },
+      oid: video.aid,
+      type: 1,
+      workRoot,
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rootCommentRpid, 940001);
+    assert.equal(topCalls, 0);
+    assert.equal(harness.comments.has(700001), true);
+
+    const liveState = await harness.client.reply.list();
+    assert.equal(liveState.upper.top.rpid, 700001);
+    const persistedVideo = getVideoByIdentity(db, { bvid: video.bvid });
+    assert.equal(persistedVideo?.root_comment_rpid, 940001);
+    assert.equal(persistedVideo?.top_comment_rpid, 700001);
+    assert.equal(persistedVideo?.preserved_top_comment_rpid, 700001);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPublishStage rebuild preserves a manual top and deletes only the summary root", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-preserved-rebuild-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const summaryPath = path.join(tempRoot, "summary.md");
+  const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
+  const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const summary = "<1P>\n1#00:00 rebuilt summary";
+    fs.writeFileSync(summaryPath, `${summary}\n`, "utf8");
+    fs.writeFileSync(pendingSummaryPath, "", "utf8");
+
+    const video = upsertVideo(db, {
+      bvid: "BVpublishPreserveRebuild",
+      aid: 987102,
+      title: "Preserved Manual Top Rebuild",
+      pageCount: 1,
+      rootCommentRpid: 700002,
+      topCommentRpid: 700001,
+      preservedTopCommentRpid: 700001,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: summary,
+      summaryHash: createSummaryHash(summary),
+      published: true,
+      publishedCommentRpid: 700002,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+
+    const harness = createGuestFetchHarness(950001);
+    harness.comments.set(700001, {
+      rpid: 700001,
+      root: 700001,
+      parent: 700001,
+      message: "视频异常说明，请以重新上传版本为准",
+    });
+    harness.comments.set(700002, {
+      rpid: 700002,
+      root: 700002,
+      parent: 700002,
+      message: "<1P>\n1#00:00 old summary",
+    });
+    await harness.client.reply.top({
+      oid: video.aid,
+      type: 1,
+      rpid: 700001,
+      action: 1,
+    });
+    const deletedRpids: number[] = [];
+    let topCalls = 0;
+    const client = {
+      reply: {
+        ...harness.client.reply,
+        async delete(payload) {
+          deletedRpids.push(Number(payload.rpid));
+          return harness.client.reply.delete(payload);
+        },
+        async top(payload) {
+          topCalls += 1;
+          return harness.client.reply.top(payload);
+        },
+      },
+    };
+
+    const result = await runPublishStage({
+      client,
+      db,
+      video: {
+        ...video,
+        publish_needs_rebuild: 1,
+      },
+      artifacts: {
+        summaryPath,
+        pendingSummaryPath,
+      },
+      oid: video.aid,
+      type: 1,
+      workRoot,
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rebuild, true);
+    assert.deepEqual(deletedRpids, [700002]);
+    assert.equal(topCalls, 0);
+    assert.equal(harness.comments.has(700001), true);
+    assert.equal((await harness.client.reply.list()).upper.top.rpid, 700001);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: video.bvid });
+    assert.equal(persistedVideo?.root_comment_rpid, 950001);
+    assert.equal(persistedVideo?.top_comment_rpid, 700001);
+    assert.equal(persistedVideo?.preserved_top_comment_rpid, 700001);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPublishStage clears stale manual-top protection and resumes normal pinned rebuild", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-stale-preserved-top-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const summaryPath = path.join(tempRoot, "summary.md");
+  const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
+  const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const repoWorkRoot = path.join(process.cwd(), workRoot);
+  const db = openDatabase(dbPath);
+
+  try {
+    const summary = "<1P>\n1#00:00 rebuilt summary";
+    fs.writeFileSync(summaryPath, `${summary}\n`, "utf8");
+    fs.writeFileSync(pendingSummaryPath, "", "utf8");
+
+    const video = upsertVideo(db, {
+      bvid: "BVpublishStalePreservedTop",
+      aid: 987103,
+      title: "Stale Preserved Manual Top",
+      pageCount: 1,
+      rootCommentRpid: 700002,
+      topCommentRpid: 700001,
+      preservedTopCommentRpid: 700001,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: summary,
+      summaryHash: createSummaryHash(summary),
+      published: true,
+      publishedCommentRpid: 700002,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+
+    const harness = createGuestFetchHarness(960001);
+    harness.comments.set(700002, {
+      rpid: 700002,
+      root: 700002,
+      parent: 700002,
+      message: "<1P>\n1#00:00 old summary",
+    });
+    const deletedRpids: number[] = [];
+    let topCalls = 0;
+    const client = {
+      reply: {
+        ...harness.client.reply,
+        async delete(payload) {
+          deletedRpids.push(Number(payload.rpid));
+          return harness.client.reply.delete(payload);
+        },
+        async top(payload) {
+          topCalls += 1;
+          return harness.client.reply.top(payload);
+        },
+      },
+    };
+
+    const result = await runPublishStage({
+      client,
+      db,
+      video,
+      artifacts: {
+        summaryPath,
+        pendingSummaryPath,
+      },
+      oid: video.aid,
+      type: 1,
+      workRoot,
+      sleepImpl: async () => {},
+      fetchImpl: harness.fetchImpl as typeof fetch,
+    });
+
+    assert.equal(result.rebuild, true);
+    assert.deepEqual(deletedRpids, [700002]);
+    assert.equal(topCalls, 1);
+    assert.equal((await harness.client.reply.list()).upper.top.rpid, 960001);
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: video.bvid });
+    assert.equal(persistedVideo?.root_comment_rpid, 960001);
+    assert.equal(persistedVideo?.top_comment_rpid, 960001);
+    assert.equal(persistedVideo?.preserved_top_comment_rpid, null);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

@@ -3,7 +3,7 @@ import path from "node:path";
 import { getGuestTopComment } from "../bili/comment-thread";
 import { createClient } from "../bili/comment-utils";
 import { DEFAULT_AUTH_FILE, readCookieStringFromAuthFile } from "../bili/auth";
-import { parseSummaryBlocks } from "../summary/format";
+import { isSystemSummaryComment } from "../summary/format";
 import { formatErrorMessage } from "../subtitle/utils";
 import { formatDateInTimeZone, EAST_8_TIMEZONE } from "../../shared/time";
 import { getRepoRoot } from "../../shared/runtime-tools";
@@ -339,6 +339,9 @@ async function runHistoricalSummaryBackfillUnlocked({
       persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
 
       const uploadAuthFile = String(upload.authFile ?? authFile).trim();
+      const preservedTopCommentRpid = topCommentState.hasTopComment
+        ? normalizeOptionalPositiveInteger(topCommentState.topComment?.rpid)
+        : null;
       const result = await runPipelineTask(() =>
         runPipelineForBvidImpl({
           authFile: uploadAuthFile,
@@ -349,6 +352,7 @@ async function runHistoricalSummaryBackfillUnlocked({
           logDay,
           logGroup,
           publish: false,
+          preservedTopCommentRpid,
           logger: logger?.child({
             task: "historical-summary",
             bvid: upload.bvid,
@@ -587,7 +591,7 @@ async function collectHistoricalUploadsForDate({
 }
 
 export function isPinnedSummaryComment(message: unknown): boolean {
-  return parseSummaryBlocks(String(message ?? "")).length > 0;
+  return isSystemSummaryComment(message);
 }
 
 export function readHistoricalSummaryCursor(

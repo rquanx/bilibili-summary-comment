@@ -13,7 +13,11 @@ import { shouldRebuildMissingStoredRootCommentThread } from "../pipeline/publish
 import { createProgressReporter, formatBlockingErrorDetail, trimCommandOutput, writeTerminalMessage } from "../pipeline/progress";
 import { runPublishStage } from "../pipeline/publish-stage";
 import { resolveSummaryConfig } from "../summary/index";
-import { markVideoPublishRebuildNeeded, openDatabase } from "../../infra/db/index";
+import {
+  markVideoPublishRebuildNeeded,
+  openDatabase,
+  updateVideoPreservedTopComment,
+} from "../../infra/db/index";
 import { createWorkFileLogger } from "../../shared/logger";
 import { cleanupStaleRuntimeLocks } from "../../shared/runtime-locks";
 import { fetchVideoSnapshot, syncVideoSnapshotToDb } from "./index";
@@ -32,6 +36,7 @@ interface VideoPipelineArgs extends Record<string, unknown> {
   publish?: boolean;
   ["force-summary"]?: boolean;
   ["force-fresh-thread"]?: boolean;
+  ["preserve-top-rpid"]?: string | number;
 }
 
 export async function runVideoPipeline(
@@ -62,6 +67,18 @@ export async function runVideoPipeline(
 
   const snapshot = await fetchVideoSnapshot(client, args);
   const state = syncVideoSnapshotToDb(db, snapshot);
+  const preservedTopCommentRpid = normalizeOptionalPositiveInteger(args["preserve-top-rpid"]);
+  if (preservedTopCommentRpid) {
+    const updatedVideo = updateVideoPreservedTopComment(
+      db,
+      state.video.id,
+      preservedTopCommentRpid,
+    );
+    if (updatedVideo) {
+      state.video.preserved_top_comment_rpid = updatedVideo.preserved_top_comment_rpid;
+      state.video.top_comment_rpid = updatedVideo.top_comment_rpid;
+    }
+  }
   const logger = createWorkFileLogger({
     workRoot,
     name: "pipeline",
@@ -323,6 +340,7 @@ export async function probePublishedCommentThreadHealth({
     aid: number;
     title: string | null;
     root_comment_rpid: number | null;
+    preserved_top_comment_rpid?: number | null;
     publish_needs_rebuild: number;
     publish_rebuild_reason: string | null;
   };
@@ -332,7 +350,11 @@ export async function probePublishedCommentThreadHealth({
   progress?: { warn?: (message: string) => void } | null;
   getTopCommentImpl?: typeof getGuestTopComment;
 }) {
-  if (Number(video.root_comment_rpid ?? 0) <= 0 || Number(video.publish_needs_rebuild) === 1) {
+  if (
+    Number(video.root_comment_rpid ?? 0) <= 0
+    || Number(video.publish_needs_rebuild) === 1
+    || Number(video.preserved_top_comment_rpid ?? 0) > 0
+  ) {
     return {
       checked: false,
       needsRebuild: Boolean(video.publish_needs_rebuild),
@@ -373,6 +395,11 @@ export async function probePublishedCommentThreadHealth({
     needsRebuild: true,
     topCommentState,
   };
+}
+
+function normalizeOptionalPositiveInteger(value: unknown): number | null {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }
 
 export function printPipelineFailure(error: CommandError | Error | unknown, activeEventLogger: PipelineEventLogger | null = null) {

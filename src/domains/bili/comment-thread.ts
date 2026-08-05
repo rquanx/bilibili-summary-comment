@@ -1528,13 +1528,27 @@ async function findAdoptableVisibleComment({
   };
 }
 
-async function createRootComment({ client, oid, type, message, sleepImpl = sleep }) {
+async function createRootComment({
+  client,
+  oid,
+  type,
+  message,
+  pinRoot = true,
+  sleepImpl = sleep,
+}) {
   const rootRes = await client.reply.add({
     oid,
     type,
     message,
     plat: 1,
   });
+
+  if (!pinRoot) {
+    return {
+      replyRes: rootRes,
+      warnings: [],
+    };
+  }
 
   await sleepImpl(ROOT_TOP_DELAY_MS);
   let topError = null;
@@ -1680,6 +1694,7 @@ async function publishCommentChunk({
   chunk,
   isRoot,
   rootRpid = null,
+  pinRoot = true,
   allowExistingCommentAdoption = true,
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
@@ -1692,6 +1707,7 @@ async function publishCommentChunk({
       oid,
       type,
       message,
+      pinRoot,
       sleepImpl,
     })
     : async (message) => createReplyComment({
@@ -1911,6 +1927,8 @@ export async function postSummaryThread({
   topCommentState,
   existingRootRpid = null,
   forcedRootRpid = null,
+  pinRoot = true,
+  topCommentRpidAfterPublish = null,
   workRoot = "work",
   allowExistingCommentAdoption = true,
   sleepImpl = sleep,
@@ -1961,7 +1979,11 @@ export async function postSummaryThread({
     }
   };
 
-  if (rootRpid && (!topCommentState.hasTopComment || topCommentState.topComment?.rpid !== rootRpid)) {
+  if (
+    pinRoot
+    && rootRpid
+    && (!topCommentState.hasTopComment || topCommentState.topComment?.rpid !== rootRpid)
+  ) {
     await client.reply.top({
       oid,
       type,
@@ -2037,6 +2059,7 @@ export async function postSummaryThread({
         chunk,
         isRoot: shouldCreateRoot,
         rootRpid,
+        pinRoot,
         allowExistingCommentAdoption,
         sleepImpl,
         guestReplyListImpl,
@@ -2080,6 +2103,7 @@ export async function postSummaryThread({
           chunk,
           isRoot: true,
           rootRpid: null,
+          pinRoot,
           allowExistingCommentAdoption,
           sleepImpl,
           guestReplyListImpl,
@@ -2111,7 +2135,7 @@ export async function postSummaryThread({
 
   updateVideoCommentThread(db, videoId, {
     rootCommentRpid: rootRpid,
-    topCommentRpid: rootRpid,
+    topCommentRpid: pinRoot ? rootRpid : topCommentRpidAfterPublish,
   });
 
   const coveredPages = [...new Set([

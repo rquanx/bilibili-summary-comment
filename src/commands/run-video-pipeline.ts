@@ -24,6 +24,7 @@ const command = addSummaryApiOptions(
             .option("--asr <engine>", "Optional. ASR engine. Default: funasr")
             .option("--publish", "Optional. Publish pending summaries after generation.")
             .option("--force-fresh-thread", "Optional. For rebuild publishes, delete the old summary thread and recreate it from scratch without reusing visible comments.")
+            .option("--preserve-top-rpid <rpid>", "Optional. Preserve this manually pinned comment while publishing summaries.")
             .option("--force-summary", "Optional. Regenerate summaries even if already present."),
           { required: true },
         ),

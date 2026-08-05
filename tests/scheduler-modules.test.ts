@@ -1314,6 +1314,34 @@ test("runPipelineForBvid appends --force-fresh-thread when requested", async () 
   ]);
 });
 
+test("runPipelineForBvid forwards a manually preserved top comment rpid", async () => {
+  const calls: Array<{ command: string; args: string[] }> = [];
+
+  await runPipelineForBvid({
+    authFile: ".auth/bili-auth.json",
+    dbPath: "work/pipeline.sqlite3",
+    workRoot: "work",
+    bvid: "BVPRESERVETOP",
+    publish: false,
+    preservedTopCommentRpid: 987654,
+    repoRoot: process.cwd(),
+    async runCommandImpl(command, args) {
+      calls.push({ command, args });
+      return {
+        code: 0,
+        stdout: JSON.stringify({ ok: true }),
+        stderr: "",
+      };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(
+    calls[0].args.slice(calls[0].args.indexOf("--preserve-top-rpid")),
+    ["--preserve-top-rpid", "987654"],
+  );
+});
+
 test("runPipelineForBvid launches the compiled JavaScript entry directly when dist files exist", async () => {
   const calls = [];
   const tempRepoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-dist-"));

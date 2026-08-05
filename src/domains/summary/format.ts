@@ -1,4 +1,6 @@
 const PAGE_MARKER_PATTERN = /^(?:<(?<bracketPage>\d+)P>|(?<plainPage>\d+)P)(?:\s*~\s*<(?<rangeEnd>\d+)P>)?\s*(?<rest>.*)$/u;
+const SUMMARY_INDEX_PATTERN = /^\s*\d+#\d{2}:\d{2}(?::\d{2})?\s+\S+/mu;
+const SUMMARY_PASTE_PATTERN = /^https:\/\/paste\.rs\/\S+/miu;
 
 export function normalizeSummaryMarkers(text) {
   const lines = splitLines(text);
@@ -66,6 +68,17 @@ export function parseSummaryBlocks(text) {
   }
 
   return blocks.filter((block) => block.text);
+}
+
+export function isSystemSummaryComment(message) {
+  const blocks = parseSummaryBlocks(String(message ?? ""));
+  if (blocks.length === 0) {
+    return false;
+  }
+
+  return blocks.some((block) =>
+    SUMMARY_INDEX_PATTERN.test(block.text)
+    || SUMMARY_PASTE_PATTERN.test(block.text));
 }
 
 export function extractCoveredPages(text) {

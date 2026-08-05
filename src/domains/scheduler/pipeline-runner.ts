@@ -32,6 +32,7 @@ interface RunPipelineForBvidOptions {
   logGroup?: string | null;
   publish?: boolean;
   forceFreshThread?: boolean;
+  preservedTopCommentRpid?: number | null;
   logger?: FileLogger | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
   repoRoot?: string;
@@ -47,6 +48,7 @@ export async function runPipelineForBvid({
   logGroup = null,
   publish = true,
   forceFreshThread = false,
+  preservedTopCommentRpid = null,
   logger = null,
   runCommandImpl = runCommand,
   repoRoot = getRepoRoot(),
@@ -65,6 +67,9 @@ export async function runPipelineForBvid({
   }
   if (forceFreshThread) {
     args.push("--force-fresh-thread");
+  }
+  if (Number.isInteger(preservedTopCommentRpid) && Number(preservedTopCommentRpid) > 0) {
+    args.push("--preserve-top-rpid", String(preservedTopCommentRpid));
   }
   let result;
   try {

@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import { deleteSummaryThread, getGuestTopComment, postSummaryThread } from "../bili/comment-thread";
 import { writeSummaryArtifacts } from "../summary/files";
+import { isSystemSummaryComment } from "../summary/format";
 import {
   clearVideoPublishRebuildNeeded,
   resetPublishedStateForVideo,
   updateVideoCommentThread,
+  updateVideoPreservedTopComment,
 } from "../../infra/db/index";
 import type { Db, PipelineEventLogger, SummaryArtifacts, VideoRecord } from "../../infra/db/index";
 
@@ -38,13 +40,85 @@ export function shouldRebuildMissingStoredRootCommentThread(
 
 function collectRebuildDeleteCandidates(
   video: Pick<VideoRecord, "root_comment_rpid" | "top_comment_rpid">,
-  topCommentState: { topComment?: { rpid?: number | null } | null } | null,
+  topCommentState: {
+    topComment?: { rpid?: number | null; message?: string | null } | null;
+  } | null,
+  preservedTopCommentRpid: number | null,
 ): number[] {
-  return [...new Set([
-    Number(video.root_comment_rpid ?? 0),
-    Number(video.top_comment_rpid ?? 0),
-    Number(topCommentState?.topComment?.rpid ?? 0),
-  ].filter((rpid) => Number.isInteger(rpid) && rpid > 0))];
+  const rootCommentRpid = normalizePositiveRpid(video.root_comment_rpid);
+  const storedTopCommentRpid = normalizePositiveRpid(video.top_comment_rpid);
+  const liveTopCommentRpid = normalizePositiveRpid(topCommentState?.topComment?.rpid);
+  const candidates = [
+    rootCommentRpid !== preservedTopCommentRpid ? rootCommentRpid : null,
+    storedTopCommentRpid === rootCommentRpid
+      && storedTopCommentRpid !== preservedTopCommentRpid
+      ? storedTopCommentRpid
+      : null,
+    liveTopCommentRpid !== preservedTopCommentRpid
+      && isSystemSummaryComment(topCommentState?.topComment?.message)
+      ? liveTopCommentRpid
+      : null,
+  ];
+
+  return [...new Set(candidates.filter((rpid): rpid is number => Boolean(rpid)))];
+}
+
+function normalizePositiveRpid(value: unknown): number | null {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
+}
+
+function resolvePreservedTopCommentRpid(
+  video: Pick<VideoRecord, "root_comment_rpid" | "preserved_top_comment_rpid">,
+  topCommentState: { hasTopComment?: boolean; topComment?: { rpid?: number | null; message?: string | null } | null } | null,
+): number | null {
+  if (!topCommentState?.hasTopComment || !topCommentState.topComment) {
+    return null;
+  }
+
+  const liveTopCommentRpid = normalizePositiveRpid(topCommentState.topComment.rpid);
+  if (!liveTopCommentRpid) {
+    return null;
+  }
+
+  const storedPreservedTopCommentRpid = normalizePositiveRpid(video.preserved_top_comment_rpid);
+  if (liveTopCommentRpid === storedPreservedTopCommentRpid) {
+    return liveTopCommentRpid;
+  }
+
+  const storedRootCommentRpid = normalizePositiveRpid(video.root_comment_rpid);
+  if (liveTopCommentRpid === storedRootCommentRpid) {
+    return null;
+  }
+
+  if (isSystemSummaryComment(topCommentState.topComment.message)) {
+    return null;
+  }
+
+  return liveTopCommentRpid;
+}
+
+function persistPreservedTopComment(
+  db: Db,
+  video: VideoRecord,
+  preservedTopCommentRpid: number | null,
+) {
+  if (
+    normalizePositiveRpid(video.preserved_top_comment_rpid)
+    === preservedTopCommentRpid
+  ) {
+    return;
+  }
+
+  const updatedVideo = updateVideoPreservedTopComment(
+    db,
+    video.id,
+    preservedTopCommentRpid,
+  );
+  if (updatedVideo) {
+    video.preserved_top_comment_rpid = updatedVideo.preserved_top_comment_rpid;
+    video.top_comment_rpid = updatedVideo.top_comment_rpid;
+  }
 }
 
 export async function runPublishStage({
@@ -82,10 +156,22 @@ export async function runPublishStage({
   const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
   const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";
   let rebuildTopCommentState: Awaited<ReturnType<typeof getGuestTopComment>> | null = null;
+  let preservedTopCommentRpid = normalizePositiveRpid(video.preserved_top_comment_rpid);
 
-  if (!needsRebuildPublish && Number(video.root_comment_rpid ?? 0) > 0) {
+  if (
+    !needsRebuildPublish
+    && (
+      Number(video.root_comment_rpid ?? 0) > 0
+      || preservedTopCommentRpid
+    )
+  ) {
     rebuildTopCommentState = await getGuestTopComment({ oid, type, fetchImpl });
-    if (shouldRebuildMissingStoredRootCommentThread(video, rebuildTopCommentState)) {
+    preservedTopCommentRpid = resolvePreservedTopCommentRpid(video, rebuildTopCommentState);
+    persistPreservedTopComment(db, video, preservedTopCommentRpid);
+    if (
+      !preservedTopCommentRpid
+      && shouldRebuildMissingStoredRootCommentThread(video, rebuildTopCommentState)
+    ) {
       needsRebuildPublish = true;
       eventLogger?.log({
         scope: "publish",
@@ -135,13 +221,19 @@ export async function runPublishStage({
     }
 
     const topCommentState = rebuildTopCommentState ?? await getGuestTopComment({ oid, type, fetchImpl });
-    const deleteCandidates = collectRebuildDeleteCandidates(video, topCommentState);
+    preservedTopCommentRpid = resolvePreservedTopCommentRpid(video, topCommentState);
+    persistPreservedTopComment(db, video, preservedTopCommentRpid);
+    const deleteCandidates = collectRebuildDeleteCandidates(
+      video,
+      topCommentState,
+      preservedTopCommentRpid,
+    );
     const deletedThreads: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }> = [];
 
     resetPublishedStateForVideo(db, video.id);
     updateVideoCommentThread(db, video.id, {
       rootCommentRpid: null,
-      topCommentRpid: null,
+      topCommentRpid: preservedTopCommentRpid,
     });
 
     if (forceFreshThread) {
@@ -168,6 +260,8 @@ export async function runPublishStage({
       },
       existingRootRpid: null,
       forcedRootRpid: null,
+      pinRoot: !preservedTopCommentRpid,
+      topCommentRpidAfterPublish: preservedTopCommentRpid,
       workRoot,
       allowExistingCommentAdoption: !forceFreshThread,
       sleepImpl,
@@ -258,6 +352,8 @@ export async function runPublishStage({
   progress?.log("Publishing pending summaries");
 
   const topCommentState = await getGuestTopComment({ oid, type, fetchImpl });
+  preservedTopCommentRpid = resolvePreservedTopCommentRpid(video, topCommentState);
+  persistPreservedTopComment(db, video, preservedTopCommentRpid);
   const appended = await postSummaryThread({
     client,
     oid,
@@ -268,6 +364,8 @@ export async function runPublishStage({
     topCommentState,
     existingRootRpid: video.root_comment_rpid,
     forcedRootRpid,
+    pinRoot: !preservedTopCommentRpid,
+    topCommentRpidAfterPublish: preservedTopCommentRpid,
     workRoot,
     sleepImpl,
     fetchImpl,

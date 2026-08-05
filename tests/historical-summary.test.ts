@@ -9,9 +9,15 @@ import {
   runHistoricalSummaryBackfill,
 } from "../src/domains/scheduler/historical-summary";
 
-test("isPinnedSummaryComment only recognizes summary marker blocks", () => {
+test("isPinnedSummaryComment requires generated-summary evidence", () => {
   assert.equal(isPinnedSummaryComment("<1P>\n1#00:00 summary"), true);
-  assert.equal(isPinnedSummaryComment("1P summary"), true);
+  assert.equal(isPinnedSummaryComment("1P\n1#00:00 legacy summary"), true);
+  assert.equal(isPinnedSummaryComment("<1P>\nhttps://paste.rs/example"), true);
+  assert.equal(isPinnedSummaryComment("<1P>\n1#00:00 first summary\n<2P>\n2#00:00 second summary"), true);
+  assert.equal(isPinnedSummaryComment("<1P> first note\n<2P> second note"), false);
+  assert.equal(isPinnedSummaryComment("<1P>\nhttps://example.com/corrected-video"), false);
+  assert.equal(isPinnedSummaryComment("1P summary"), false);
+  assert.equal(isPinnedSummaryComment("<1P> 视频异常说明，请以重新上传的版本为准"), false);
   assert.equal(isPinnedSummaryComment("ordinary pinned announcement"), false);
   assert.equal(isPinnedSummaryComment(""), false);
 });
@@ -50,6 +56,7 @@ test("historical backfill checks the live webpage comment API before processing"
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-live-check-"));
   const cursorPath = path.join(tempRoot, "cursor.json");
   const pipelineBvids: string[] = [];
+  const preservedTopCommentRpids: Array<number | null | undefined> = [];
   const inspectedAids: number[] = [];
 
   try {
@@ -127,13 +134,14 @@ test("historical backfill checks the live webpage comment API before processing"
           hasTopComment: true,
           topComment: {
             rpid: 9002,
-            message: "ordinary pinned announcement",
+            message: "<1P> 视频异常说明，请以重新上传的版本为准",
           },
           raw: {},
         } as any;
       },
       async runPipelineForBvidImpl(options) {
         pipelineBvids.push(options.bvid);
+        preservedTopCommentRpids.push(options.preservedTopCommentRpid);
         return {
           ok: true,
           generatedPages: [1],
@@ -143,6 +151,7 @@ test("historical backfill checks the live webpage comment API before processing"
 
     assert.deepEqual(inspectedAids, [101, 102]);
     assert.deepEqual(pipelineBvids, ["BVNEEDS"]);
+    assert.deepEqual(preservedTopCommentRpids, [9002]);
     assert.deepEqual(result.skippedPinnedSummary.map((item) => item.bvid), ["BVPINNED"]);
     assert.equal(result.quotaUsed, 1);
     assert.equal(result.advanced, true);
