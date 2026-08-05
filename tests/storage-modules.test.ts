@@ -271,6 +271,7 @@ test("openDatabase upgrades a legacy schema and seeds drizzle migration history"
   try {
     const video = getVideoByIdentity(db, { bvid: "BVLEGACY001" });
     const parts = listVideoParts(db, Number(video?.id));
+    const videoColumns = db.prepare("PRAGMA table_info(videos)").all() as Array<{ name: string }>;
     const videoPartColumns = db.prepare("PRAGMA table_info(video_parts)").all() as Array<{ name: string }>;
     const migrationRows = db.prepare("SELECT hash, created_at FROM __drizzle_migrations ORDER BY created_at ASC").all() as Array<{
       hash: string;
@@ -284,12 +285,13 @@ test("openDatabase upgrades a legacy schema and seeds drizzle migration history"
     assert.equal(parts[0].prompt_text, null);
     assert.equal(parts[0].subtitle_text, null);
     assert.equal(Number(parts[0].is_deleted), 0);
+    assert.ok(videoColumns.some((column) => column.name === "preserved_top_comment_rpid"));
     assert.ok(videoPartColumns.some((column) => column.name === "is_deleted"));
     assert.ok(videoPartColumns.some((column) => column.name === "summary_text_processed"));
     assert.ok(videoPartColumns.some((column) => column.name === "subtitle_text"));
     assert.ok(videoPartColumns.some((column) => column.name === "prompt_text"));
-    assert.equal(migrationRows.length, 1);
-    assert.equal(typeof migrationRows[0]?.hash, "string");
+    assert.equal(migrationRows.length, 2);
+    assert.ok(migrationRows.every((row) => typeof row.hash === "string"));
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

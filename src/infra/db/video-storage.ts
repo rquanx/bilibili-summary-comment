@@ -114,6 +114,7 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         page_count,
         root_comment_rpid,
         top_comment_rpid,
+        preserved_top_comment_rpid,
         last_scan_at,
         created_at,
         updated_at
@@ -129,6 +130,7 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         ${video.pageCount},
         ${video.rootCommentRpid ?? null},
         ${video.topCommentRpid ?? null},
+        ${video.preservedTopCommentRpid ?? null},
         ${now},
         ${now},
         ${now}
@@ -141,6 +143,10 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         owner_dir_name = COALESCE(owner_dir_name, excluded.owner_dir_name),
         work_dir_name = COALESCE(work_dir_name, excluded.work_dir_name),
         page_count = excluded.page_count,
+        preserved_top_comment_rpid = COALESCE(
+          excluded.preserved_top_comment_rpid,
+          preserved_top_comment_rpid
+        ),
         updated_at = excluded.updated_at,
         last_scan_at = excluded.last_scan_at
     `);
@@ -202,6 +208,36 @@ export function updateVideoCommentThread(
       UPDATE ${videos}
       SET root_comment_rpid = ${rootCommentRpid},
           top_comment_rpid = ${topCommentRpid},
+          updated_at = ${now}
+      WHERE ${videos.id} = ${videoId}
+    `);
+  });
+
+  return orm.get<VideoRecord>(sql`
+    SELECT *
+    FROM ${videos}
+    WHERE ${videos.id} = ${videoId}
+  `) ?? null;
+}
+
+export function updateVideoPreservedTopComment(
+  db: Db,
+  videoId: number,
+  preservedTopCommentRpid: number | null,
+): VideoRecord | null {
+  const orm = getDrizzleDb(db);
+  const now = new Date().toISOString();
+  const normalizedRpid = Number(preservedTopCommentRpid);
+  const nextRpid = Number.isInteger(normalizedRpid) && normalizedRpid > 0 ? normalizedRpid : null;
+  withDatabaseWriteLock(db, () => {
+    orm.run(sql`
+      UPDATE ${videos}
+      SET preserved_top_comment_rpid = ${nextRpid},
+          top_comment_rpid = CASE
+            WHEN ${nextRpid} IS NOT NULL THEN ${nextRpid}
+            WHEN top_comment_rpid = preserved_top_comment_rpid THEN NULL
+            ELSE top_comment_rpid
+          END,
           updated_at = ${now}
       WHERE ${videos.id} = ${videoId}
     `);

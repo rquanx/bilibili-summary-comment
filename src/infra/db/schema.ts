@@ -12,6 +12,7 @@ export const videos = sqliteTable("videos", {
   page_count: integer("page_count").notNull().default(0),
   root_comment_rpid: integer("root_comment_rpid"),
   top_comment_rpid: integer("top_comment_rpid"),
+  preserved_top_comment_rpid: integer("preserved_top_comment_rpid"),
   publish_needs_rebuild: integer("publish_needs_rebuild").notNull().default(0),
   publish_rebuild_reason: text("publish_rebuild_reason"),
   last_scan_at: text("last_scan_at"),

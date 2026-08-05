@@ -22,6 +22,7 @@ export interface VideoRecord {
   page_count: number;
   root_comment_rpid: number | null;
   top_comment_rpid: number | null;
+  preserved_top_comment_rpid: number | null;
   publish_needs_rebuild: number;
   publish_rebuild_reason: string | null;
   last_scan_at: string | null;
@@ -40,6 +41,7 @@ export interface VideoInsert {
   pageCount: number;
   rootCommentRpid?: number | null;
   topCommentRpid?: number | null;
+  preservedTopCommentRpid?: number | null;
 }
 
 export interface VideoPartRecord {

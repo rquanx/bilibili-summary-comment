@@ -63,6 +63,7 @@ export {
   savePartSubtitle,
   savePartSummary,
   updateVideoCommentThread,
+  updateVideoPreservedTopComment,
   upsertVideo,
   upsertVideoPart,
 } from "./video-storage";

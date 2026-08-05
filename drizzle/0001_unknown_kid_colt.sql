@@ -1,0 +1,1 @@
+ALTER TABLE `videos` ADD `preserved_top_comment_rpid` integer;
