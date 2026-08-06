@@ -2,6 +2,7 @@ import { DEFAULT_AUTH_FILE } from "../bili/auth";
 import {
   getVideoByIdentity,
   listPendingPublishParts,
+  listPipelineEvents,
   listVideosPendingPublish,
   openDatabase,
 } from "../../infra/db/index";
@@ -19,6 +20,11 @@ const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 15_000;
 const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 30_000;
 const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
 const PUBLISH_SWEEP_MAX_CONCURRENCY = 2;
+const TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS = 6 * 60 * 60_000;
+const terminalPublishFailureCooldowns = new Map<string, {
+  queueRevision: string;
+  retryAfterMs: number;
+}>();
 
 export interface PendingPublishTask {
   video: VideoRecord;
@@ -217,7 +223,17 @@ function buildPendingPublishTasks({
   fallbackAuthFile: string | null;
   onLog: (message: string) => void;
 }): PendingPublishTask[] {
+  const failureCooldownByBvid = listTerminalPublishFailureCooldowns(db);
+
   return videos.flatMap((video) => {
+    const retryAfterMs = failureCooldownByBvid.get(video.bvid);
+    if (retryAfterMs && retryAfterMs > Date.now()) {
+      onLog(
+        `Skip publish for ${video.bvid}: recent terminal comment failure is cooling down until ${new Date(retryAfterMs).toISOString()}`,
+      );
+      return [];
+    }
+
     const resolvedAuthFile = resolveAuthFileForVideo(video, authFileByMid, fallbackAuthFile);
     if (!resolvedAuthFile) {
       onLog(
@@ -234,6 +250,55 @@ function buildPendingPublishTasks({
       queueRevision: createPublishQueueRevision(db, video),
     }];
   });
+}
+
+function listTerminalPublishFailureCooldowns(db: ReturnType<typeof openDatabase>) {
+  const cutoffMs = Date.now() - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS;
+  const events = listPipelineEvents(db, {
+    sinceIso: new Date(cutoffMs).toISOString(),
+    limit: 5_000,
+  });
+  const latestEventByBvid = new Map<string, (typeof events)[number]>();
+
+  for (const event of events) {
+    const bvid = String(event.bvid ?? "").trim();
+    if (
+      !bvid
+      || latestEventByBvid.has(bvid)
+      || event.scope !== "publish"
+      || event.action !== "comment-thread"
+    ) {
+      continue;
+    }
+    latestEventByBvid.set(bvid, event);
+  }
+
+  const cooldownByBvid = new Map<string, number>();
+  for (const [bvid, event] of latestEventByBvid) {
+    if (event.status !== "failed") {
+      continue;
+    }
+
+    const details = parsePipelineFailurePayload(event.details_json);
+    if (!isTerminalCommentPublishFailure({
+      message: event.message,
+      code: details?.code,
+      stdout: JSON.stringify({
+        ...details,
+        message: event.message,
+      }),
+    })) {
+      continue;
+    }
+
+    const failedAtMs = Date.parse(event.created_at);
+    if (!Number.isFinite(failedAtMs)) {
+      continue;
+    }
+    cooldownByBvid.set(bvid, failedAtMs + TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS);
+  }
+
+  return cooldownByBvid;
 }
 
 function createPublishQueueRevision(
@@ -404,6 +469,23 @@ async function runPendingPublishTasksWithConcurrency({
         return;
       }
       queuedBvids.delete(task.video.bvid);
+
+      const failureCooldown = terminalPublishFailureCooldowns.get(task.video.bvid);
+      if (
+        failureCooldown
+        && failureCooldown.queueRevision === task.queueRevision
+        && failureCooldown.retryAfterMs > Date.now()
+      ) {
+        completedRevisionByBvid.set(task.video.bvid, task.queueRevision);
+        onLog(
+          `Skip publish for ${task.video.bvid}: terminal comment failure is cooling down until ${new Date(failureCooldown.retryAfterMs).toISOString()}`,
+        );
+        continue;
+      }
+      if (failureCooldown) {
+        terminalPublishFailureCooldowns.delete(task.video.bvid);
+      }
+
       activeBvids.add(task.video.bvid);
       completedTaskCount += 1;
       const scopedLogger = logger?.child({
@@ -459,6 +541,19 @@ async function runPendingPublishTasksWithConcurrency({
           message: error instanceof Error ? error.message : "Unknown error",
           publishMode: task.publishMode,
         });
+
+        if (isTerminalCommentPublishFailure(error)) {
+          completedRevisionByBvid.set(task.video.bvid, task.queueRevision);
+          terminalPublishFailureCooldowns.set(task.video.bvid, {
+            queueRevision: task.queueRevision,
+            retryAfterMs: Date.now() + TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS,
+          });
+          onLog(
+            `Publish failed for ${task.video.bvid} because the comment was deleted or remained invisible; skipping this video and continuing the queue`,
+          );
+          continue;
+        }
+
         stopScheduling = true;
         onAbort();
         onLog(`Publish failed for ${task.video.bvid}; stopping the remaining queue to avoid repeated write pressure`);
@@ -470,4 +565,47 @@ async function runPendingPublishTasksWithConcurrency({
   };
 
   await Promise.all(Array.from({ length: maxConcurrent }, () => worker()));
+}
+
+function isTerminalCommentPublishFailure(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as {
+    message?: unknown;
+    stdout?: unknown;
+    code?: unknown;
+  };
+  const payload = parsePipelineFailurePayload(candidate.stdout);
+  const responseData = payload?.responseData && typeof payload.responseData === "object"
+    ? payload.responseData as Record<string, unknown>
+    : null;
+  const code = Number(payload?.code ?? responseData?.code ?? candidate.code);
+  const messages = [
+    candidate.message,
+    payload?.message,
+    responseData?.message,
+  ].map((value) => String(value ?? "").trim()).filter(Boolean);
+
+  return code === 12022 || messages.some((message) =>
+    message.includes("已经被删除")
+    || message.includes("Published comment is not visible to guests")
+  );
+}
+
+function parsePipelineFailurePayload(value: unknown): Record<string, unknown> | null {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(normalized);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
 import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import { insertPipelineEvent } from "../src/infra/db/pipeline-event-storage";
 import { resolveSchedulerConfig } from "../src/infra/config/app-config";
 import { resolveAuthFileForUser } from "../src/domains/scheduler/auth-files";
 import {
@@ -1527,6 +1528,154 @@ test("runPendingVideoPublishSweep stops scheduling new work after the first fail
         publishMode: "rebuild",
       },
     ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep skips deleted comment failures and continues the queue", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-skip-terminal-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
+  const db = openDatabase(dbPath);
+  const publishedBvids: string[] = [];
+
+  try {
+    for (const [index, bvid] of ["BVAFTERFAILURE", "BVDELETEDCOMMENT", "BVBEFOREFAILURE"].entries()) {
+      const video = upsertVideo(db, {
+        bvid,
+        aid: index + 1,
+        title: bvid,
+        ownerMid: 123,
+        pageCount: 1,
+      });
+      upsertVideoPart(db, {
+        videoId: video.id,
+        pageNo: 1,
+        cid: 100 + index,
+        partTitle: "P1",
+        durationSec: 10,
+        summaryText: `<1P>\n${bvid}`,
+        published: false,
+        isDeleted: false,
+      });
+    }
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot,
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth.json");
+      },
+      runPipelineForBvidImpl: async (options) => {
+        publishedBvids.push(String(options.bvid));
+        if (options.bvid === "BVDELETEDCOMMENT") {
+          const error = new Error("Command failed");
+          Object.assign(error, {
+            stdout: JSON.stringify({
+              ok: false,
+              message: "已经被删除了",
+              code: 12022,
+              failedStep: "publish",
+            }),
+          });
+          throw error;
+        }
+
+        return { ok: true };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(new Set(publishedBvids), new Set([
+      "BVAFTERFAILURE",
+      "BVDELETEDCOMMENT",
+      "BVBEFOREFAILURE",
+    ]));
+    assert.equal(result.aborted, false);
+    assert.deepEqual(result.failures, [
+      {
+        bvid: "BVDELETEDCOMMENT",
+        title: "BVDELETEDCOMMENT",
+        message: "Command failed",
+        publishMode: "append",
+      },
+    ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep skips videos with a recent persisted terminal comment failure", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-persisted-cooldown-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
+  const db = openDatabase(dbPath);
+  const publishedBvids: string[] = [];
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVPERSISTEDDELETED",
+      aid: 1,
+      title: "Persisted Deleted",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\npending",
+      published: false,
+      isDeleted: false,
+    });
+    insertPipelineEvent(db, {
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "publish",
+      action: "comment-thread",
+      status: "failed",
+      message: "已经被删除了",
+      details: {
+        code: 12022,
+      },
+    });
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot,
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth.json");
+      },
+      runPipelineForBvidImpl: async (options) => {
+        publishedBvids.push(String(options.bvid));
+        return { ok: true };
+      },
+    });
+
+    assert.deepEqual(publishedBvids, []);
+    assert.deepEqual(result.tasks, []);
+    assert.equal(result.aborted, false);
+    assert.deepEqual(result.failures, []);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
