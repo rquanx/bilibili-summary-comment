@@ -572,11 +572,11 @@ await runCli({
     }
 
     const scheduledTasks = [
-      cron.schedule("0,30 * * * *", summaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("0,15,30,45 * * * *", summaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
       cron.schedule("2-59/5 * * * *", commentStallAlertRunner, buildCronOptions(config.timezone)),
       cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
-      cron.schedule("* * * * *", historicalSummaryRunner, buildCronOptions(config.timezone)),
+      cron.schedule("0,15,30,45 * * * *", historicalSummaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
       cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
     ];
@@ -585,7 +585,7 @@ await runCli({
     log(
       `Pipeline slots: total=${pipelineTaskLimiter.capacity}, shared-by=recent+historical, priority=recent-first`,
     );
-    log("Cron plan: summary=hourly@minute0,30, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every-minute with recent-video pipeline priority");
+    log("Cron plan: summary=every15min, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every15min with recent-video pipeline priority");
     attachSignalHandlers(scheduledTasks, log);
 
     if (args["run-on-start"]) {
