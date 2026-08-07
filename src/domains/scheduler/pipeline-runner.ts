@@ -123,7 +123,7 @@ function resolvePublishPipelineTimeoutMs() {
   const configured = Number(process.env.PUBLISH_PIPELINE_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0
     ? Math.floor(configured)
-    : 30 * 60_000;
+    : 90 * 60_000;
 }
 
 export function readCookieString(

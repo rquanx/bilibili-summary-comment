@@ -1261,7 +1261,7 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, process.execPath);
-  assert.equal(calls[0].timeoutMs, 30 * 60_000);
+  assert.equal(calls[0].timeoutMs, 90 * 60_000);
   assert.deepEqual(calls[0].args, [
     "--import",
     "tsx",
