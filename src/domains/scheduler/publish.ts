@@ -255,8 +255,11 @@ function buildPendingPublishTasks({
   });
 }
 
-function listTerminalPublishFailureCooldowns(db: ReturnType<typeof openDatabase>) {
-  const cutoffMs = Date.now() - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS;
+export function listTerminalPublishFailureCooldowns(
+  db: ReturnType<typeof openDatabase>,
+  nowMs = Date.now(),
+) {
+  const cutoffMs = nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS;
   const events = listPipelineEvents(db, {
     sinceIso: new Date(cutoffMs).toISOString(),
     limit: 5_000,

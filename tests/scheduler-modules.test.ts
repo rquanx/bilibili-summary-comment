@@ -50,7 +50,7 @@ test("resolveSchedulerConfig uses one shared pipeline concurrency", () => {
   });
 
   assert.equal(explicit.pipelineConcurrency, 4);
-  assert.equal(explicit.commentStallAlertMinutes, 60);
+  assert.equal(explicit.commentStallAlertMinutes, 120);
   assert.equal(legacy.pipelineConcurrency, 2);
   assert.equal("summaryConcurrency" in explicit, false);
   assert.equal("historicalSummaryConcurrency" in explicit, false);

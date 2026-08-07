@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   buildCommentStallNotification,
   evaluateCommentPublishStallState,
+  getLatestCommentPublishActivityAt,
   getLatestSuccessfulCommentAt,
   listPendingCommentCandidates,
   runCommentPublishStallAlert,
@@ -18,6 +19,7 @@ test("evaluateCommentPublishStallState alerts after one hour and deduplicates th
     videoId: 1,
     bvid: "BVSTALL001",
     title: "Stalled Video",
+    ownerMid: 1,
     pendingSummaryParts: 1,
     pendingPublishParts: 0,
     publishNeedsRebuild: false,
@@ -54,6 +56,7 @@ test("a successful new comment resets the one-hour stall window", () => {
     videoId: 1,
     bvid: "BVSTALL002",
     title: "Recovering Video",
+    ownerMid: 1,
     pendingSummaryParts: 0,
     pendingPublishParts: 1,
     publishNeedsRebuild: false,
@@ -67,6 +70,7 @@ test("a successful new comment resets the one-hour stall window", () => {
       pendingBvids: ["BVSTALL002"],
       notifiedAt: "2026-08-04T11:00:00.000Z",
       lastSuccessfulCommentAt: null,
+      lastPublishActivityAt: null,
       updatedAt: "2026-08-04T11:00:00.000Z",
     },
     latestSuccessfulCommentAt: "2026-08-04T11:45:00.000Z",
@@ -117,10 +121,35 @@ test("pending candidates and successful comment events are read from SQLite", ()
       },
     });
     assert.ok(getLatestSuccessfulCommentAt(db));
+    assert.ok(getLatestCommentPublishActivityAt(db));
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("recent publish activity resets the stall window even without a successful comment", () => {
+  const evaluation = evaluateCommentPublishStallState({
+    candidates: [{
+      videoId: 1,
+      bvid: "BVSTALLACTIVE",
+      title: "Active Publish",
+      ownerMid: 1,
+      pendingSummaryParts: 0,
+      pendingPublishParts: 1,
+      publishNeedsRebuild: false,
+      firstPendingAt: "2026-08-04T08:00:00.000Z",
+    }],
+    previousState: null,
+    latestSuccessfulCommentAt: "2026-08-04T08:00:00.000Z",
+    latestPublishActivityAt: "2026-08-04T11:55:00.000Z",
+    thresholdMinutes: 120,
+    now: new Date("2026-08-04T12:00:00.000Z"),
+  });
+
+  assert.equal(evaluation.shouldNotify, false);
+  assert.equal(evaluation.reason, "within-threshold");
+  assert.equal(evaluation.stalledMinutes, 5);
 });
 
 test("runCommentPublishStallAlert sends once and persists notification state", async () => {

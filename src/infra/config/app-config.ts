@@ -114,7 +114,7 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     commentStallAlertMinutes:
       options["comment-stall-alert-minutes"]
       ?? process.env.COMMENT_STALL_ALERT_MINUTES
-      ?? 60,
+      ?? 120,
     refreshDays: options["refresh-days"] ?? process.env.BILI_REFRESH_DAYS ?? 30,
     cleanupDays: options["cleanup-days"] ?? process.env.WORK_CLEANUP_DAYS ?? 2,
     dbPath: options.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3",

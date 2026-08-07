@@ -9,14 +9,18 @@ import {
 import type { Db, VideoRecord } from "../../infra/db/index";
 import { getRepoRoot } from "../../shared/runtime-tools";
 import { sendServerChanNotification } from "../subtitle/notifier";
+import { findAuthFileForUser } from "./auth-files";
+import { listTerminalPublishFailureCooldowns } from "./publish";
+import { parseSummaryUsers } from "./user-targets";
 
-export const DEFAULT_COMMENT_STALL_ALERT_MINUTES = 60;
+export const DEFAULT_COMMENT_STALL_ALERT_MINUTES = 120;
 export const COMMENT_STALL_ALERT_STATE_FILE = "comment-publish-stall-alert.json";
 
 interface PendingSummaryRow {
   video_id: number;
   bvid: string;
   title: string;
+  owner_mid: number | null;
   pending_summary_parts: number;
   first_pending_at: string;
 }
@@ -25,6 +29,7 @@ export interface PendingCommentCandidate {
   videoId: number;
   bvid: string;
   title: string;
+  ownerMid: number | null;
   pendingSummaryParts: number;
   pendingPublishParts: number;
   publishNeedsRebuild: boolean;
@@ -36,6 +41,7 @@ export interface CommentStallAlertState {
   pendingBvids: string[];
   notifiedAt: string | null;
   lastSuccessfulCommentAt: string | null;
+  lastPublishActivityAt: string | null;
   updatedAt: string;
 }
 
@@ -49,6 +55,8 @@ export interface CommentStallEvaluation {
 export async function runCommentPublishStallAlert({
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
+  summaryUsers,
+  authFile,
   thresholdMinutes = DEFAULT_COMMENT_STALL_ALERT_MINUTES,
   now = new Date(),
   repoRoot = getRepoRoot(),
@@ -57,6 +65,8 @@ export async function runCommentPublishStallAlert({
 }: {
   dbPath?: string;
   workRoot?: string;
+  summaryUsers?: unknown;
+  authFile?: string;
   thresholdMinutes?: number;
   now?: Date;
   repoRoot?: string;
@@ -67,10 +77,20 @@ export async function runCommentPublishStallAlert({
   const db = openDatabase(dbPath);
   let candidates: PendingCommentCandidate[];
   let latestSuccessfulCommentAt: string | null;
+  let latestPublishActivityAt: string | null;
 
   try {
     candidates = listPendingCommentCandidates(db);
+    candidates = filterActionableCommentCandidates({
+      db,
+      candidates,
+      summaryUsers,
+      authFile,
+      repoRoot,
+      nowMs: now.getTime(),
+    });
     latestSuccessfulCommentAt = getLatestSuccessfulCommentAt(db);
+    latestPublishActivityAt = getLatestCommentPublishActivityAt(db);
   } finally {
     db.close?.();
   }
@@ -79,6 +99,7 @@ export async function runCommentPublishStallAlert({
     candidates,
     previousState: readCommentStallAlertState(statePath),
     latestSuccessfulCommentAt,
+    latestPublishActivityAt,
     thresholdMinutes,
     now,
   });
@@ -165,6 +186,7 @@ export function listPendingCommentCandidates(db: Db): PendingCommentCandidate[] 
       v.id AS video_id,
       v.bvid,
       v.title,
+      v.owner_mid,
       COUNT(*) AS pending_summary_parts,
       MIN(p.created_at) AS first_pending_at
     FROM videos v
@@ -179,6 +201,7 @@ export function listPendingCommentCandidates(db: Db): PendingCommentCandidate[] 
       videoId: row.video_id,
       bvid: row.bvid,
       title: row.title,
+      ownerMid: row.owner_mid,
       pendingSummaryParts: Number(row.pending_summary_parts) || 0,
       pendingPublishParts: 0,
       publishNeedsRebuild: false,
@@ -195,6 +218,7 @@ export function listPendingCommentCandidates(db: Db): PendingCommentCandidate[] 
       videoId: video.id,
       bvid: video.bvid,
       title: video.title,
+      ownerMid: video.owner_mid,
       pendingSummaryParts: existing?.pendingSummaryParts ?? 0,
       pendingPublishParts: pendingParts.length,
       publishNeedsRebuild: Number(video.publish_needs_rebuild) === 1,
@@ -233,16 +257,32 @@ export function getLatestSuccessfulCommentAt(db: Db): string | null {
   return null;
 }
 
+export function getLatestCommentPublishActivityAt(db: Db): string | null {
+  const row = db.prepare(`
+    SELECT created_at
+    FROM pipeline_events
+    WHERE scope = 'publish'
+      AND action = 'comment-thread'
+      AND status IN ('started', 'succeeded', 'failed')
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get() as { created_at?: string } | undefined;
+
+  return normalizeIsoTimestamp(row?.created_at);
+}
+
 export function evaluateCommentPublishStallState({
   candidates,
   previousState,
   latestSuccessfulCommentAt,
+  latestPublishActivityAt,
   thresholdMinutes = DEFAULT_COMMENT_STALL_ALERT_MINUTES,
   now = new Date(),
 }: {
   candidates: PendingCommentCandidate[];
   previousState?: CommentStallAlertState | null;
   latestSuccessfulCommentAt?: string | null;
+  latestPublishActivityAt?: string | null;
   thresholdMinutes?: number;
   now?: Date;
 }): CommentStallEvaluation {
@@ -274,6 +314,10 @@ export function evaluateCommentPublishStallState({
   if (Number.isFinite(latestSuccessMs) && latestSuccessMs > pendingSinceMs && latestSuccessMs <= nowMs) {
     pendingSinceMs = latestSuccessMs;
   }
+  const latestActivityMs = timestampMs(latestPublishActivityAt);
+  if (Number.isFinite(latestActivityMs) && latestActivityMs > pendingSinceMs && latestActivityMs <= nowMs) {
+    pendingSinceMs = latestActivityMs;
+  }
 
   const pendingSince = new Date(pendingSinceMs).toISOString();
   const previousNotifiedMs = timestampMs(previousState?.notifiedAt);
@@ -289,6 +333,7 @@ export function evaluateCommentPublishStallState({
     pendingBvids: candidateBvids,
     notifiedAt,
     lastSuccessfulCommentAt: normalizeIsoTimestamp(latestSuccessfulCommentAt),
+    lastPublishActivityAt: normalizeIsoTimestamp(latestPublishActivityAt),
     updatedAt: now.toISOString(),
   };
 
@@ -381,6 +426,7 @@ export function readCommentStallAlertState(statePath: string): CommentStallAlert
         : [],
       notifiedAt: normalizeIsoTimestamp(parsed.notifiedAt),
       lastSuccessfulCommentAt: normalizeIsoTimestamp(parsed.lastSuccessfulCommentAt),
+      lastPublishActivityAt: normalizeIsoTimestamp(parsed.lastPublishActivityAt),
       updatedAt: normalizeIsoTimestamp(parsed.updatedAt) ?? pendingSince,
     };
   } catch {
@@ -431,12 +477,54 @@ function recordCommentStallAlertEvent({
         pendingSince: state.pendingSince,
         pendingBvids: state.pendingBvids,
         lastSuccessfulCommentAt: state.lastSuccessfulCommentAt,
+        lastPublishActivityAt: state.lastPublishActivityAt,
         candidateCount: candidates.length,
       },
     });
   } finally {
     db.close?.();
   }
+}
+
+function filterActionableCommentCandidates({
+  db,
+  candidates,
+  summaryUsers,
+  authFile,
+  repoRoot,
+  nowMs,
+}: {
+  db: Db;
+  candidates: PendingCommentCandidate[];
+  summaryUsers: unknown;
+  authFile: string | undefined;
+  repoRoot: string;
+  nowMs: number;
+}) {
+  const cooldowns = listTerminalPublishFailureCooldowns(db, nowMs);
+  const candidatesOutsideCooldown = candidates.filter((candidate) => {
+    const retryAfterMs = cooldowns.get(candidate.bvid);
+    return !retryAfterMs || retryAfterMs <= nowMs;
+  });
+
+  if (summaryUsers === undefined || !authFile) {
+    return candidatesOutsideCooldown;
+  }
+
+  const authFileByMid = new Map<number, string>();
+  for (const [index, target] of parseSummaryUsers(summaryUsers).entries()) {
+    const resolvedAuthFile = findAuthFileForUser(authFile, index + 1, { repoRoot });
+    if (resolvedAuthFile) {
+      authFileByMid.set(target.mid, resolvedAuthFile);
+    }
+  }
+  const fallbackAuthFile = authFileByMid.size === 1 ? [...authFileByMid.values()][0] : null;
+
+  return candidatesOutsideCooldown.filter((candidate) => {
+    const ownerMid = Number(candidate.ownerMid ?? 0);
+    return (Number.isInteger(ownerMid) && ownerMid > 0 && authFileByMid.has(ownerMid))
+      || Boolean(fallbackAuthFile);
+  });
 }
 
 function earliestIsoTimestamp(left: unknown, right: unknown) {

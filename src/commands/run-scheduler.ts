@@ -437,6 +437,8 @@ await runCli({
       const result = await runCommentPublishStallAlert({
         dbPath: config.dbPath,
         workRoot: config.workRoot,
+        summaryUsers: config.summaryUsers,
+        authFile: config.authFile,
         thresholdMinutes: config.commentStallAlertMinutes,
         onLog(message) {
           log(`[comment-stall-alert] ${message}`, {
