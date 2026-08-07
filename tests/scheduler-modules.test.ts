@@ -1953,6 +1953,72 @@ test("runPendingVideoPublishSweep requeues a processed video when new pending pa
   }
 });
 
+test("runPendingVideoPublishSweep does not requeue when only part updated_at changes", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-stable-revision-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
+  const db = openDatabase(dbPath);
+  let runCount = 0;
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVSTABLEREVISION",
+      aid: 1,
+      title: "Stable Revision",
+      ownerMid: 123,
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nfirst",
+      summaryHash: "stable-hash",
+      published: false,
+      isDeleted: false,
+    });
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot,
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth-1.json");
+      },
+      runPipelineForBvidImpl: async () => {
+        runCount += 1;
+        db.prepare(`
+          UPDATE video_parts
+          SET updated_at = ?
+          WHERE video_id = ?
+        `).run(new Date(Date.now() + runCount * 1_000).toISOString(), video.id);
+        return {
+          ok: true,
+          pendingPublishPages: [],
+        };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.equal(runCount, 1);
+    assert.equal(result.tasks.length, 1);
+    assert.equal(result.aborted, false);
+    assert.deepEqual(result.failures, []);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runPendingVideoPublishSweep runs two tasks concurrently and lets newly queued videos jump ahead", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

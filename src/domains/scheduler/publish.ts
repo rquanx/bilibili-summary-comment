@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { DEFAULT_AUTH_FILE } from "../bili/auth";
 import {
+  getPreferredSummaryText,
   getVideoByIdentity,
   listPendingPublishParts,
   listPipelineEvents,
@@ -315,7 +317,7 @@ function createPublishQueueRevision(
       part.page_no,
       part.cid,
       part.summary_hash,
-      part.updated_at,
+      createHash("sha256").update(getPreferredSummaryText(part)).digest("hex"),
     ]),
   });
 }
