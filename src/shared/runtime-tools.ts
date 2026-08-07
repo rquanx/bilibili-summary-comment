@@ -15,9 +15,11 @@ export interface CommandResult {
 }
 
 export interface CommandError extends Error {
-  code?: number | null;
+  code?: number | string | null;
   stdout?: string;
   stderr?: string;
+  timedOut?: boolean;
+  timeoutMs?: number;
 }
 
 export interface RunCommandOptions {
@@ -30,6 +32,7 @@ export interface RunCommandOptions {
   stderrStream?: Pick<NodeJS.WritableStream, "write"> | null;
   logger?: FileLogger | null;
   logContext?: LogContext;
+  timeoutMs?: number | null;
 }
 
 export interface RunVenvModuleOptions extends RunCommandOptions {
@@ -110,6 +113,39 @@ export async function runCommand(command: string, args: string[], options: RunCo
     let stderr = "";
     let stdoutEndsWithNewline = true;
     let stderrEndsWithNewline = true;
+    let settled = false;
+    let timedOut = false;
+    let forcedKillHandle: NodeJS.Timeout | null = null;
+    const timeoutMs = normalizeCommandTimeoutMs(options.timeoutMs);
+    const timeoutHandle = timeoutMs === null
+      ? null
+      : setTimeout(() => {
+          timedOut = true;
+          logger?.error("Command timed out", {
+            ...logContext,
+            command,
+            args,
+            timeoutMs,
+          });
+          child.kill("SIGTERM");
+          forcedKillHandle = setTimeout(() => {
+            if (!settled) {
+              child.kill("SIGKILL");
+            }
+          }, 5_000);
+          forcedKillHandle.unref();
+        }, timeoutMs);
+    timeoutHandle?.unref();
+
+    const clearCommandTimeout = () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      if (forcedKillHandle) {
+        clearTimeout(forcedKillHandle);
+        forcedKillHandle = null;
+      }
+    };
 
     if (child.stdout) {
       child.stdout.on("data", (chunk) => {
@@ -132,6 +168,11 @@ export async function runCommand(command: string, args: string[], options: RunCo
     }
 
     child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearCommandTimeout();
       logger?.error("Command process error", {
         ...logContext,
         command,
@@ -141,12 +182,30 @@ export async function runCommand(command: string, args: string[], options: RunCo
       reject(error);
     });
     child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearCommandTimeout();
       if (options.streamOutput && stdoutStream && !stdoutEndsWithNewline) {
         stdoutStream.write("\n");
       }
 
       if (options.streamOutput && stderrStream && !stderrEndsWithNewline) {
         stderrStream.write("\n");
+      }
+
+      if (timedOut && timeoutMs !== null) {
+        const error = new Error(
+          `Command timed out after ${timeoutMs}ms: ${command} ${args.join(" ")}`,
+        ) as CommandError;
+        error.code = "ETIMEDOUT";
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.timedOut = true;
+        error.timeoutMs = timeoutMs;
+        reject(error);
+        return;
       }
 
       if (code === 0) {
@@ -177,6 +236,11 @@ export async function runCommand(command: string, args: string[], options: RunCo
       reject(error);
     });
   });
+}
+
+function normalizeCommandTimeoutMs(value: number | null | undefined): number | null {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) && normalized > 0 ? Math.floor(normalized) : null;
 }
 
 export function withSuppressedExperimentalWarning(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
