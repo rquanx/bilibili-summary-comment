@@ -34,6 +34,7 @@ interface RunPipelineForBvidOptions {
   forceFreshThread?: boolean;
   preservedTopCommentRpid?: number | null;
   logger?: FileLogger | null;
+  timeoutMs?: number | null;
   runCommandImpl?: (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
   repoRoot?: string;
 }
@@ -50,9 +51,11 @@ export async function runPipelineForBvid({
   forceFreshThread = false,
   preservedTopCommentRpid = null,
   logger = null,
+  timeoutMs = null,
   runCommandImpl = runCommand,
   repoRoot = getRepoRoot(),
 }: RunPipelineForBvidOptions): Promise<PipelineProcessResult> {
+  const commandTimeoutMs = timeoutMs ?? (publish ? resolvePublishPipelineTimeoutMs() : null);
   const scriptPath = resolvePipelineEntryScript(repoRoot);
   const args = buildNodeScriptArgs(scriptPath);
   if (authFile) {
@@ -94,6 +97,7 @@ export async function runPipelineForBvid({
       stdoutStream: stdoutLogStream,
       stderrStream: createCompositeWriteStream(process.stderr, stderrLogStream),
       logger,
+      timeoutMs: commandTimeoutMs,
       logContext: {
         scope: "scheduler",
         action: "run-pipeline",
@@ -113,6 +117,13 @@ export async function runPipelineForBvid({
       rawStdout: result.stdout.trim(),
     };
   }
+}
+
+function resolvePublishPipelineTimeoutMs() {
+  const configured = Number(process.env.PUBLISH_PIPELINE_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : 30 * 60_000;
 }
 
 export function readCookieString(

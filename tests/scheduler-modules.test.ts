@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
 import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
-import { insertPipelineEvent } from "../src/infra/db/pipeline-event-storage";
+import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipeline-event-storage";
 import { resolveSchedulerConfig } from "../src/infra/config/app-config";
 import { resolveAuthFileForUser } from "../src/domains/scheduler/auth-files";
 import {
@@ -27,6 +27,7 @@ import {
 import { runPipelineForBvid } from "../src/domains/scheduler/pipeline-runner";
 import { runPendingVideoPublishSweep } from "../src/domains/scheduler/publish";
 import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../src/domains/scheduler/uploads";
+import { runCommand } from "../src/shared/runtime-tools";
 import { compareTimestampDesc, formatEast8DateTime } from "../src/shared/time";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
@@ -1239,7 +1240,7 @@ test("cleanupOldWorkDirectories removes only safe candidate directories", async 
 });
 
 test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
-  const calls = [];
+  const calls: Array<{ command: string; args: string[]; timeoutMs?: number | null }> = [];
 
   await runPipelineForBvid({
     cookieFile: "cookie.txt",
@@ -1248,8 +1249,8 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
     bvid: "BV1TEST",
     publish: true,
     repoRoot: "D:\\repo",
-    async runCommandImpl(command, args) {
-      calls.push({ command, args });
+    async runCommandImpl(command, args, options) {
+      calls.push({ command, args, timeoutMs: options?.timeoutMs });
       return {
         code: 0,
         stdout: '{"ok":true}',
@@ -1260,6 +1261,7 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, process.execPath);
+  assert.equal(calls[0].timeoutMs, 30 * 60_000);
   assert.deepEqual(calls[0].args, [
     "--import",
     "tsx",
@@ -1276,6 +1278,24 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
   ]);
 });
 
+test("runCommand terminates commands that exceed timeoutMs", async () => {
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    () => runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      timeoutMs: 50,
+    }),
+    (error: Error & { code?: unknown; timedOut?: unknown; timeoutMs?: unknown }) => {
+      assert.equal(error.code, "ETIMEDOUT");
+      assert.equal(error.timedOut, true);
+      assert.equal(error.timeoutMs, 50);
+      return true;
+    },
+  );
+
+  assert.ok(Date.now() - startedAt < 5_000);
+});
+
 test("runPipelineForBvid appends --force-fresh-thread when requested", async () => {
   const calls = [];
 
@@ -1287,8 +1307,8 @@ test("runPipelineForBvid appends --force-fresh-thread when requested", async () 
     publish: true,
     forceFreshThread: true,
     repoRoot: "D:\\repo",
-    async runCommandImpl(command, args) {
-      calls.push({ command, args });
+    async runCommandImpl(command, args, options) {
+      calls.push({ command, args, timeoutMs: options?.timeoutMs });
       return {
         code: 0,
         stdout: '{"ok":true}',
@@ -1610,6 +1630,83 @@ test("runPendingVideoPublishSweep skips deleted comment failures and continues t
         publishMode: "append",
       },
     ]);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runPendingVideoPublishSweep records publish timeouts and continues the queue", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-timeout-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
+  const db = openDatabase(dbPath);
+  const attemptedBvids: string[] = [];
+
+  try {
+    for (const [index, bvid] of ["BVAFTERTIMEOUT", "BVTIMEOUT", "BVBEFORETIMEOUT"].entries()) {
+      const video = upsertVideo(db, {
+        bvid,
+        aid: index + 1,
+        title: bvid,
+        ownerMid: 123,
+        pageCount: 1,
+      });
+      upsertVideoPart(db, {
+        videoId: video.id,
+        pageNo: 1,
+        cid: 200 + index,
+        partTitle: "P1",
+        durationSec: 10,
+        summaryText: `<1P>\n${bvid}`,
+        published: false,
+        isDeleted: false,
+      });
+    }
+
+    const result = await runPendingVideoPublishSweep({
+      summaryUsers: "123",
+      authFile: ".auth/bili-auth.json",
+      dbPath,
+      workRoot,
+      collectRecentUploadsImpl: async () => ({
+        summaryUsers: [],
+        uploads: [],
+      }),
+      withCommentPublishQueueLockImpl: async (_options, task) => task(),
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth.json");
+      },
+      runPipelineForBvidImpl: async (options) => {
+        attemptedBvids.push(String(options.bvid));
+        if (options.bvid === "BVTIMEOUT") {
+          throw Object.assign(new Error("Command timed out after 1800000ms"), {
+            code: "ETIMEDOUT",
+            timedOut: true,
+            timeoutMs: 1_800_000,
+          });
+        }
+        return { ok: true };
+      },
+      computePublishCooldownMsImpl: () => 0,
+      sleepImpl: async () => {},
+    });
+
+    assert.deepEqual(new Set(attemptedBvids), new Set([
+      "BVAFTERTIMEOUT",
+      "BVTIMEOUT",
+      "BVBEFORETIMEOUT",
+    ]));
+    assert.equal(result.aborted, false);
+    assert.equal(result.failures.some((failure) => failure.bvid === "BVTIMEOUT"), true);
+
+    const timeoutEvent = listPipelineEvents(db, {
+      bvid: "BVTIMEOUT",
+      limit: 5,
+    }).find((event) => event.scope === "publish" && event.action === "comment-thread");
+    assert.equal(timeoutEvent?.status, "failed");
+    assert.match(timeoutEvent?.message ?? "", /timed out/u);
+    assert.match(timeoutEvent?.details_json ?? "", /ETIMEDOUT/u);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

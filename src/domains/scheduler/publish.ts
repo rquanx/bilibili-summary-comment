@@ -3,6 +3,7 @@ import { DEFAULT_AUTH_FILE } from "../bili/auth";
 import {
   getPreferredSummaryText,
   getVideoByIdentity,
+  insertPipelineEvent,
   listPendingPublishParts,
   listPipelineEvents,
   listVideosPendingPublish,
@@ -289,6 +290,10 @@ function listTerminalPublishFailureCooldowns(db: ReturnType<typeof openDatabase>
         ...details,
         message: event.message,
       }),
+    }) && !isPublishPipelineTimeoutFailure({
+      message: event.message,
+      code: details?.code,
+      timedOut: details?.timedOut,
     })) {
       continue;
     }
@@ -556,6 +561,23 @@ async function runPendingPublishTasksWithConcurrency({
           continue;
         }
 
+        if (isPublishPipelineTimeoutFailure(error)) {
+          completedRevisionByBvid.set(task.video.bvid, task.queueRevision);
+          terminalPublishFailureCooldowns.set(task.video.bvid, {
+            queueRevision: task.queueRevision,
+            retryAfterMs: Date.now() + TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS,
+          });
+          persistPublishTimeoutFailure({
+            dbPath,
+            task,
+            error,
+          });
+          onLog(
+            `Publish timed out for ${task.video.bvid}; cooling down this video and continuing the queue`,
+          );
+          continue;
+        }
+
         stopScheduling = true;
         onAbort();
         onLog(`Publish failed for ${task.video.bvid}; stopping the remaining queue to avoid repeated write pressure`);
@@ -567,6 +589,57 @@ async function runPendingPublishTasksWithConcurrency({
   };
 
   await Promise.all(Array.from({ length: maxConcurrent }, () => worker()));
+}
+
+function isPublishPipelineTimeoutFailure(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as {
+    message?: unknown;
+    code?: unknown;
+    timedOut?: unknown;
+  };
+  return candidate.timedOut === true
+    || String(candidate.code ?? "").toUpperCase() === "ETIMEDOUT"
+    || String(candidate.message ?? "").toLowerCase().includes("command timed out");
+}
+
+function persistPublishTimeoutFailure({
+  dbPath,
+  task,
+  error,
+}: {
+  dbPath: string;
+  task: PendingPublishTask;
+  error: unknown;
+}) {
+  const candidate = error && typeof error === "object"
+    ? error as { message?: unknown; code?: unknown; timedOut?: unknown; timeoutMs?: unknown }
+    : {};
+  const db = openDatabase(dbPath);
+  try {
+    insertPipelineEvent(db, {
+      runId: `publish-timeout-${Date.now()}`,
+      videoId: task.video.id,
+      bvid: task.video.bvid,
+      videoTitle: task.video.title,
+      scope: "publish",
+      action: "comment-thread",
+      status: "failed",
+      message: String(candidate.message ?? "Publish pipeline timed out"),
+      details: {
+        code: candidate.code ?? "ETIMEDOUT",
+        timedOut: true,
+        timeoutMs: Number(candidate.timeoutMs ?? 0) || null,
+        publishMode: task.publishMode,
+        queueRevision: task.queueRevision,
+      },
+    });
+  } finally {
+    db.close?.();
+  }
 }
 
 function isTerminalCommentPublishFailure(error: unknown) {

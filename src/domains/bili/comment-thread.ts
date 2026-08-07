@@ -43,6 +43,10 @@ const GUEST_COMMENT_WEB_LOCATION = 1315875;
 const GUEST_COMMENT_MODE = 3;
 const PASTE_RS_MIN_INTERVAL_MS = Math.max(0, Number(process.env.PASTE_RS_MIN_INTERVAL_MS) || 5_000);
 const PASTE_RS_RATE_LIMIT_WAIT_MS = 250;
+const BILIBILI_GUEST_REQUEST_TIMEOUT_MS = Math.max(
+  1_000,
+  Number(process.env.BILIBILI_GUEST_REQUEST_TIMEOUT_MS) || 30_000,
+);
 interface CommentUnit {
   id: string;
   page: number;
@@ -403,6 +407,7 @@ function hasMoreGuestChildReplyPages(
 async function fetchBilibiliGuestJson(url, fetchImpl = fetch) {
   const response = await fetchImpl(url, {
     method: "GET",
+    signal: AbortSignal.timeout(BILIBILI_GUEST_REQUEST_TIMEOUT_MS),
     headers: {
       accept: "application/json, text/plain, */*",
       referer: "https://www.bilibili.com/",
