@@ -12,6 +12,7 @@ import type {
   VideoRecord,
 } from "./types";
 import { getPreferredSummaryText, normalizeStoredSummaryText } from "./summary-text";
+import { isPublishableSummaryText } from "../../shared/summary-quality";
 
 function normalizeStoredPartText(value: string | null | undefined): string | null {
   const normalized = String(value ?? "").trim();
@@ -426,7 +427,9 @@ export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecor
     ORDER BY page_no ASC
   `);
 
-  return candidates.filter((part) => Boolean(getPreferredSummaryText(part)));
+  return candidates.filter((part) => (
+    isPublishableSummaryText(getPreferredSummaryText(part))
+  ));
 }
 
 export function savePartSummary(
