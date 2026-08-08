@@ -152,6 +152,55 @@ test("recent publish activity resets the stall window even without a successful 
   assert.equal(evaluation.stalledMinutes, 5);
 });
 
+test("runCommentPublishStallAlert ignores videos that only need summaries", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-summary-only-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVSTALLSUMMARY",
+      aid: 4003,
+      title: "Summary Only Candidate",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 40031,
+      partTitle: "P1",
+      durationSec: 60,
+      isDeleted: false,
+    });
+    db.prepare("UPDATE video_parts SET created_at = ? WHERE video_id = ?")
+      .run("2026-08-04T10:00:00.000Z", video.id);
+  } finally {
+    db.close?.();
+  }
+
+  let notificationCount = 0;
+  try {
+    const result = await runCommentPublishStallAlert({
+      dbPath,
+      workRoot: "work",
+      repoRoot: tempRoot,
+      thresholdMinutes: 60,
+      now: new Date("2026-08-04T12:00:00.000Z"),
+      sendNotificationImpl: async () => {
+        notificationCount += 1;
+        return { ok: true, skipped: false } as const;
+      },
+    });
+
+    assert.equal(result.notified, false);
+    assert.equal(result.reason, "no-pending-videos");
+    assert.deepEqual(result.candidates, []);
+    assert.equal(notificationCount, 0);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runCommentPublishStallAlert sends once and persists notification state", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-run-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
@@ -170,6 +219,9 @@ test("runCommentPublishStallAlert sends once and persists notification state", a
       cid: 40041,
       partTitle: "P1",
       durationSec: 60,
+      summaryText: "<1P>\n1#00:00 ready to publish",
+      summaryHash: "hash-40041",
+      published: false,
       isDeleted: false,
     });
     db.prepare("UPDATE video_parts SET created_at = ? WHERE video_id = ?")

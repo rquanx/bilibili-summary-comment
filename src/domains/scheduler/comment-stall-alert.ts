@@ -501,8 +501,11 @@ function filterActionableCommentCandidates({
   repoRoot: string;
   nowMs: number;
 }) {
+  const publishCandidates = candidates.filter(
+    (candidate) => candidate.pendingPublishParts > 0 || candidate.publishNeedsRebuild,
+  );
   const cooldowns = listTerminalPublishFailureCooldowns(db, nowMs);
-  const candidatesOutsideCooldown = candidates.filter((candidate) => {
+  const candidatesOutsideCooldown = publishCandidates.filter((candidate) => {
     const retryAfterMs = cooldowns.get(candidate.bvid);
     return !retryAfterMs || retryAfterMs <= nowMs;
   });
