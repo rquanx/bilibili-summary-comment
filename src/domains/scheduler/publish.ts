@@ -258,8 +258,10 @@ function buildPendingPublishTasks({
 export function listTerminalPublishFailureCooldowns(
   db: ReturnType<typeof openDatabase>,
   nowMs = Date.now(),
+  includeExpiredWithinMs = 0,
 ) {
-  const cutoffMs = nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS;
+  const expiredLookbackMs = Math.max(0, Number(includeExpiredWithinMs) || 0);
+  const cutoffMs = nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS - expiredLookbackMs;
   const events = listPipelineEvents(db, {
     sinceIso: new Date(cutoffMs).toISOString(),
     limit: 5_000,

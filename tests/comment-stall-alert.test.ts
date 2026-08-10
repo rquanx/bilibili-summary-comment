@@ -201,6 +201,91 @@ test("runCommentPublishStallAlert ignores videos that only need summaries", asyn
   }
 });
 
+test("runCommentPublishStallAlert restarts timing when a failure cooldown expires", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-cooldown-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVSTALLCOOLDOWN",
+      aid: 4005,
+      title: "Cooldown Candidate",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 40051,
+      partTitle: "P1",
+      durationSec: 60,
+      summaryText: "<1P>\n1#00:00 ready to retry",
+      summaryHash: "hash-40051",
+      published: false,
+      isDeleted: false,
+    });
+    db.prepare("UPDATE video_parts SET created_at = ? WHERE video_id = ?")
+      .run("2026-08-04T01:00:00.000Z", video.id);
+    insertPipelineEvent(db, {
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      scope: "publish",
+      action: "comment-thread",
+      status: "failed",
+      message: "已经被删除了",
+      details: {
+        code: 12022,
+        failedStep: "publish",
+        failedScope: "publish",
+        failedAction: "comment-thread",
+      },
+    });
+    db.prepare(`
+      UPDATE pipeline_events
+      SET created_at = ?
+      WHERE bvid = ? AND scope = 'publish' AND action = 'comment-thread'
+    `).run("2026-08-04T05:00:00.000Z", video.bvid);
+  } finally {
+    db.close?.();
+  }
+
+  let notificationCount = 0;
+  const sendNotificationImpl = async () => {
+    notificationCount += 1;
+    return { ok: true, skipped: false } as const;
+  };
+
+  try {
+    const justExpired = await runCommentPublishStallAlert({
+      dbPath,
+      workRoot: "work",
+      repoRoot: tempRoot,
+      thresholdMinutes: 120,
+      now: new Date("2026-08-04T11:01:00.000Z"),
+      sendNotificationImpl,
+    });
+    assert.equal(justExpired.notified, false);
+    assert.equal(justExpired.reason, "within-threshold");
+    assert.equal(justExpired.stalledMinutes, 1);
+    assert.equal(justExpired.state?.pendingSince, "2026-08-04T11:00:00.000Z");
+
+    const thresholdReached = await runCommentPublishStallAlert({
+      dbPath,
+      workRoot: "work",
+      repoRoot: tempRoot,
+      thresholdMinutes: 120,
+      now: new Date("2026-08-04T13:00:00.000Z"),
+      sendNotificationImpl,
+    });
+    assert.equal(thresholdReached.notified, true);
+    assert.equal(thresholdReached.stalledMinutes, 120);
+    assert.equal(notificationCount, 1);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runCommentPublishStallAlert sends once and persists notification state", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-run-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

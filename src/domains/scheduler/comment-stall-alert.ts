@@ -88,6 +88,7 @@ export async function runCommentPublishStallAlert({
       authFile,
       repoRoot,
       nowMs: now.getTime(),
+      cooldownRecoveryWindowMs: resolveThresholdMinutes(thresholdMinutes) * 60_000,
     });
     latestSuccessfulCommentAt = getLatestSuccessfulCommentAt(db);
     latestPublishActivityAt = getLatestCommentPublishActivityAt(db);
@@ -326,7 +327,7 @@ export function evaluateCommentPublishStallState({
     && previousNotifiedMs >= pendingSinceMs
       ? previousState?.notifiedAt ?? null
       : null;
-  const safeThresholdMinutes = Math.max(1, Math.floor(Number(thresholdMinutes) || DEFAULT_COMMENT_STALL_ALERT_MINUTES));
+  const safeThresholdMinutes = resolveThresholdMinutes(thresholdMinutes);
   const stalledMinutes = Math.max(0, Math.floor((nowMs - pendingSinceMs) / 60_000));
   const state: CommentStallAlertState = {
     pendingSince,
@@ -493,6 +494,7 @@ function filterActionableCommentCandidates({
   authFile,
   repoRoot,
   nowMs,
+  cooldownRecoveryWindowMs,
 }: {
   db: Db;
   candidates: PendingCommentCandidate[];
@@ -500,14 +502,28 @@ function filterActionableCommentCandidates({
   authFile: string | undefined;
   repoRoot: string;
   nowMs: number;
+  cooldownRecoveryWindowMs: number;
 }) {
   const publishCandidates = candidates.filter(
     (candidate) => candidate.pendingPublishParts > 0 || candidate.publishNeedsRebuild,
   );
-  const cooldowns = listTerminalPublishFailureCooldowns(db, nowMs);
-  const candidatesOutsideCooldown = publishCandidates.filter((candidate) => {
+  const cooldowns = listTerminalPublishFailureCooldowns(db, nowMs, cooldownRecoveryWindowMs);
+  const candidatesOutsideCooldown = publishCandidates.flatMap((candidate) => {
     const retryAfterMs = cooldowns.get(candidate.bvid);
-    return !retryAfterMs || retryAfterMs <= nowMs;
+    if (retryAfterMs && retryAfterMs > nowMs) {
+      return [];
+    }
+    if (!retryAfterMs) {
+      return [candidate];
+    }
+
+    return [{
+      ...candidate,
+      firstPendingAt: laterIsoTimestamp(
+        candidate.firstPendingAt,
+        new Date(retryAfterMs).toISOString(),
+      ),
+    }];
   });
 
   if (summaryUsers === undefined || !authFile) {
@@ -540,6 +556,25 @@ function earliestIsoTimestamp(left: unknown, right: unknown) {
     return leftIso;
   }
   return timestampMs(leftIso) <= timestampMs(rightIso) ? leftIso : rightIso;
+}
+
+function laterIsoTimestamp(left: unknown, right: unknown) {
+  const leftIso = normalizeIsoTimestamp(left);
+  const rightIso = normalizeIsoTimestamp(right);
+  if (!leftIso) {
+    return rightIso ?? new Date().toISOString();
+  }
+  if (!rightIso) {
+    return leftIso;
+  }
+  return timestampMs(leftIso) >= timestampMs(rightIso) ? leftIso : rightIso;
+}
+
+function resolveThresholdMinutes(value: unknown) {
+  return Math.max(
+    1,
+    Math.floor(Number(value) || DEFAULT_COMMENT_STALL_ALERT_MINUTES),
+  );
 }
 
 function normalizeIsoTimestamp(value: unknown): string | null {
