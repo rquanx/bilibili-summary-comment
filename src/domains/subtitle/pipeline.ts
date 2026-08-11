@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureVideoWorkDir } from "../../shared/work-paths";
 import { runVenvModule } from "../../shared/runtime-tools";
+import type { CommandError } from "../../shared/runtime-tools";
 import { getVideoById, getVideoPartByCid, savePartSubtitle } from "../../infra/db/index";
 import type { Db } from "../../infra/db/index";
 import { findReusableSubtitleSource } from "../summary/live-session-reuse";
@@ -46,6 +47,7 @@ export async function ensureSubtitleForPart({
   eventLogger = null,
   tryDownloadBiliSubtitleImpl = tryDownloadBiliSubtitle,
   transcribeWithRetriesImpl = transcribeWithRetries,
+  runVenvModuleImpl = runVenvModule,
 }) {
   const currentVideo = video ?? getVideoById(db, videoId) ?? {
     id: videoId,
@@ -326,7 +328,7 @@ export async function ensureSubtitleForPart({
     }
 
     args.push(targetUrl);
-    await runVenvModule("yt_dlp", args, {
+    const downloadOptions = {
       venvPath,
       streamOutput: true,
       outputStream: progress?.rawOutputStream ?? progress?.outputStream,
@@ -339,7 +341,36 @@ export async function ensureSubtitleForPart({
         cid,
         partTitle,
       },
-    });
+    };
+
+    try {
+      await runVenvModuleImpl("yt_dlp", args, downloadOptions);
+    } catch (error) {
+      if (!isCachedMediaCodecProbeFailure(error)) {
+        throw error;
+      }
+
+      const removedPaths = removeCachedAudioMediaFiles(workDir, stableBaseName);
+      if (removedPaths.length === 0) {
+        throw error;
+      }
+
+      progress?.logPartStage?.(
+        pageNo,
+        "Subtitle",
+        `Removed ${removedPaths.length} invalid cached media file(s); retrying audio download`,
+      );
+      eventLogger?.log?.({
+        scope: "subtitle",
+        action: "recover-audio-cache",
+        status: "succeeded",
+        message: "Removed cached media after ffprobe could not identify its audio codec",
+        details: {
+          removedPaths,
+        },
+      });
+      await runVenvModuleImpl("yt_dlp", args, downloadOptions);
+    }
   }
 
   await transcribeWithRetriesImpl({
@@ -370,6 +401,52 @@ export async function ensureSubtitleForPart({
     reused: false,
     durationSec,
   });
+}
+
+function isCachedMediaCodecProbeFailure(error: unknown) {
+  const candidate = error as CommandError | null;
+  const detail = [
+    candidate?.message,
+    candidate?.stdout,
+    candidate?.stderr,
+  ].map((value) => String(value ?? "")).join("\n").toLowerCase();
+  return detail.includes("unable to obtain file audio codec with ffprobe");
+}
+
+function removeCachedAudioMediaFiles(workDir: string, stableBaseName: string) {
+  const removableExtensions = new Set([
+    ".aac",
+    ".flv",
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".opus",
+    ".part",
+    ".ts",
+    ".wav",
+    ".webm",
+    ".ytdl",
+  ]);
+  const filePrefix = `${stableBaseName}.`;
+  const removedPaths: string[] = [];
+
+  for (const entry of fs.readdirSync(workDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(filePrefix)) {
+      continue;
+    }
+    if (!removableExtensions.has(path.extname(entry.name).toLowerCase())) {
+      continue;
+    }
+
+    const candidatePath = path.join(workDir, entry.name);
+    fs.rmSync(candidatePath, { force: true });
+    removedPaths.push(candidatePath);
+  }
+
+  return removedPaths;
 }
 
 function acceptSubtitleCandidate({

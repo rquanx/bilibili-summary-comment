@@ -376,3 +376,96 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
     fs.rmSync(repoWorkRoot, { recursive: true, force: true });
   }
 });
+
+test("ensureSubtitleForPart removes invalid cached media and retries yt-dlp once", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-audio-cache-recovery-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  const relativeWorkRoot = path.join(".tmp-tests", path.basename(tempRoot));
+  const repoWorkRoot = path.join(process.cwd(), relativeWorkRoot);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVAUDIOCACHE1",
+      aid: 511,
+      title: "Audio Cache Recovery",
+      ownerName: "Recovery Test",
+      ownerMid: 511,
+      ownerDirName: "Recovery Test",
+      workDirName: "audio-cache-recovery__BVAUDIOCACHE1",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 5110,
+      partTitle: "P1",
+      durationSec: 60,
+      isDeleted: false,
+    });
+
+    const workDir = resolveVideoWorkDir(video, relativeWorkRoot, process.cwd());
+    fs.mkdirSync(workDir, { recursive: true });
+    const invalidMediaPath = path.join(workDir, "cid-5110.mp4");
+    const audioPath = path.join(workDir, "cid-5110.m4a");
+    fs.writeFileSync(invalidMediaPath, "invalid cached media", "utf8");
+
+    let downloadCalls = 0;
+    const progressMessages: string[] = [];
+    const result = await ensureSubtitleForPart({
+      client: null,
+      db,
+      video,
+      videoId: video.id,
+      bvid: video.bvid,
+      videoTitle: video.title,
+      pageNo: 1,
+      cid: 5110,
+      partTitle: "P1",
+      existingSubtitlePath: null,
+      cookie: "",
+      workRoot: relativeWorkRoot,
+      progress: {
+        logPartStage: (_pageNo, _stage, message) => {
+          progressMessages.push(message);
+        },
+      },
+      eventLogger: null,
+      tryDownloadBiliSubtitleImpl: async () => null,
+      runVenvModuleImpl: async () => {
+        downloadCalls += 1;
+        if (downloadCalls === 1) {
+          const error = new Error("yt-dlp postprocessing failed") as Error & {
+            stderr?: string;
+          };
+          error.stderr = "ERROR: Postprocessing: WARNING: unable to obtain file audio codec with ffprobe";
+          throw error;
+        }
+        fs.writeFileSync(audioPath, "valid audio", "utf8");
+        return {
+          code: 0,
+          stdout: "",
+          stderr: "",
+        };
+      },
+      transcribeWithRetriesImpl: async ({ subtitlePath }) => {
+        fs.writeFileSync(subtitlePath, [
+          "1",
+          "00:00:00,000 --> 00:00:02,000",
+          "recovered transcription",
+          "",
+        ].join("\n"), "utf8");
+      },
+    });
+
+    assert.equal(downloadCalls, 2);
+    assert.equal(fs.existsSync(invalidMediaPath), false);
+    assert.equal(fs.existsSync(audioPath), true);
+    assert.equal(result.subtitleSource, "asr");
+    assert.ok(progressMessages.some((message) => message.includes("retrying audio download")));
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
