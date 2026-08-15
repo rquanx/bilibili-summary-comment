@@ -227,6 +227,8 @@ test("historical backfill does not process when the live pinned-summary check fa
     assert.equal(result.quotaUsed, 0);
     assert.equal(result.advanced, false);
     assert.equal(result.targetDate, "2026-07-29");
+    const cursor = readHistoricalSummaryCursor(cursorPath, "2099-01-01");
+    assert.deepEqual(cursor.pipelineFailures, {});
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -292,6 +294,97 @@ test("historical backfill does not consume quota when the pipeline fails", async
     assert.equal(cursor.quotaUsed, 0);
     assert.equal(cursor.nextProcessAt, "2026-07-29T04:07:12.000Z");
     assert.deepEqual(cursor.completedBvids, []);
+    assert.equal(cursor.pipelineFailures.BVFAILS?.attempts, 1);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("historical backfill abandons a video after three pipeline failures", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-abandon-"));
+  const cursorPath = path.join(tempRoot, "cursor.json");
+  let pipelineRuns = 0;
+  let uploadFetches = 0;
+
+  const buildOptions = (now: Date) => ({
+    summaryUsers: "123",
+    cursorPath,
+    repoRoot: tempRoot,
+    now,
+    dailyLimit: 86_400,
+    requestDelayMs: 0,
+    findAuthFileForUserImpl() {
+      return path.join(tempRoot, ".auth", "bili-auth.json");
+    },
+    readCookieStringFromAuthFileImpl() {
+      return "SESSDATA=fake";
+    },
+    createClientImpl: (() => ({
+      user: {
+        async getVideos() {
+          uploadFetches += 1;
+          return {
+            list: {
+              vlist: [
+                {
+                  aid: 205,
+                  bvid: "BVALWAYSFAILS",
+                  title: "Always fails",
+                  created: Date.parse("2026-07-29T01:00:00+08:00") / 1000,
+                },
+                {
+                  aid: 206,
+                  bvid: "BVOLDER",
+                  title: "Older",
+                  created: Date.parse("2026-07-28T23:00:00+08:00") / 1000,
+                },
+              ],
+            },
+          };
+        },
+      },
+    })) as any,
+    async getGuestTopCommentImpl() {
+      return {
+        hasTopComment: false,
+        topComment: null,
+        raw: {},
+      } as any;
+    },
+    async runPipelineForBvidImpl() {
+      pipelineRuns += 1;
+      throw new Error("permanent media failure");
+    },
+  });
+
+  try {
+    const first = await runHistoricalSummaryBackfill(
+      buildOptions(new Date("2026-07-29T04:00:00.000Z")),
+    );
+    assert.equal(first.failures.length, 1);
+    assert.equal(first.abandonedFailures.length, 0);
+
+    const second = await runHistoricalSummaryBackfill(
+      buildOptions(new Date("2026-07-29T04:00:02.000Z")),
+    );
+    assert.equal(second.failures.length, 1);
+    assert.equal(second.abandonedFailures.length, 0);
+
+    const third = await runHistoricalSummaryBackfill(
+      buildOptions(new Date("2026-07-29T04:00:04.000Z")),
+    );
+    assert.equal(third.failures.length, 0);
+    assert.equal(third.abandonedFailures.length, 1);
+    assert.equal(third.abandonedFailures[0].bvid, "BVALWAYSFAILS");
+    assert.equal(third.abandonedFailures[0].attempts, 3);
+    assert.equal(third.advanced, true);
+    assert.equal(third.targetDate, "2026-07-28");
+    assert.equal(pipelineRuns, 3);
+    assert.equal(uploadFetches, 1);
+
+    const cursor = readHistoricalSummaryCursor(cursorPath, "2099-01-01");
+    assert.equal(cursor.targetDate, "2026-07-28");
+    assert.deepEqual(cursor.pipelineFailures, {});
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

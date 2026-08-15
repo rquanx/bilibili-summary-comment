@@ -131,6 +131,7 @@ function extractFailureDetails(error: unknown): Record<string, unknown> | undefi
       cid: candidate.cid,
       videoUrl: candidate.videoUrl,
       partTitle: candidate.partTitle,
+      failureKind: candidate.failureKind,
     }).filter(([, value]) => value !== undefined && value !== null && value !== ""),
   );
 

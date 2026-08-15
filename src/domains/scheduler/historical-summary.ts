@@ -15,7 +15,7 @@ import {
 } from "../../shared/runtime-locks";
 import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
 import { runPipelinesWithConcurrency } from "./concurrency";
-import type { PipelineTaskRunner } from "./concurrency";
+import type { PipelineFailureResult, PipelineTaskRunner } from "./concurrency";
 import { runPipelineForBvid } from "./pipeline-runner";
 import { parseSummaryUsers } from "./user-targets";
 import type { FileLogger } from "../../shared/logger";
@@ -26,9 +26,10 @@ import type { SummaryUserTarget } from "./user-targets";
 export const DEFAULT_HISTORICAL_SUMMARY_DAILY_LIMIT = 200;
 export const DEFAULT_HISTORICAL_SUMMARY_CONCURRENCY = 2;
 export const DEFAULT_HISTORICAL_REQUEST_DELAY_MS = 2_000;
+export const HISTORICAL_PIPELINE_FAILURE_SKIP_THRESHOLD = 3;
 const HISTORICAL_UPLOAD_PAGE_SIZE = 30;
 const HISTORICAL_MAX_PAGES_PER_USER = 200;
-const HISTORICAL_CURSOR_VERSION = 2;
+const HISTORICAL_CURSOR_VERSION = 3;
 const HISTORICAL_LOCK_STALE_MS = 10 * 60_000;
 const BILI_RISK_CONTROL_CODE = -352;
 
@@ -39,10 +40,18 @@ interface HistoricalSummaryCursor {
   nextPageHints: Record<string, number>;
   pendingUploads: HistoricalCursorUpload[] | null;
   completedBvids: string[];
+  pipelineFailures: Record<string, HistoricalPipelineFailure>;
   quotaDate: string;
   quotaUsed: number;
   nextProcessAt: string | null;
   updatedAt: string;
+}
+
+interface HistoricalPipelineFailure {
+  attempts: number;
+  lastMessage: string;
+  lastFailedAt: string;
+  abandonedAt: string | null;
 }
 
 interface HistoricalCursorUpload {
@@ -81,6 +90,11 @@ interface HistoricalPipelineResult {
   result?: PipelineProcessResult;
   topCommentRpid?: number | null;
 }
+
+type HistoricalAbandonedFailure = PipelineFailureResult<RecentUpload> & {
+  attempts: number;
+  abandonedAt: string;
+};
 
 interface RunHistoricalSummaryBackfillOptions {
   summaryUsers?: unknown;
@@ -192,6 +206,7 @@ async function runHistoricalSummaryBackfillUnlocked({
       uploads: [],
       runs: [],
       failures: [],
+      abandonedFailures: [],
       skippedPinnedSummary: [],
       blockedMids: [],
       advanced: false,
@@ -208,6 +223,7 @@ async function runHistoricalSummaryBackfillUnlocked({
       uploads: [],
       runs: [],
       failures: [],
+      abandonedFailures: [],
       skippedPinnedSummary: [],
       blockedMids: [],
       advanced: false,
@@ -225,6 +241,7 @@ async function runHistoricalSummaryBackfillUnlocked({
       uploads: [],
       runs: [],
       failures: [],
+      abandonedFailures: [],
       skippedPinnedSummary: [],
       blockedMids: [],
       advanced: false,
@@ -268,6 +285,7 @@ async function runHistoricalSummaryBackfillUnlocked({
       uploads,
       runs: [],
       failures: [],
+      abandonedFailures: [],
       skippedPinnedSummary: [],
       blockedMids,
       advanced: false,
@@ -308,6 +326,7 @@ async function runHistoricalSummaryBackfillUnlocked({
 
       if (isPinnedSummaryComment(topCommentState.topComment?.message)) {
         completedBvids.add(upload.bvid);
+        delete cursor.pipelineFailures[upload.bvid];
         cursor.completedBvids = [...completedBvids];
         persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
         onLog(
@@ -342,26 +361,32 @@ async function runHistoricalSummaryBackfillUnlocked({
       const preservedTopCommentRpid = topCommentState.hasTopComment
         ? normalizeOptionalPositiveInteger(topCommentState.topComment?.rpid)
         : null;
-      const result = await runPipelineTask(() =>
-        runPipelineForBvidImpl({
-          authFile: uploadAuthFile,
-          cookieFile: null,
-          dbPath,
-          workRoot,
-          bvid: upload.bvid,
-          logDay,
-          logGroup,
-          publish: false,
-          preservedTopCommentRpid,
-          logger: logger?.child({
-            task: "historical-summary",
+      let result: PipelineProcessResult;
+      try {
+        result = await runPipelineTask(() =>
+          runPipelineForBvidImpl({
+            authFile: uploadAuthFile,
+            cookieFile: null,
+            dbPath,
+            workRoot,
             bvid: upload.bvid,
-            mid: upload.mid,
-          }) ?? null,
-        }));
+            logDay,
+            logGroup,
+            publish: false,
+            preservedTopCommentRpid,
+            logger: logger?.child({
+              task: "historical-summary",
+              bvid: upload.bvid,
+              mid: upload.mid,
+            }) ?? null,
+          }));
+      } catch (error) {
+        throw markHistoricalPipelineFailure(error);
+      }
 
       cursor.quotaUsed += 1;
       completedBvids.add(upload.bvid);
+      delete cursor.pipelineFailures[upload.bvid];
       cursor.completedBvids = [...completedBvids];
       persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
       return {
@@ -386,9 +411,49 @@ async function runHistoricalSummaryBackfillUnlocked({
       mid: item.mid,
       topCommentRpid: item.result.topCommentRpid ?? null,
     }));
+  const abandonedFailures: HistoricalAbandonedFailure[] = [];
+  const retryableFailures: Array<PipelineFailureResult<RecentUpload>> = [];
+  for (const failure of execution.failures) {
+    if (failure.details?.failureKind !== "historical-pipeline") {
+      retryableFailures.push(failure);
+      continue;
+    }
+
+    const previousFailure = cursor.pipelineFailures[failure.bvid];
+    const attempts = (previousFailure?.attempts ?? 0) + 1;
+    const lastFailedAt = now.toISOString();
+    const abandonedAt = attempts >= HISTORICAL_PIPELINE_FAILURE_SKIP_THRESHOLD
+      ? lastFailedAt
+      : null;
+    const failureState = {
+      attempts,
+      lastMessage: failure.message,
+      lastFailedAt,
+      abandonedAt,
+    };
+    cursor.pipelineFailures[failure.bvid] = failureState;
+
+    if (!abandonedAt) {
+      retryableFailures.push(failure);
+      onLog(
+        `Historical pipeline failed for ${failure.bvid}; retry ${attempts}/${HISTORICAL_PIPELINE_FAILURE_SKIP_THRESHOLD}`,
+      );
+      continue;
+    }
+
+    completedBvids.add(failure.bvid);
+    abandonedFailures.push({
+      ...failure,
+      attempts,
+      abandonedAt,
+    });
+    onLog(
+      `Skip ${failure.bvid} after ${attempts} historical pipeline failures: ${failure.message}`,
+    );
+  }
   const quotaExhausted = execution.runs.some((item) => item.result.status === "quota-exhausted");
   const allUploadsCompleted = uploads.every((upload) => completedBvids.has(upload.bvid));
-  const advanced = execution.failures.length === 0
+  const advanced = retryableFailures.length === 0
     && !quotaExhausted
     && !hasDeferredUploads
     && allUploadsCompleted;
@@ -400,6 +465,7 @@ async function runHistoricalSummaryBackfillUnlocked({
     cursor.nextPageHints = {};
     cursor.pendingUploads = null;
     cursor.completedBvids = [];
+    cursor.pipelineFailures = {};
     persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
     onLog(`Historical date ${completedDate} completed; cursor advanced to ${cursor.targetDate}`);
   } else {
@@ -414,7 +480,8 @@ async function runHistoricalSummaryBackfillUnlocked({
     quotaUsed: cursor.quotaUsed,
     uploads,
     runs: processedRuns,
-    failures: execution.failures,
+    failures: retryableFailures,
+    abandonedFailures,
     skippedPinnedSummary,
     blockedMids,
     advanced,
@@ -611,6 +678,7 @@ export function readHistoricalSummaryCursor(
       nextPageHints: normalizePageHints(parsed.nextPageHints),
       pendingUploads: normalizeHistoricalCursorUploads(parsed.pendingUploads),
       completedBvids: normalizeStringList(parsed.completedBvids),
+      pipelineFailures: normalizeHistoricalPipelineFailures(parsed.pipelineFailures),
       quotaDate: normalizeDateKey(parsed.quotaDate) ?? initialTargetDate,
       quotaUsed: Math.max(0, Math.floor(Number(parsed.quotaUsed) || 0)),
       nextProcessAt: normalizeIsoTimestamp(parsed.nextProcessAt),
@@ -624,6 +692,7 @@ export function readHistoricalSummaryCursor(
       nextPageHints: {},
       pendingUploads: null,
       completedBvids: [],
+      pipelineFailures: {},
       quotaDate: initialTargetDate,
       quotaUsed: 0,
       nextProcessAt: null,
@@ -643,6 +712,7 @@ export function persistHistoricalSummaryCursor(
     nextPageHints: normalizePageHints(cursor.nextPageHints),
     pendingUploads: normalizeHistoricalCursorUploads(cursor.pendingUploads),
     completedBvids: [...new Set(cursor.completedBvids)].sort(),
+    pipelineFailures: normalizeHistoricalPipelineFailures(cursor.pipelineFailures),
     quotaUsed: Math.max(0, Math.floor(Number(cursor.quotaUsed) || 0)),
     updatedAt: new Date().toISOString(),
   };
@@ -848,6 +918,57 @@ function normalizeHistoricalCursorUploads(value: unknown): HistoricalCursorUploa
   });
 
   return uploads;
+}
+
+function normalizeHistoricalPipelineFailures(
+  value: unknown,
+): Record<string, HistoricalPipelineFailure> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([bvid, item]) => {
+      if (!bvid.trim() || !item || typeof item !== "object" || Array.isArray(item)) {
+        return [];
+      }
+
+      const candidate = item as Record<string, unknown>;
+      const attempts = Math.max(0, Math.floor(Number(candidate.attempts) || 0));
+      if (attempts === 0) {
+        return [];
+      }
+
+      return [[bvid, {
+        attempts,
+        lastMessage: String(candidate.lastMessage ?? "").trim(),
+        lastFailedAt: normalizeIsoTimestamp(candidate.lastFailedAt) ?? "",
+        abandonedAt: normalizeIsoTimestamp(candidate.abandonedAt),
+      }]];
+    }),
+  );
+}
+
+function markHistoricalPipelineFailure(error: unknown) {
+  const marked = new Error(formatErrorMessage(error), { cause: error });
+  Object.assign(marked, {
+    failureKind: "historical-pipeline",
+    ...copyPipelineFailureDetails(error),
+  });
+  return marked;
+}
+
+function copyPipelineFailureDetails(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return {};
+  }
+
+  const candidate = error as Record<string, unknown>;
+  return Object.fromEntries(
+    ["failedStep", "failedScope", "failedAction", "pageNo", "cid", "videoUrl", "partTitle"]
+      .map((key) => [key, candidate[key]] as const)
+      .filter(([, value]) => value !== undefined && value !== null && value !== ""),
+  );
 }
 
 function toHistoricalCursorUpload(upload: RecentUpload): HistoricalCursorUpload {

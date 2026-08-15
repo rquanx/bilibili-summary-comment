@@ -402,6 +402,7 @@ tsx src/commands/run-scheduler.ts --once all
 - 调度器里的 summary 任务只负责生成 / 更新摘要，不在单条视频流水线里直接发布；如果这一轮扫到了 recent uploads，结束后会立即请求一次 publish sweep，`05` 分的 publish sweep 继续作为兜底与线程健康检查入口
 - 历史回补游标保存在 `work/state/historical-summary-cursor.json`。每条候选视频都先通过游客网页评论接口读取当前置顶评论；只有明确确认没有置顶总结时才进入流水线，接口失败或结果不明确时不会处理
 - 历史扫描按用户轮转请求，并通过 `HISTORICAL_SUMMARY_REQUEST_DELAY_MS` 控制全局最小间隔；每天最多启动 `HISTORICAL_SUMMARY_DAILY_LIMIT` 条历史视频流水线，默认总量为 `200`。默认按约 `7 分 12 秒/条` 均匀分布到 24 小时，不会在启动或整点集中跑满额度
+- 单个历史视频的流水线连续失败 3 次后会记录为已放弃并跳过，避免永久阻塞日期游标；游客评论接口失败不计入该次数
 - Docker 使用的 `npm run start` 不会在容器启动流程中直接跑一整批历史回补；后台调度器启动后会按上述持久化时间间隔持续补全。`--once historical-summary` / `--once all` 也会遵守同一额度和下一次执行时间
 - 缺段巡检会把当天快照写到 `work/logs/gap-check/YYYY-MM-DD.json`
 - 评论停滞告警每 5 分钟检查一次；有待总结、待发布或需要重建评论串的视频时，如果连续 `COMMENT_STALL_ALERT_MINUTES` 分钟没有成功创建新评论，会发送一次 ServerChan 通知。同一轮停滞只通知一次，成功发出评论或待处理队列清空后自动重置。状态保存在 `work/state/comment-publish-stall-alert.json`

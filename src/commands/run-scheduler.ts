@@ -341,6 +341,7 @@ await runCli({
         processed: result.runs.length,
         skippedPinnedSummary: result.skippedPinnedSummary.length,
         failures: result.failures.length,
+        abandonedFailures: result.abandonedFailures.length,
         blockedMids: result.blockedMids,
         advanced: result.advanced,
         quotaUsed: result.quotaUsed,
@@ -348,7 +349,7 @@ await runCli({
         cursorPath: result.cursorPath,
       });
       log(
-        `Historical summary sweep finished: processed=${result.runs.length}, pinned=${result.skippedPinnedSummary.length}, failures=${result.failures.length}, quota=${result.quotaUsed}/${result.dailyLimit}`,
+        `Historical summary sweep finished: processed=${result.runs.length}, pinned=${result.skippedPinnedSummary.length}, failures=${result.failures.length}, abandoned=${result.abandonedFailures.length}, quota=${result.quotaUsed}/${result.dailyLimit}`,
       );
       if (result.runs.length > 0) {
         log("Historical summaries generated; requesting one publish sweep");
@@ -368,6 +369,7 @@ await runCli({
         runs: result.runs.length,
         skippedPinnedSummary: result.skippedPinnedSummary.length,
         failures: result.failures.length,
+        abandonedFailures: result.abandonedFailures.length,
         blockedMids: result.blockedMids,
         advanced: result.advanced,
         quotaUsed: result.quotaUsed,

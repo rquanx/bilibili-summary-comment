@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=video-pipeline:gpu
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+# Use only when dependencies, base image, and system components are unchanged.
+COPY src ./src
