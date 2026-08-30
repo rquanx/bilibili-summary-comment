@@ -64,9 +64,21 @@ export async function runVideoPipeline(
     );
   }
   const db = openDatabase(dbPath);
+  const requestedBvid = String(args.bvid ?? "").trim();
+  const identitySnapshot = requestedBvid ? null : await fetchVideoSnapshot(client, args);
+  const lockBvid = requestedBvid || String(identitySnapshot?.bvid ?? "").trim();
+  if (!lockBvid) {
+    throw new Error("Unable to resolve BVID before acquiring the video pipeline lock.");
+  }
 
-  const snapshot = await fetchVideoSnapshot(client, args);
-  const state = syncVideoSnapshotToDb(db, snapshot);
+  return withSynchronizedVideoPipelineState({
+    db,
+    workRoot,
+    bvid: lockBvid,
+    videoTitle: identitySnapshot?.title ?? null,
+    publishRequested: Boolean(args.publish),
+    fetchSnapshot: () => fetchVideoSnapshot(client, args),
+  }, async ({ snapshot, state }) => {
   const preservedTopCommentRpid = normalizeOptionalPositiveInteger(args["preserve-top-rpid"]);
   if (preservedTopCommentRpid) {
     const updatedVideo = updateVideoPreservedTopComment(
@@ -156,14 +168,6 @@ export async function runVideoPipeline(
   }
 
   try {
-    return await withVideoPipelineLock({
-      workRoot,
-      bvid: state.video.bvid,
-      videoTitle: state.video.title ?? null,
-      publishRequested: Boolean(args.publish),
-      progress,
-      eventLogger,
-    }, async () => {
       let generation;
       try {
         generation = await runGenerationStage({
@@ -305,7 +309,6 @@ export async function runVideoPipeline(
         artifacts: generation.artifacts,
         publishResult,
       };
-    });
   } catch (error) {
     attachVideoContextToError(error, {
       bvid: state.video.bvid,
@@ -322,6 +325,43 @@ export async function runVideoPipeline(
     });
     throw error;
   }
+  });
+}
+
+export async function withSynchronizedVideoPipelineState<T>({
+  db,
+  workRoot,
+  bvid,
+  videoTitle = null,
+  publishRequested = false,
+  fetchSnapshot,
+  lockOptions = {},
+}: {
+  db: ReturnType<typeof openDatabase>;
+  workRoot: string;
+  bvid: string;
+  videoTitle?: string | null;
+  publishRequested?: boolean;
+  fetchSnapshot: () => Promise<Awaited<ReturnType<typeof fetchVideoSnapshot>>>;
+  lockOptions?: Partial<Pick<
+    Parameters<typeof withVideoPipelineLock>[0],
+    "repoRoot" | "waitMs" | "heartbeatMs" | "staleMs"
+  >>;
+}, task: (context: {
+  snapshot: Awaited<ReturnType<typeof fetchVideoSnapshot>>;
+  state: ReturnType<typeof syncVideoSnapshotToDb>;
+}) => Promise<T>): Promise<T> {
+  return withVideoPipelineLock({
+    workRoot,
+    bvid,
+    videoTitle,
+    publishRequested,
+    ...lockOptions,
+  }, async () => {
+    const snapshot = await fetchSnapshot();
+    const state = syncVideoSnapshotToDb(db, snapshot);
+    return task({ snapshot, state });
+  });
 }
 
 export async function probePublishedCommentThreadHealth({

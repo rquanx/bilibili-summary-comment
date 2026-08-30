@@ -4,7 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
-import { listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
+import {
+  listVideoParts,
+  markVideoPublishRebuildNeeded,
+  upsertVideo,
+  upsertVideoPart,
+} from "../src/infra/db/video-storage";
 import { createSummaryHash, detectSnapshotChanges, reindexSummaryText } from "../src/domains/video/change-detection";
 import { syncVideoSnapshotToDb } from "../src/domains/video/state-sync";
 import * as videoState from "../src/domains/video/index";
@@ -176,6 +181,53 @@ test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after delet
     assert.equal(parts[0].summary_text, "<1P> 1#00:00 second");
     assert.equal(parts[1].cid, 333);
     assert.equal(parts[1].summary_text, "<2P>\n2#00:00 third");
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("syncVideoSnapshotToDb preserves an explicit rebuild flag after local thread state was reset", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-rebuild-retry-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVstateRebuildRetry",
+      aid: 334455,
+      title: "Rebuild Retry Test",
+      pageCount: 1,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 444,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nsummary",
+      published: false,
+      isDeleted: false,
+    });
+    markVideoPublishRebuildNeeded(db, video.id, "retry-after-publish-failure");
+
+    const state = syncVideoSnapshotToDb(db, {
+      bvid: video.bvid,
+      aid: video.aid,
+      title: video.title,
+      pageCount: 1,
+      pages: [
+        {
+          pageNo: 1,
+          cid: 444,
+          partTitle: "P1",
+          durationSec: 10,
+        },
+      ],
+    });
+
+    assert.equal(Number(state.video.publish_needs_rebuild), 1);
+    assert.equal(state.video.publish_rebuild_reason, "retry-after-publish-failure");
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

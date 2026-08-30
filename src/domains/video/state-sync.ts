@@ -1,5 +1,4 @@
 import {
-  clearVideoPublishRebuildNeeded,
   getVideoByIdentity,
   listAllVideoParts,
   listPendingPublishParts,
@@ -125,9 +124,6 @@ export function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): VideoSta
       markVideoPublishRebuildNeeded(db, video.id, changeSet.rebuildReason);
     }
 
-    if (!hadPublishedThread && Number(video.publish_needs_rebuild)) {
-      clearVideoPublishRebuildNeeded(db, video.id);
-    }
   });
 
   if (!videoId) {

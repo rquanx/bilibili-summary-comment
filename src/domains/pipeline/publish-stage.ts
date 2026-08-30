@@ -230,12 +230,6 @@ export async function runPublishStage({
     );
     const deletedThreads: Array<{ rootRpid?: number; deleted?: boolean; reason?: string; alreadyMissing?: boolean; ok?: boolean }> = [];
 
-    resetPublishedStateForVideo(db, video.id);
-    updateVideoCommentThread(db, video.id, {
-      rootCommentRpid: null,
-      topCommentRpid: preservedTopCommentRpid,
-    });
-
     if (forceFreshThread) {
       for (const rootRpid of deleteCandidates) {
         deletedThreads.push(await deleteSummaryThread({
@@ -246,6 +240,12 @@ export async function runPublishStage({
         }));
       }
     }
+
+    resetPublishedStateForVideo(db, video.id);
+    updateVideoCommentThread(db, video.id, {
+      rootCommentRpid: null,
+      topCommentRpid: preservedTopCommentRpid,
+    });
 
     const rebuilt = await postSummaryThread({
       client,

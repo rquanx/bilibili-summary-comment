@@ -733,6 +733,88 @@ test("runPublishStage forceFreshThread deletes the old pinned thread before rebu
   }
 });
 
+test("runPublishStage keeps persisted thread state when forceFreshThread deletion fails", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-delete-failure-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const summaryPath = path.join(tempRoot, "summary.md");
+  const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
+  const db = openDatabase(dbPath);
+
+  try {
+    fs.writeFileSync(summaryPath, "<1P>\nsummary\n", "utf8");
+    fs.writeFileSync(pendingSummaryPath, "", "utf8");
+
+    const video = upsertVideo(db, {
+      bvid: "BVpublishDeleteFail",
+      aid: 987012,
+      title: "Publish Delete Failure Test",
+      pageCount: 1,
+      rootCommentRpid: 555001,
+      topCommentRpid: 555001,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "P1",
+      durationSec: 10,
+      summaryText: "<1P>\nsummary",
+      summaryHash: createSummaryHash("<1P>\nsummary"),
+      published: true,
+      publishedCommentRpid: 555001,
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      isDeleted: false,
+    });
+
+    const harness = createGuestFetchHarness(930001);
+    harness.comments.set(555001, {
+      rpid: 555001,
+      root: 555001,
+      parent: 555001,
+      message: "<1P>\nsummary",
+    });
+    const client = {
+      reply: {
+        ...harness.client.reply,
+        async delete() {
+          throw new Error("delete denied");
+        },
+      },
+    };
+
+    await assert.rejects(
+      runPublishStage({
+        client,
+        db,
+        video: {
+          ...video,
+          publish_needs_rebuild: 1,
+        },
+        artifacts: {
+          summaryPath,
+          pendingSummaryPath,
+        },
+        oid: video.aid,
+        type: 1,
+        forceFreshThread: true,
+        sleepImpl: async () => {},
+        fetchImpl: harness.fetchImpl as typeof fetch,
+      }),
+      /delete denied/u,
+    );
+
+    const persistedVideo = getVideoByIdentity(db, { bvid: video.bvid });
+    const persistedParts = listVideoParts(db, video.id);
+    assert.equal(persistedVideo?.root_comment_rpid, 555001);
+    assert.equal(persistedVideo?.top_comment_rpid, 555001);
+    assert.equal(persistedParts[0].published, 1);
+    assert.equal(persistedParts[0].published_comment_rpid, 555001);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runPublishStage rebuilds when stored root comment is missing even without pending summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "publish-stage-missing-root-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");

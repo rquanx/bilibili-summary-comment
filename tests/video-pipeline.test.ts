@@ -4,8 +4,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/infra/db/database";
-import { getVideoByIdentity, upsertVideo } from "../src/infra/db/video-storage";
-import { probePublishedCommentThreadHealth } from "../src/domains/video/pipeline-runner";
+import {
+  getVideoByIdentity,
+  updateVideoCommentThread,
+  upsertVideo,
+  upsertVideoPart,
+} from "../src/infra/db/video-storage";
+import {
+  probePublishedCommentThreadHealth,
+  withSynchronizedVideoPipelineState,
+} from "../src/domains/video/pipeline-runner";
 import { withVideoPipelineLock } from "../src/domains/video/pipeline-lock";
 
 test("probePublishedCommentThreadHealth marks a missing stored root thread for rebuild", async () => {
@@ -177,6 +185,124 @@ test("withVideoPipelineLock serializes concurrent runs for the same bvid", async
     assert.equal(await secondRun, "done");
     assert.equal(secondEntered, true);
   } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("withSynchronizedVideoPipelineState detects replacement after an in-flight publish completes", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-sync-lock-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+  let finishPublish: (() => void) | null = null;
+  let replacementSnapshotFetched = false;
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "BVREPLACELOCKED",
+      aid: 998877,
+      title: "Replacement Race",
+      pageCount: 2,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: 101,
+      partTitle: "Old P1",
+      durationSec: 10,
+      summaryText: "<1P>\nold one",
+      published: false,
+      isDeleted: false,
+    });
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 2,
+      cid: 202,
+      partTitle: "Old P2",
+      durationSec: 10,
+      summaryText: "<2P>\nold two",
+      published: false,
+      isDeleted: false,
+    });
+
+    const activePublish = withVideoPipelineLock({
+      repoRoot: tempRoot,
+      workRoot: "work",
+      bvid: video.bvid,
+      videoTitle: video.title,
+      publishRequested: true,
+      waitMs: 10,
+      heartbeatMs: 10,
+      staleMs: 5_000,
+    }, async () => {
+      await new Promise<void>((resolve) => {
+        finishPublish = resolve;
+      });
+      updateVideoCommentThread(db, video.id, {
+        rootCommentRpid: 700001,
+        topCommentRpid: 700001,
+      });
+      db.prepare(`
+        UPDATE video_parts
+        SET published = 1,
+            published_comment_rpid = 700001,
+            published_at = ?
+        WHERE video_id = ?
+      `).run("2026-08-28T13:32:00.000Z", video.id);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const replacementRun = withSynchronizedVideoPipelineState({
+      db,
+      workRoot: "work",
+      bvid: video.bvid,
+      videoTitle: video.title,
+      publishRequested: false,
+      fetchSnapshot: async () => {
+        replacementSnapshotFetched = true;
+        return {
+          bvid: video.bvid,
+          aid: video.aid,
+          title: video.title,
+          pageCount: 1,
+          pages: [
+            {
+              pageNo: 1,
+              cid: 303,
+              partTitle: "Replacement",
+              durationSec: 20,
+            },
+          ],
+        };
+      },
+      lockOptions: {
+        repoRoot: tempRoot,
+        waitMs: 10,
+        heartbeatMs: 10,
+        staleMs: 5_000,
+      },
+    }, async ({ state }) => state);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(replacementSnapshotFetched, false);
+
+    finishPublish?.();
+    await activePublish;
+    const state = await replacementRun;
+
+    assert.equal(replacementSnapshotFetched, true);
+    assert.equal(state.changeSet.requiresRebuild, true);
+    assert.deepEqual(state.changeSet.deleted, [
+      { cid: 101, pageNo: 1 },
+      { cid: 202, pageNo: 2 },
+    ]);
+    assert.deepEqual(state.changeSet.inserted, [
+      { cid: 303, pageNo: 1 },
+    ]);
+    assert.equal(Number(state.video.publish_needs_rebuild), 1);
+    assert.equal(state.video.publish_rebuild_reason, "part-sequence-changed");
+  } finally {
+    db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
