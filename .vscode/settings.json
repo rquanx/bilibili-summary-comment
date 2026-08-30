@@ -1,0 +1,60 @@
+{
+  "files.exclude": {
+    "**/.3.11": true,
+    "**/.auth": true,
+    "**/.tmp": true,
+    "**/.tmp-tests": true,
+    "**/.trending": true,
+    "**/__pycache__": true,
+    "**/dist": true,
+    "**/node_modules": true,
+    "**/temp": true,
+    "**/work": true
+  },
+  "files.watcherExclude": {
+    "**/.3.11/**": true,
+    "**/.auth/**": true,
+    "**/.git/objects/**": true,
+    "**/.tmp/**": true,
+    "**/.tmp-tests/**": true,
+    "**/.trending/**": true,
+    "**/__pycache__/**": true,
+    "**/dist/**": true,
+    "**/node_modules/**": true,
+    "**/temp/**": true,
+    "**/work/**": true
+  },
+  "search.exclude": {
+    "**/.3.11/**": true,
+    "**/.auth/**": true,
+    "**/.tmp/**": true,
+    "**/.tmp-tests/**": true,
+    "**/.trending/**": true,
+    "**/__pycache__/**": true,
+    "**/dist/**": true,
+    "**/node_modules/**": true,
+    "**/temp/**": true,
+    "**/work/**": true
+  },
+  "python.analysis.exclude": [
+    "**/.3.11/**",
+    "**/.tmp/**",
+    "**/.tmp-tests/**",
+    "**/.trending/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/temp/**",
+    "**/work/**"
+  ],
+  "cSpell.ignorePaths": [
+    ".3.11/**",
+    ".auth/**",
+    ".tmp/**",
+    ".tmp-tests/**",
+    ".trending/**",
+    "dist/**",
+    "node_modules/**",
+    "temp/**",
+    "work/**"
+  ]
+}
