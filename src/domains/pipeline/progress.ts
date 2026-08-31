@@ -240,10 +240,12 @@ function formatPartLabel(pageNo, partTitle) {
 
 function formatVideoPrefix(video) {
   const title = String(video?.title ?? "").trim();
-  const videoUrl = formatBiliVideoUrlSuffix({
-    bvid: video?.bvid,
-    aid: video?.aid,
-  }).replace(/^ \| /u, "");
+  const videoUrl = video?.source_type === "local"
+    ? ""
+    : formatBiliVideoUrlSuffix({
+        bvid: video?.bvid,
+        aid: video?.aid,
+      }).replace(/^ \| /u, "");
   const labelWithUrl = [title, videoUrl].filter(Boolean).join(" | ");
   return labelWithUrl ? `[${labelWithUrl}]` : "[video]";
 }

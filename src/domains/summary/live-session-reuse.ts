@@ -46,6 +46,10 @@ export function findReusableSummarySource(db, currentVideo, currentParts) {
       continue;
     }
 
+    if ((candidateVideo.source_type || "bili") !== (currentVideo.source_type || "bili")) {
+      continue;
+    }
+
     if (normalizeLiveSessionTitle(candidateVideo.title) !== liveSessionTitle) {
       continue;
     }
@@ -122,6 +126,10 @@ export function findReusableSubtitleSource(db, currentVideo, targetPart) {
   let bestMatch = null;
   for (const candidateVideo of candidates) {
     if (candidateVideo.id === currentVideo.id) {
+      continue;
+    }
+
+    if ((candidateVideo.source_type || "bili") !== (currentVideo.source_type || "bili")) {
       continue;
     }
 

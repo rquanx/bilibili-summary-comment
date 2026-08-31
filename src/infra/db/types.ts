@@ -19,6 +19,8 @@ export interface VideoRecord {
   owner_name: string | null;
   owner_dir_name: string | null;
   work_dir_name: string | null;
+  source_type: "bili" | "local";
+  publish_enabled: number;
   page_count: number;
   root_comment_rpid: number | null;
   top_comment_rpid: number | null;
@@ -38,6 +40,8 @@ export interface VideoInsert {
   ownerName?: string | null;
   ownerDirName?: string | null;
   workDirName?: string | null;
+  sourceType?: "bili" | "local";
+  publishEnabled?: boolean | number;
   pageCount: number;
   rootCommentRpid?: number | null;
   topCommentRpid?: number | null;
@@ -54,6 +58,7 @@ export interface VideoPartRecord {
   subtitle_path: string | null;
   subtitle_source: string | null;
   subtitle_lang: string | null;
+  source_path: string | null;
   subtitle_text: string | null;
   prompt_text: string | null;
   summary_text: string | null;
@@ -77,6 +82,7 @@ export interface VideoPartUpsert {
   subtitlePath?: string | null;
   subtitleSource?: string | null;
   subtitleLang?: string | null;
+  sourcePath?: string | null;
   subtitleText?: string | null;
   promptText?: string | null;
   summaryText?: string | null;

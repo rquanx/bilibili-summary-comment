@@ -15,6 +15,13 @@
       "when": 1785945751240,
       "tag": "0001_unknown_kid_colt",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788191206284,
+      "tag": "0002_glorious_chimera",
+      "breakpoints": true
     }
   ]
 }

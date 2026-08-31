@@ -5,3 +5,4 @@ WORKDIR /app
 
 # Use only when dependencies, base image, and system components are unchanged.
 COPY src ./src
+COPY drizzle ./drizzle

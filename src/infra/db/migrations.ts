@@ -25,7 +25,7 @@ export function migrateDatabase(db: Db) {
 
   if (hasPipelineTables && !hasDrizzleMigrationsTable) {
     migrateLegacyDatabase(db);
-    markLegacyBaselineMigrationAsApplied(db);
+    markCurrentMigrationsAsApplied(db);
   }
 
   migrateDrizzle(getDrizzleDb(db), {
@@ -60,9 +60,9 @@ function hasTable(db: Db, tableName: string): boolean {
   return Boolean(table);
 }
 
-function markLegacyBaselineMigrationAsApplied(db: Db) {
-  const baselineMigration = readBaselineMigration();
-  if (!baselineMigration) {
+function markCurrentMigrationsAsApplied(db: Db) {
+  const migrations = readMigrations();
+  if (migrations.length === 0) {
     return;
   }
 
@@ -85,32 +85,33 @@ function markLegacyBaselineMigrationAsApplied(db: Db) {
     return;
   }
 
-  db.prepare(`
+  const insertMigration = db.prepare(`
     INSERT INTO ${DRIZZLE_MIGRATIONS_TABLE} (hash, created_at)
     VALUES (?, ?)
-  `).run(baselineMigration.hash, baselineMigration.createdAt);
+  `);
+  for (const migration of migrations) {
+    insertMigration.run(migration.hash, migration.createdAt);
+  }
 }
 
-function readBaselineMigration(): { hash: string; createdAt: number } | null {
+function readMigrations(): Array<{ hash: string; createdAt: number }> {
   const migrationsFolder = getDrizzleMigrationsFolder();
   const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
   if (!fs.existsSync(journalPath)) {
-    return null;
+    return [];
   }
 
   const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as MigrationJournal;
-  const baselineEntry = [...(journal.entries ?? [])]
-    .sort((left, right) => left.idx - right.idx)[0];
-  if (!baselineEntry) {
-    return null;
-  }
-
-  const migrationPath = path.join(migrationsFolder, `${baselineEntry.tag}.sql`);
-  const migrationSql = fs.readFileSync(migrationPath, "utf8");
-  return {
-    hash: crypto.createHash("sha256").update(migrationSql).digest("hex"),
-    createdAt: baselineEntry.when,
-  };
+  return [...(journal.entries ?? [])]
+    .sort((left, right) => left.idx - right.idx)
+    .map((entry) => {
+      const migrationPath = path.join(migrationsFolder, `${entry.tag}.sql`);
+      const migrationSql = fs.readFileSync(migrationPath, "utf8");
+      return {
+        hash: crypto.createHash("sha256").update(migrationSql).digest("hex"),
+        createdAt: entry.when,
+      };
+    });
 }
 
 function migrateLegacyDatabase(db: Db) {
@@ -124,9 +125,12 @@ function migrateLegacyDatabase(db: Db) {
       owner_name TEXT,
       owner_dir_name TEXT,
       work_dir_name TEXT,
+      source_type TEXT NOT NULL DEFAULT 'bili',
+      publish_enabled INTEGER NOT NULL DEFAULT 1,
       page_count INTEGER NOT NULL DEFAULT 0,
       root_comment_rpid INTEGER,
       top_comment_rpid INTEGER,
+      preserved_top_comment_rpid INTEGER,
       publish_needs_rebuild INTEGER NOT NULL DEFAULT 0,
       publish_rebuild_reason TEXT,
       last_scan_at TEXT,
@@ -139,6 +143,9 @@ function migrateLegacyDatabase(db: Db) {
   ensureVideoColumn(db, "owner_name", "TEXT");
   ensureVideoColumn(db, "owner_dir_name", "TEXT");
   ensureVideoColumn(db, "work_dir_name", "TEXT");
+  ensureVideoColumn(db, "source_type", "TEXT NOT NULL DEFAULT 'bili'");
+  ensureVideoColumn(db, "publish_enabled", "INTEGER NOT NULL DEFAULT 1");
+  ensureVideoColumn(db, "preserved_top_comment_rpid", "INTEGER");
   ensureVideoColumn(db, "publish_needs_rebuild", "INTEGER NOT NULL DEFAULT 0");
   ensureVideoColumn(db, "publish_rebuild_reason", "TEXT");
 
@@ -146,6 +153,7 @@ function migrateLegacyDatabase(db: Db) {
   ensureVideoPartColumn(db, "summary_text_processed", "TEXT");
   ensureVideoPartColumn(db, "subtitle_text", "TEXT");
   ensureVideoPartColumn(db, "prompt_text", "TEXT");
+  ensureVideoPartColumn(db, "source_path", "TEXT");
   createPipelineEventsTable(db);
   createGapNotificationsTable(db);
   createRecentReprocessRunsTable(db);
@@ -212,6 +220,7 @@ function migrateLegacyVideoPartsTable(db: Db) {
         subtitle_path,
         subtitle_source,
         subtitle_lang,
+        source_path,
         subtitle_text,
         prompt_text,
         summary_text,
@@ -235,6 +244,7 @@ function migrateLegacyVideoPartsTable(db: Db) {
         subtitle_path,
         subtitle_source,
         subtitle_lang,
+        NULL,
         NULL,
         NULL,
         summary_text,
@@ -269,6 +279,7 @@ function createVideoPartsTable(db: Db) {
       subtitle_path TEXT,
       subtitle_source TEXT,
       subtitle_lang TEXT,
+      source_path TEXT,
       subtitle_text TEXT,
       prompt_text TEXT,
       summary_text TEXT,

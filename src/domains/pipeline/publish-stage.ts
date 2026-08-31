@@ -152,6 +152,10 @@ export async function runPublishStage({
   fetchImpl?: Parameters<typeof postSummaryThread>[0]["fetchImpl"];
   uploadToPasteImpl?: Parameters<typeof postSummaryThread>[0]["uploadToPasteImpl"];
 }): Promise<PublishStageResult> {
+  if (video.source_type !== "bili" || !Number(video.publish_enabled)) {
+    throw new Error(`Publishing is disabled for ${video.source_type || "unknown"} video ${video.bvid}`);
+  }
+
   let needsRebuildPublish = Boolean(video.publish_needs_rebuild);
   const fullMessage = artifacts.summaryPath ? fs.readFileSync(artifacts.summaryPath, "utf8").trim() : "";
   const pendingMessage = artifacts.pendingSummaryPath ? fs.readFileSync(artifacts.pendingSummaryPath, "utf8").trim() : "";

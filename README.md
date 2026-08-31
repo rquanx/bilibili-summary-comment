@@ -257,6 +257,19 @@ npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --for
 npm run pipeline -- --auth-file ./.auth/bili-auth.json --bvid BVxxxxxxxxxx --asr bijian
 ```
 
+### 1.1 本地视频转写与总结
+
+目录内的视频会按文件名排序，作为同一条本地记录的多个分 P 落库。本地记录固定关闭发布能力，不会进入评论队列：
+
+```bash
+node --disable-warning=ExperimentalWarning --import tsx \
+  src/commands/run-local-video-pipeline.ts \
+  --input-dir ./work/temp \
+  --title "本地视频标题"
+```
+
+重复执行会复用已有字幕和总结；需要重新生成总结时追加 `--force-summary`。
+
 ### 2. 只同步视频与分 P 状态
 
 ```bash

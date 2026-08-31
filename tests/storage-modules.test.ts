@@ -14,6 +14,7 @@ import {
   listVideoParts,
   listPendingPublishParts,
   listPendingSummaryParts,
+  listVideosPendingPublish,
   savePartSummary,
   upsertVideo,
   upsertVideoPart,
@@ -106,6 +107,43 @@ test("marker-only summaries count as completed but are excluded from pending pub
 
     assert.equal(listPendingSummaryParts(db, video.id).length, 0);
     assert.equal(listPendingPublishParts(db, video.id).length, 0);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("local videos remain stored but are excluded from the publish queue", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-local-storage-"));
+  const dbPath = path.join(tempRoot, "pipeline.sqlite3");
+  const db = openDatabase(dbPath);
+
+  try {
+    const video = upsertVideo(db, {
+      bvid: "LOCAL_TEST001",
+      aid: -100001,
+      title: "Local Video Test",
+      sourceType: "local",
+      publishEnabled: false,
+      pageCount: 1,
+    });
+
+    upsertVideoPart(db, {
+      videoId: video.id,
+      pageNo: 1,
+      cid: -910001,
+      partTitle: "Local P1",
+      durationSec: 60,
+      sourcePath: "work/temp/local.mp4",
+      summaryText: "<1P> 1#00:00 local summary",
+      summaryHash: "local-summary-hash",
+      published: false,
+      isDeleted: false,
+    });
+
+    assert.equal(listVideoParts(db, video.id)[0].source_path, "work/temp/local.mp4");
+    assert.equal(listPendingPublishParts(db, video.id).length, 0);
+    assert.equal(listVideosPendingPublish(db).some((candidate) => candidate.id === video.id), false);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -319,11 +357,14 @@ test("openDatabase upgrades a legacy schema and seeds drizzle migration history"
     assert.equal(parts[0].subtitle_text, null);
     assert.equal(Number(parts[0].is_deleted), 0);
     assert.ok(videoColumns.some((column) => column.name === "preserved_top_comment_rpid"));
+    assert.ok(videoColumns.some((column) => column.name === "source_type"));
+    assert.ok(videoColumns.some((column) => column.name === "publish_enabled"));
     assert.ok(videoPartColumns.some((column) => column.name === "is_deleted"));
     assert.ok(videoPartColumns.some((column) => column.name === "summary_text_processed"));
     assert.ok(videoPartColumns.some((column) => column.name === "subtitle_text"));
     assert.ok(videoPartColumns.some((column) => column.name === "prompt_text"));
-    assert.equal(migrationRows.length, 2);
+    assert.ok(videoPartColumns.some((column) => column.name === "source_path"));
+    assert.equal(migrationRows.length, 3);
     assert.ok(migrationRows.every((row) => typeof row.hash === "string"));
   } finally {
     db.close?.();

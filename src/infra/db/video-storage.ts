@@ -63,8 +63,11 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
   const candidates = getDrizzleDb(db).all<VideoRecord>(sql`
     SELECT v.*
     FROM ${videos} v
-    WHERE v.publish_needs_rebuild = 1
-      OR EXISTS (
+    WHERE v.source_type = 'bili'
+      AND v.publish_enabled = 1
+      AND (
+        v.publish_needs_rebuild = 1
+        OR EXISTS (
         SELECT 1
         FROM ${videoParts} p
         WHERE p.video_id = v.id
@@ -74,6 +77,7 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
             OR (p.summary_text IS NOT NULL AND TRIM(p.summary_text) <> '' AND TRIM(p.summary_text) NOT GLOB '<[0-9]*P>')
           )
           AND p.published = 0
+      )
       )
     ORDER BY
       v.aid DESC,
@@ -112,6 +116,8 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         owner_name,
         owner_dir_name,
         work_dir_name,
+        source_type,
+        publish_enabled,
         page_count,
         root_comment_rpid,
         top_comment_rpid,
@@ -128,6 +134,8 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         ${video.ownerName ?? null},
         ${video.ownerDirName ?? null},
         ${video.workDirName ?? null},
+        ${video.sourceType ?? "bili"},
+        ${video.publishEnabled === undefined ? 1 : video.publishEnabled ? 1 : 0},
         ${video.pageCount},
         ${video.rootCommentRpid ?? null},
         ${video.topCommentRpid ?? null},
@@ -143,6 +151,8 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
         owner_name = COALESCE(excluded.owner_name, owner_name),
         owner_dir_name = COALESCE(owner_dir_name, excluded.owner_dir_name),
         work_dir_name = COALESCE(work_dir_name, excluded.work_dir_name),
+        source_type = excluded.source_type,
+        publish_enabled = excluded.publish_enabled,
         page_count = excluded.page_count,
         preserved_top_comment_rpid = COALESCE(
           excluded.preserved_top_comment_rpid,
@@ -305,6 +315,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         subtitle_path,
         subtitle_source,
         subtitle_lang,
+        source_path,
         subtitle_text,
         prompt_text,
         summary_text,
@@ -327,6 +338,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         ${part.subtitlePath ?? null},
         ${part.subtitleSource ?? null},
         ${part.subtitleLang ?? null},
+        ${part.sourcePath ?? null},
         ${normalizeStoredPartText(part.subtitleText)},
         ${normalizeStoredPartText(part.promptText)},
         ${part.summaryText ?? null},
@@ -347,6 +359,7 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
         subtitle_path = excluded.subtitle_path,
         subtitle_source = excluded.subtitle_source,
         subtitle_lang = excluded.subtitle_lang,
+        source_path = excluded.source_path,
         subtitle_text = excluded.subtitle_text,
         prompt_text = excluded.prompt_text,
         summary_text = excluded.summary_text,
@@ -418,6 +431,13 @@ export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecor
   const candidates = getDrizzleDb(db).all<VideoPartRecord>(sql`
     SELECT * FROM video_parts
     WHERE video_id = ${videoId}
+      AND EXISTS (
+        SELECT 1
+        FROM videos
+        WHERE videos.id = video_parts.video_id
+          AND videos.source_type = 'bili'
+          AND videos.publish_enabled = 1
+      )
       AND is_deleted = 0
       AND (
         (summary_text_processed IS NOT NULL AND TRIM(summary_text_processed) <> '' AND TRIM(summary_text_processed) NOT GLOB '<[0-9]*P>')
