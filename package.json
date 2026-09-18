@@ -24,6 +24,7 @@
     "start": "node --disable-warning=ExperimentalWarning --import tsx src/commands/run-scheduler.ts --run-on-start",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
+    "db:migrate:postgres": "node --disable-warning=ExperimentalWarning --import tsx src/commands/migrate-sqlite-to-postgres.ts",
     "setup:ps": "powershell -ExecutionPolicy Bypass -File tools/setup/setup-env.ps1",
     "setup:sh": "bash ./tools/setup/setup-env.sh",
     "test": "node --disable-warning=ExperimentalWarning --import tsx --test tests/*.test.ts",
@@ -50,6 +51,7 @@
     "dotenv": "^17.4.1",
     "drizzle-orm": "^0.45.2",
     "node-cron": "^4.2.1",
+    "pg": "^8.23.0",
     "qrcode-terminal": "^0.12.0",
     "undici": "^8.1.0",
     "zod": "^4.3.6"
@@ -57,6 +59,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.5.2",
+    "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
