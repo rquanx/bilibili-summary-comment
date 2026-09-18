@@ -1,0 +1,15 @@
+ARG BASE_IMAGE=video-pipeline:gpu
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+RUN mkdir -p /app/work /app/.auth /opt/funasr/modelscope \
+  && chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["npm", "run", "start"]

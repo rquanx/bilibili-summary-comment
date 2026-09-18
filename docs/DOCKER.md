@@ -106,6 +106,17 @@ faster-whisper-large-v3-turbo/
 docker compose build video-pipeline-gpu
 ```
 
+如果只修改了 Node 依赖，而本地 GPU 运行时、Python 依赖和模型层保持不变，可以基于已验证的本地完整镜像重建全部 Node 依赖：
+
+```bash
+docker build --pull=false \
+  -f Dockerfile.gpu.dependencies \
+  --build-arg BASE_IMAGE=video-pipeline:gpu \
+  -t video-pipeline:gpu-next .
+```
+
+这个流程会执行完整 `npm ci`，但不会重复下载 CUDA、PyTorch、Faster-Whisper 和 FunASR 模型。
+
 ### 3. 先单独验证 FasterWhisper
 
 默认会使用 FunASR：
