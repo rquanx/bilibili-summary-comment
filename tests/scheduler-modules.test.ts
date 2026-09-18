@@ -13,7 +13,10 @@ import {
   requestDetachedRun,
 } from "../src/domains/scheduler/coalesced-runner";
 import { runPipelinesWithConcurrency } from "../src/domains/scheduler/concurrency";
-import { createPriorityTaskLimiter } from "../src/domains/scheduler/priority-task-limiter";
+import {
+  createPriorityTaskLimiter,
+  PIPELINE_TASK_PRIORITY,
+} from "../src/domains/scheduler/priority-task-limiter";
 import { resolveCookieFileForUser } from "../src/domains/scheduler/cookie-files";
 import { parseSummaryUsers } from "../src/domains/scheduler/user-targets";
 import * as schedulerTasks from "../src/domains/scheduler/index";
@@ -48,10 +51,12 @@ test("resolveSchedulerConfig uses one shared pipeline concurrency", () => {
   const legacy = resolveSchedulerConfig({
     "historical-summary-concurrency": 2,
   });
+  const defaults = resolveSchedulerConfig();
 
   assert.equal(explicit.pipelineConcurrency, 4);
   assert.equal(explicit.commentStallAlertMinutes, 120);
   assert.equal(legacy.pipelineConcurrency, 2);
+  assert.equal(defaults.pipelineConcurrency, 1);
   assert.equal("summaryConcurrency" in explicit, false);
   assert.equal("historicalSummaryConcurrency" in explicit, false);
 });
@@ -1173,6 +1178,37 @@ test("createPriorityTaskLimiter gives the next free slot to recent video work", 
     await Promise.all([historyOne, historyTwo, historyThree, recentOne, recentTwo]),
     ["history-1", "history-2", "history-3", "recent-1", "recent-2"],
   );
+});
+
+test("createPriorityTaskLimiter keeps publish behind queued pipeline generation", async () => {
+  const limiter = createPriorityTaskLimiter({
+    maxConcurrent: 1,
+  });
+  const started: string[] = [];
+  let releaseActive: (() => void) | undefined;
+
+  const active = limiter.run(PIPELINE_TASK_PRIORITY.recent, async () => {
+    started.push("active");
+    await new Promise<void>((resolve) => {
+      releaseActive = resolve;
+    });
+  });
+  const publish = limiter.run(PIPELINE_TASK_PRIORITY.publish, async () => {
+    started.push("publish");
+  });
+  const historical = limiter.run(PIPELINE_TASK_PRIORITY.historical, async () => {
+    started.push("historical");
+  });
+  const recent = limiter.run(PIPELINE_TASK_PRIORITY.recent, async () => {
+    started.push("recent");
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(started, ["active"]);
+
+  releaseActive?.();
+  await Promise.all([active, publish, historical, recent]);
+  assert.deepEqual(started, ["active", "recent", "historical", "publish"]);
 });
 
 test("createPriorityTaskLimiter lets follow-up recent work queue before backfill takes a released slot", async () => {

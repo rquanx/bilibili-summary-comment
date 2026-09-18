@@ -13,6 +13,7 @@ interface QueuedTask {
 export const PIPELINE_TASK_PRIORITY = {
   recent: 0,
   historical: 10,
+  publish: 20,
 } as const;
 
 export function createPriorityTaskLimiter({

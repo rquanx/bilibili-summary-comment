@@ -45,7 +45,7 @@ const command = addWorkRootOption(
       .option("--auth-file <path>", "Optional. TV auth file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
-      .option("--pipeline-concurrency <count>", "Optional. Shared recent and historical pipeline concurrency. Default: 2", parsePositiveIntegerArg)
+      .option("--pipeline-concurrency <count>", "Optional. Shared recent, historical, and publish pipeline concurrency. Default: 1", parsePositiveIntegerArg)
       .option("--summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
       .option("--historical-summary-daily-limit <count>", "Optional. Historical pipeline starts per calendar day. Default: 200", parsePositiveIntegerArg)
       .option("--historical-summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
@@ -191,18 +191,6 @@ await runCli({
           summaryLogger.progress(message);
           writeConsole(`[summary] ${message}`);
         },
-        onPipelineSucceeded({ upload }) {
-          const label = upload.title || upload.bvid || "untitled";
-          log(`Summary pipeline completed for ${upload.bvid} (${label}); requesting immediate publish sweep`);
-          requestDetachedRun({
-            task: publishRunner,
-            onFailure(error) {
-              log(`Failed to request publish after recent summary: ${getErrorMessage(error)}`, {
-                level: "error",
-              });
-            },
-          });
-        },
       });
       summaryLogger.info("Summary sweep finished", {
         uploads: result.uploads.length,
@@ -215,6 +203,17 @@ await runCli({
           logPath: summaryLogger.filePath,
         },
       });
+      if (result.runs.length > 0) {
+        log("Recent summaries generated; requesting one publish sweep");
+        requestDetachedRun({
+          task: publishRunner,
+          onFailure(error) {
+            log(`Failed to request publish after recent summary: ${getErrorMessage(error)}`, {
+              level: "error",
+            });
+          },
+        });
+      }
       if (result.failures.length > 0) {
         for (const failure of result.failures) {
           summaryLogger.error("Summary failure", {
@@ -507,7 +506,9 @@ await runCli({
     const publishRunner = createCoalescedRunner({
       name: "publish",
       runningTasks,
-      task: runPublishTask,
+      task() {
+        return pipelineTaskLimiter.run(PIPELINE_TASK_PRIORITY.publish, runPublishTask);
+      },
       onLog(message) {
         log(message);
       },
@@ -591,7 +592,7 @@ await runCli({
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
     log(
-      `Pipeline slots: total=${pipelineTaskLimiter.capacity}, shared-by=recent+historical, priority=recent-first`,
+      `Pipeline slots: total=${pipelineTaskLimiter.capacity}, shared-by=recent+historical+publish, priority=recent-first`,
     );
     log("Cron plan: summary=every15min, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every15min with recent-video pipeline priority");
     attachSignalHandlers(scheduledTasks, log);

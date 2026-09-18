@@ -102,7 +102,7 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
       ?? options["summary-concurrency"]
       ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
       ?? process.env.SUMMARY_PIPELINE_CONCURRENCY
-      ?? 2,
+      ?? 1,
     historicalSummaryDailyLimit:
       options["historical-summary-daily-limit"]
       ?? process.env.HISTORICAL_SUMMARY_DAILY_LIMIT
