@@ -214,7 +214,7 @@ SUMMARY_MODEL=glm-5
 
 - `SUMMARY_USERS`：逗号或换行分隔的 Bilibili 空间链接或 UID
 - `SUMMARY_SINCE_HOURS`：扫描最近多少小时的投稿，默认 `24`
-- `PIPELINE_CONCURRENCY`：调度器中最近视频与历史回补共享的流水线并发数，默认 `2`
+- `PIPELINE_CONCURRENCY`：调度器中最近视频、历史回补与评论发布共享的流水线并发数，默认 `1`
 - `SUMMARY_PIPELINE_CONCURRENCY`：独立最近视频命令的流水线并发数，默认 `2`
 - `HISTORICAL_SUMMARY_DAILY_LIMIT`：历史回补任务每天最多启动的视频流水线总数，默认 `200`
 - `HISTORICAL_SUMMARY_CONCURRENCY`：历史回补任务的并发数，默认 `2`；同一 UP 主仍保持串行

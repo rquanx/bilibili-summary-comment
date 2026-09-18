@@ -56,7 +56,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `SUMMARY_SINCE_HOURS`
   扫描最近多少小时的投稿，默认 `24`。
 - `PIPELINE_CONCURRENCY`
-  调度器中最近视频与历史回补共享的流水线并发数，默认 `2`；最近视频优先取得下一个空闲槽位。
+  调度器中最近视频、历史回补与评论发布共享的流水线并发数，默认 `1`；最近视频优先取得下一个空闲槽位。
 - `SUMMARY_PIPELINE_CONCURRENCY`
   独立最近视频命令的流水线并发数，默认 `2`。
 - `BILI_AUTH_FILE`
