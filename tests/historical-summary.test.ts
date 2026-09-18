@@ -572,3 +572,58 @@ test("historical backfill spaces pipeline starts across the full day", async () 
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("historical backfill stops permanently after every target reaches an empty final page", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-complete-"));
+  const cursorPath = path.join(tempRoot, "cursor.json");
+  let uploadFetches = 0;
+
+  const commonOptions = {
+    summaryUsers: "123,456",
+    cursorPath,
+    repoRoot: tempRoot,
+    now: new Date("2026-07-29T04:00:00.000Z"),
+    requestDelayMs: 0,
+    findAuthFileForUserImpl(_authFile: string, index: number) {
+      return path.join(tempRoot, ".auth", `bili-auth_${index}.json`);
+    },
+    readCookieStringFromAuthFileImpl() {
+      return "SESSDATA=fake";
+    },
+    createClientImpl: (() => ({
+      user: {
+        async getVideos() {
+          uploadFetches += 1;
+          return {
+            list: {
+              vlist: [],
+            },
+          };
+        },
+      },
+    })) as any,
+  };
+
+  try {
+    const first = await runHistoricalSummaryBackfill(commonOptions);
+    assert.equal(first.completed, true);
+    assert.equal(first.completedAt, "2026-07-29T04:00:00.000Z");
+    assert.equal(first.advanced, true);
+    assert.equal(first.targetDate, "2026-07-29");
+    assert.equal(uploadFetches, 2);
+
+    const cursor = readHistoricalSummaryCursor(cursorPath, "2099-01-01");
+    assert.equal(cursor.completedAt, "2026-07-29T04:00:00.000Z");
+    assert.deepEqual(cursor.exhaustedMids, [123, 456]);
+
+    const second = await runHistoricalSummaryBackfill({
+      ...commonOptions,
+      now: new Date("2026-07-29T04:15:00.000Z"),
+    });
+    assert.equal(second.completed, true);
+    assert.equal(second.advanced, false);
+    assert.equal(uploadFetches, 2);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});

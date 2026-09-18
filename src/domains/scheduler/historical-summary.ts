@@ -29,7 +29,7 @@ export const DEFAULT_HISTORICAL_REQUEST_DELAY_MS = 2_000;
 export const HISTORICAL_PIPELINE_FAILURE_SKIP_THRESHOLD = 3;
 const HISTORICAL_UPLOAD_PAGE_SIZE = 30;
 const HISTORICAL_MAX_PAGES_PER_USER = 200;
-const HISTORICAL_CURSOR_VERSION = 3;
+const HISTORICAL_CURSOR_VERSION = 4;
 const HISTORICAL_LOCK_STALE_MS = 10 * 60_000;
 const BILI_RISK_CONTROL_CODE = -352;
 
@@ -41,6 +41,8 @@ interface HistoricalSummaryCursor {
   pendingUploads: HistoricalCursorUpload[] | null;
   completedBvids: string[];
   pipelineFailures: Record<string, HistoricalPipelineFailure>;
+  exhaustedMids: number[];
+  completedAt: string | null;
   quotaDate: string;
   quotaUsed: number;
   nextProcessAt: string | null;
@@ -75,11 +77,13 @@ interface HistoricalUserScan {
   firstOlderPage: number | null;
   done: boolean;
   blocked: boolean;
+  exhausted: boolean;
 }
 
 interface HistoricalScanResult {
   uploads: RecentUpload[];
   blockedMids: number[];
+  exhaustedMids: number[];
   currentPageHints: Record<string, number>;
   nextPageHints: Record<string, number>;
 }
@@ -190,6 +194,16 @@ async function runHistoricalSummaryBackfillUnlocked({
   );
   const cursor = readHistoricalSummaryCursor(resolvedCursorPath, today);
 
+  if (cursor.completedAt) {
+    onLog(`Historical backfill already completed at ${cursor.completedAt}`);
+    return buildIdleHistoricalResult({
+      cursor,
+      cursorPath: resolvedCursorPath,
+      dailyLimit: safeDailyLimit,
+      completed: true,
+    });
+  }
+
   if (cursor.quotaDate !== today) {
     cursor.quotaDate = today;
     cursor.quotaUsed = 0;
@@ -210,6 +224,8 @@ async function runHistoricalSummaryBackfillUnlocked({
       skippedPinnedSummary: [],
       blockedMids: [],
       advanced: false,
+      completed: false,
+      completedAt: null,
     };
   }
 
@@ -227,6 +243,8 @@ async function runHistoricalSummaryBackfillUnlocked({
       skippedPinnedSummary: [],
       blockedMids: [],
       advanced: false,
+      completed: false,
+      completedAt: null,
     };
   }
 
@@ -245,6 +263,8 @@ async function runHistoricalSummaryBackfillUnlocked({
       skippedPinnedSummary: [],
       blockedMids: [],
       advanced: false,
+      completed: false,
+      completedAt: null,
     };
   }
 
@@ -271,6 +291,7 @@ async function runHistoricalSummaryBackfillUnlocked({
     if (blockedMids.length === 0) {
       cursor.pendingUploads = scan.uploads.map(toHistoricalCursorUpload);
       cursor.nextPageHints = scan.nextPageHints;
+      cursor.exhaustedMids = scan.exhaustedMids;
     }
     persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
   }
@@ -289,6 +310,8 @@ async function runHistoricalSummaryBackfillUnlocked({
       skippedPinnedSummary: [],
       blockedMids,
       advanced: false,
+      completed: false,
+      completedAt: null,
     };
   }
 
@@ -457,8 +480,18 @@ async function runHistoricalSummaryBackfillUnlocked({
     && !quotaExhausted
     && !hasDeferredUploads
     && allUploadsCompleted;
+  const completed = advanced
+    && targets.every((target) => cursor.exhaustedMids.includes(target.mid));
 
-  if (advanced) {
+  if (completed) {
+    cursor.completedAt = now.toISOString();
+    cursor.nextProcessAt = null;
+    cursor.pendingUploads = null;
+    cursor.completedBvids = [];
+    cursor.pipelineFailures = {};
+    persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
+    onLog(`Historical backfill completed; all ${targets.length} target account(s) reached the final page`);
+  } else if (advanced) {
     const completedDate = cursor.targetDate;
     cursor.targetDate = previousDateKey(cursor.targetDate);
     cursor.pageHints = cursor.nextPageHints;
@@ -466,6 +499,7 @@ async function runHistoricalSummaryBackfillUnlocked({
     cursor.pendingUploads = null;
     cursor.completedBvids = [];
     cursor.pipelineFailures = {};
+    cursor.exhaustedMids = [];
     persistHistoricalSummaryCursor(resolvedCursorPath, cursor);
     onLog(`Historical date ${completedDate} completed; cursor advanced to ${cursor.targetDate}`);
   } else {
@@ -485,6 +519,36 @@ async function runHistoricalSummaryBackfillUnlocked({
     skippedPinnedSummary,
     blockedMids,
     advanced,
+    completed,
+    completedAt: cursor.completedAt,
+  };
+}
+
+function buildIdleHistoricalResult({
+  cursor,
+  cursorPath,
+  dailyLimit,
+  completed,
+}: {
+  cursor: HistoricalSummaryCursor;
+  cursorPath: string;
+  dailyLimit: number;
+  completed: boolean;
+}) {
+  return {
+    targetDate: cursor.targetDate,
+    cursorPath,
+    dailyLimit,
+    quotaUsed: cursor.quotaUsed,
+    uploads: [],
+    runs: [],
+    failures: [],
+    abandonedFailures: [],
+    skippedPinnedSummary: [],
+    blockedMids: [],
+    advanced: false,
+    completed,
+    completedAt: cursor.completedAt,
   };
 }
 
@@ -530,6 +594,7 @@ async function collectHistoricalUploadsForDate({
       firstOlderPage: null,
       done: false,
       blocked: false,
+      exhausted: false,
     };
   });
   const uploadMap = new Map<string, RecentUpload>();
@@ -577,6 +642,7 @@ async function collectHistoricalUploadsForDate({
       const videos = Array.isArray(response?.list?.vlist) ? response.list.vlist : [];
       if (videos.length === 0) {
         scan.done = true;
+        scan.exhausted = true;
         scan.firstOlderPage ??= scan.page;
         continue;
       }
@@ -642,6 +708,7 @@ async function collectHistoricalUploadsForDate({
       (left, right) => right.createdAtUnix - left.createdAtUnix || left.mid - right.mid,
     ),
     blockedMids: scans.filter((scan) => scan.blocked).map((scan) => scan.target.mid),
+    exhaustedMids: scans.filter((scan) => scan.exhausted).map((scan) => scan.target.mid),
     currentPageHints: Object.fromEntries(
       scans.map((scan) => [
         String(scan.target.mid),
@@ -679,6 +746,8 @@ export function readHistoricalSummaryCursor(
       pendingUploads: normalizeHistoricalCursorUploads(parsed.pendingUploads),
       completedBvids: normalizeStringList(parsed.completedBvids),
       pipelineFailures: normalizeHistoricalPipelineFailures(parsed.pipelineFailures),
+      exhaustedMids: normalizePositiveIntegerList(parsed.exhaustedMids),
+      completedAt: normalizeIsoTimestamp(parsed.completedAt),
       quotaDate: normalizeDateKey(parsed.quotaDate) ?? initialTargetDate,
       quotaUsed: Math.max(0, Math.floor(Number(parsed.quotaUsed) || 0)),
       nextProcessAt: normalizeIsoTimestamp(parsed.nextProcessAt),
@@ -693,6 +762,8 @@ export function readHistoricalSummaryCursor(
       pendingUploads: null,
       completedBvids: [],
       pipelineFailures: {},
+      exhaustedMids: [],
+      completedAt: null,
       quotaDate: initialTargetDate,
       quotaUsed: 0,
       nextProcessAt: null,
@@ -713,6 +784,8 @@ export function persistHistoricalSummaryCursor(
     pendingUploads: normalizeHistoricalCursorUploads(cursor.pendingUploads),
     completedBvids: [...new Set(cursor.completedBvids)].sort(),
     pipelineFailures: normalizeHistoricalPipelineFailures(cursor.pipelineFailures),
+    exhaustedMids: normalizePositiveIntegerList(cursor.exhaustedMids),
+    completedAt: normalizeIsoTimestamp(cursor.completedAt),
     quotaUsed: Math.max(0, Math.floor(Number(cursor.quotaUsed) || 0)),
     updatedAt: new Date().toISOString(),
   };
@@ -878,6 +951,18 @@ function normalizePageHints(value: unknown): Record<string, number> {
 function normalizePageHint(value: unknown) {
   const normalized = Number(value);
   return Number.isInteger(normalized) && normalized > 0 ? normalized : 1;
+}
+
+function normalizePositiveIntegerList(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(
+    value
+      .map(Number)
+      .filter((item) => Number.isInteger(item) && item > 0),
+  )].sort((left, right) => left - right);
 }
 
 function normalizeHistoricalCursorUploads(value: unknown): HistoricalCursorUpload[] | null {
