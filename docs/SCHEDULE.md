@@ -56,9 +56,11 @@ CRON_TIMEZONE=Asia/Shanghai
 - `SUMMARY_SINCE_HOURS`
   扫描最近多少小时的投稿，默认 `24`。
 - `PIPELINE_CONCURRENCY`
-  调度器中最近视频、历史回补与评论发布共享的流水线并发数，默认 `1`；最近视频优先取得下一个空闲槽位。
+  兼容变量，仅在没有配置 `SUMMARY_PIPELINE_CONCURRENCY` 时作为最近视频并发数的后备值。
 - `SUMMARY_PIPELINE_CONCURRENCY`
-  独立最近视频命令的流水线并发数，默认 `2`。
+  最近视频总结任务的独立流水线并发数，默认 `2`。
+- `HISTORICAL_SUMMARY_CONCURRENCY`
+  历史回补任务的独立流水线并发数，默认 `1`；同一 UP 主仍保持串行。
 - `BILI_AUTH_FILE`
   TV 登录授权文件路径，默认 `.auth/bili-auth.json`。
 - `BILI_COOKIE_FILE`
@@ -68,7 +70,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `WORK_CLEANUP_DAYS`
   清理多少天前的 `work/<owner_dir>/<video_dir>` 目录，默认 `2`。
 - `PIPELINE_DB_PATH`
-  SQLite 路径，默认 `work/pipeline.sqlite3`。
+  PostgreSQL 连接 URL 或 SQLite 路径，默认 `work/pipeline.sqlite3`。
 - `WORK_ROOT`
   工作目录根路径，默认 `work`。
 - `CRON_TIMEZONE`
@@ -76,7 +78,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `SERVER_CHAN_SEND_KEY`
   可选。转写连续失败、缺段巡检发现新的缺段，或评论发布持续停滞时，用于发送 ServerChan 通知。
 - `COMMENT_STALL_ALERT_MINUTES`
-  存在待总结、待发布或需要重建评论串的视频时，连续多少分钟没有成功创建新评论后告警，默认 `60`。
+  存在待总结、待发布或需要重建评论串的视频时，连续多少分钟没有成功创建新评论后告警，默认 `120`。
 
 命令行参数也可以覆盖这些环境变量，例如：
 

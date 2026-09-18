@@ -55,7 +55,10 @@ export function addVideoIdentityOptions(command: Command): Command {
 }
 
 export function addDatabaseOption(command: Command, defaultValue = "work/pipeline.sqlite3"): Command {
-  return command.option("--db <path>", `Optional. SQLite path. Default: ${defaultValue}`);
+  return command.option(
+    "--db <target>",
+    `Optional. PostgreSQL connection URL or SQLite path. Default: ${defaultValue}`,
+  );
 }
 
 export function addWorkRootOption(command: Command, defaultValue = "work"): Command {

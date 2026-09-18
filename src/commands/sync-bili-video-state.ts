@@ -17,7 +17,7 @@ const command = addDatabaseOption(
     addCookieOptions(
       createCliCommand({
         name: "sync-bili-video-state",
-        description: "Sync video and part metadata from Bilibili into SQLite.",
+        description: "Sync video and part metadata from Bilibili into the configured database.",
       }),
       { required: true },
     ),

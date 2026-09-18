@@ -214,12 +214,12 @@ SUMMARY_MODEL=glm-5
 
 - `SUMMARY_USERS`：逗号或换行分隔的 Bilibili 空间链接或 UID
 - `SUMMARY_SINCE_HOURS`：扫描最近多少小时的投稿，默认 `24`
-- `PIPELINE_CONCURRENCY`：调度器中最近视频、历史回补与评论发布共享的流水线并发数，默认 `1`
-- `SUMMARY_PIPELINE_CONCURRENCY`：独立最近视频命令的流水线并发数，默认 `2`
+- `PIPELINE_CONCURRENCY`：兼容变量，作为调度器最近视频并发数的后备值
+- `SUMMARY_PIPELINE_CONCURRENCY`：最近视频总结任务的流水线并发数，默认 `2`
 - `HISTORICAL_SUMMARY_DAILY_LIMIT`：历史回补任务每天最多启动的视频流水线总数，默认 `200`
-- `HISTORICAL_SUMMARY_CONCURRENCY`：历史回补任务的并发数，默认 `2`；同一 UP 主仍保持串行
+- `HISTORICAL_SUMMARY_CONCURRENCY`：历史回补任务的独立并发数，默认 `1`；同一 UP 主仍保持串行
 - `HISTORICAL_SUMMARY_REQUEST_DELAY_MS`：历史投稿扫描和网页置顶评论检查之间的最小请求间隔，默认 `2000`
-- `COMMENT_STALL_ALERT_MINUTES`：存在待总结或待发布视频时，连续多少分钟没有成功发出新评论后触发告警，默认 `60`
+- `COMMENT_STALL_ALERT_MINUTES`：存在待总结或待发布视频时，连续多少分钟没有成功发出新评论后触发告警，默认 `120`
 - `BILI_AUTH_FILE`：授权文件路径，默认 `.auth/bili-auth.json`
 - `BILI_COOKIE_FILE`：可选。cookie 文件路径；仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用
 - `BILI_REFRESH_DAYS`：授权超过多少天后触发刷新，默认 `30`

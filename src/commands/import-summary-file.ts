@@ -22,7 +22,7 @@ const command = addDatabaseOption(
     addCookieOptions(
       createCliCommand({
         name: "import-summary-file",
-        description: "Import summary blocks from a local summary file into SQLite.",
+        description: "Import summary blocks from a local summary file into the configured database.",
       })
         .option("--summary-file <path>", "Required. Summary markdown/text path."),
       { required: true },
