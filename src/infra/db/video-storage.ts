@@ -60,38 +60,62 @@ export function listVideos(db: Db): VideoRecord[] {
 }
 
 export function listVideosPendingPublish(db: Db): VideoRecord[] {
-  const candidates = getDrizzleDb(db).all<VideoRecord>(sql`
+  const rows = getDrizzleDb(db).all<VideoRecord & {
+    pending_summary_text: string | null;
+    pending_summary_text_processed: string | null;
+  }>(sql`
     SELECT v.*
+      , p.summary_text AS pending_summary_text
+      , p.summary_text_processed AS pending_summary_text_processed
     FROM ${videos} v
+    LEFT JOIN ${videoParts} p
+      ON p.video_id = v.id
+      AND p.is_deleted = 0
+      AND p.published = 0
+      AND (
+        (p.summary_text_processed IS NOT NULL AND TRIM(p.summary_text_processed) <> '')
+        OR (p.summary_text IS NOT NULL AND TRIM(p.summary_text) <> '')
+      )
     WHERE v.source_type = 'bili'
       AND v.publish_enabled = 1
       AND (
         v.publish_needs_rebuild = 1
-        OR EXISTS (
-        SELECT 1
-        FROM ${videoParts} p
-        WHERE p.video_id = v.id
-          AND p.is_deleted = 0
-          AND (
-            (p.summary_text_processed IS NOT NULL AND TRIM(p.summary_text_processed) <> '' AND TRIM(p.summary_text_processed) NOT GLOB '<[0-9]*P>')
-            OR (p.summary_text IS NOT NULL AND TRIM(p.summary_text) <> '' AND TRIM(p.summary_text) NOT GLOB '<[0-9]*P>')
-          )
-          AND p.published = 0
-      )
+        OR p.id IS NOT NULL
       )
     ORDER BY
       v.aid DESC,
       v.created_at DESC,
-      v.id DESC
+      v.id DESC,
+      p.page_no ASC
   `);
 
-  return candidates.filter((video) => {
-    if (Number(video.publish_needs_rebuild) === 1) {
-      return true;
+  const candidates = new Map<number, {
+    video: VideoRecord;
+    hasPublishablePart: boolean;
+  }>();
+
+  for (const row of rows) {
+    const existing = candidates.get(row.id);
+    const candidate = existing ?? {
+      video: row,
+      hasPublishablePart: false,
+    };
+
+    if (!candidate.hasPublishablePart) {
+      candidate.hasPublishablePart = isPublishableSummaryText(getPreferredSummaryText({
+        summary_text: row.pending_summary_text,
+        summary_text_processed: row.pending_summary_text_processed,
+      }));
     }
 
-    return listPendingPublishParts(db, video.id).length > 0;
-  });
+    candidates.set(row.id, candidate);
+  }
+
+  return [...candidates.values()]
+    .filter(({ video, hasPublishablePart }) => (
+      Number(video.publish_needs_rebuild) === 1 || hasPublishablePart
+    ))
+    .map(({ video }) => video);
 }
 
 export function listVideosOlderThan(db: Db, cutoffIso: string): VideoRecord[] {

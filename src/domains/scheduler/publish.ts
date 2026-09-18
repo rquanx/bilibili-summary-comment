@@ -22,7 +22,7 @@ const PUBLISH_APPEND_COOLDOWN_MAX_MS = 30_000;
 const PUBLISH_REBUILD_COOLDOWN_MIN_MS = 15_000;
 const PUBLISH_REBUILD_COOLDOWN_MAX_MS = 30_000;
 const DEFAULT_PUBLISH_HEALTHCHECK_SINCE_HOURS = 24;
-const PUBLISH_SWEEP_MAX_CONCURRENCY = 2;
+const PUBLISH_SWEEP_MAX_CONCURRENCY = 1;
 const TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS = 6 * 60 * 60_000;
 const terminalPublishFailureCooldowns = new Map<string, {
   queueRevision: string;
@@ -186,20 +186,6 @@ export async function runPendingVideoPublishSweep({
     withCommentPublishQueueLockImpl,
     computePublishCooldownMsImpl,
     sleepImpl,
-    refreshPendingTasks: () => {
-      const refreshDb = openDatabase(dbPath);
-      try {
-        return buildPendingPublishTasks({
-          db: refreshDb,
-          videos: listVideosPendingPublishImpl(refreshDb),
-          authFileByMid,
-          fallbackAuthFile,
-          onLog,
-        });
-      } finally {
-        refreshDb.close?.();
-      }
-    },
     onAbort() {
       aborted = true;
     },
@@ -424,7 +410,6 @@ async function runPendingPublishTasksWithConcurrency({
   withCommentPublishQueueLockImpl,
   computePublishCooldownMsImpl,
   sleepImpl,
-  refreshPendingTasks,
   onAbort,
 }: {
   tasks: PendingPublishTask[];
@@ -440,7 +425,6 @@ async function runPendingPublishTasksWithConcurrency({
   withCommentPublishQueueLockImpl: typeof withCommentPublishQueueLock;
   computePublishCooldownMsImpl: (publishMode: "append" | "rebuild") => number;
   sleepImpl: (timeoutMs: number) => Promise<void>;
-  refreshPendingTasks: () => PendingPublishTask[];
   onAbort: () => void;
 }) {
   const maxConcurrent = Math.min(PUBLISH_SWEEP_MAX_CONCURRENCY, tasks.length);
@@ -457,20 +441,6 @@ async function runPendingPublishTasksWithConcurrency({
     while (true) {
       if (stopScheduling) {
         return;
-      }
-
-      for (const refreshedTask of refreshPendingTasks()) {
-        const bvid = refreshedTask.video.bvid;
-        if (
-          activeBvids.has(bvid)
-          || queuedBvids.has(bvid)
-          || completedRevisionByBvid.get(bvid) === refreshedTask.queueRevision
-        ) {
-          continue;
-        }
-        pendingTasks.push(refreshedTask);
-        tasks.push(refreshedTask);
-        queuedBvids.add(bvid);
       }
 
       pendingTasks.sort(comparePendingPublishTasks);

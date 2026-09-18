@@ -1964,7 +1964,7 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
   }
 });
 
-test("runPendingVideoPublishSweep requeues a processed video when new pending parts appear", async () => {
+test("runPendingVideoPublishSweep defers newly queued parts to the next sweep", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-requeue-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
@@ -1990,7 +1990,7 @@ test("runPendingVideoPublishSweep requeues a processed video when new pending pa
       isDeleted: false,
     });
 
-    const result = await runPendingVideoPublishSweep({
+    const options = {
       summaryUsers: "123",
       authFile: ".auth/bili-auth.json",
       dbPath,
@@ -2037,12 +2037,22 @@ test("runPendingVideoPublishSweep requeues a processed video when new pending pa
       },
       computePublishCooldownMsImpl: () => 0,
       sleepImpl: async () => {},
-    });
+    };
+
+    const firstResult = await runPendingVideoPublishSweep(options);
+
+    assert.deepEqual(publishedPages, [[1]]);
+    assert.deepEqual(firstResult.tasks.map((item) => item.video.bvid), ["BVREQUEUE"]);
+    assert.equal(firstResult.aborted, false);
+    assert.deepEqual(firstResult.failures, []);
+    assert.equal(listPendingPublishParts(db, video.id).length, 1);
+
+    const secondResult = await runPendingVideoPublishSweep(options);
 
     assert.deepEqual(publishedPages, [[1], [2]]);
-    assert.deepEqual(result.tasks.map((item) => item.video.bvid), ["BVREQUEUE", "BVREQUEUE"]);
-    assert.equal(result.aborted, false);
-    assert.deepEqual(result.failures, []);
+    assert.deepEqual(secondResult.tasks.map((item) => item.video.bvid), ["BVREQUEUE"]);
+    assert.equal(secondResult.aborted, false);
+    assert.deepEqual(secondResult.failures, []);
     assert.equal(listPendingPublishParts(db, video.id).length, 0);
   } finally {
     db.close?.();
@@ -2116,7 +2126,7 @@ test("runPendingVideoPublishSweep does not requeue when only part updated_at cha
   }
 });
 
-test("runPendingVideoPublishSweep runs two tasks concurrently and lets newly queued videos jump ahead", async () => {
+test("runPendingVideoPublishSweep serializes a stable queue snapshot", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
@@ -2181,11 +2191,11 @@ test("runPendingVideoPublishSweep runs two tasks concurrently and lets newly que
       sleepImpl: async () => {},
     });
 
-    while (started.length < 2) {
+    while (started.length < 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    assert.deepEqual(started, ["BVCONC4", "BVCONC3"]);
-    assert.equal(running.size, 2);
+    assert.deepEqual(started, ["BVCONC4"]);
+    assert.equal(running.size, 1);
 
     const newestVideo = upsertVideo(db, {
       bvid: "BVCONC5",
@@ -2206,33 +2216,33 @@ test("runPendingVideoPublishSweep runs two tasks concurrently and lets newly que
     });
 
     waiters.get("BVCONC4")?.();
+    while (started.length < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3"]);
+    assert.equal(running.size, 1);
+
+    waiters.get("BVCONC3")?.();
     while (started.length < 3) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC5"]);
-    assert.equal(running.size, 2);
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC2"]);
+    assert.equal(running.size, 1);
 
-    waiters.get("BVCONC3")?.();
+    waiters.get("BVCONC2")?.();
     while (started.length < 4) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC5", "BVCONC2"]);
-    assert.equal(running.size, 2);
+    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC2", "BVCONC1"]);
+    assert.equal(running.size, 1);
 
-    waiters.get("BVCONC5")?.();
-    while (started.length < 5) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    assert.deepEqual(started, ["BVCONC4", "BVCONC3", "BVCONC5", "BVCONC2", "BVCONC1"]);
-    assert.equal(running.size, 2);
-
-    waiters.get("BVCONC2")?.();
     waiters.get("BVCONC1")?.();
 
     const result = await sweepPromise;
     assert.equal(result.aborted, false);
     assert.deepEqual(result.failures, []);
-    assert.deepEqual(finished.sort(), ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4", "BVCONC5"]);
+    assert.deepEqual(finished.sort(), ["BVCONC1", "BVCONC2", "BVCONC3", "BVCONC4"]);
+    assert.equal(result.tasks.some((task) => task.video.bvid === newestVideo.bvid), false);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });

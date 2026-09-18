@@ -107,6 +107,7 @@ test("marker-only summaries count as completed but are excluded from pending pub
 
     assert.equal(listPendingSummaryParts(db, video.id).length, 0);
     assert.equal(listPendingPublishParts(db, video.id).length, 0);
+    assert.equal(listVideosPendingPublish(db).some((candidate) => candidate.id === video.id), false);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -177,6 +178,7 @@ test("short no-subtitle placeholder summaries are excluded from pending publish 
 
     assert.equal(listPendingSummaryParts(db, video.id).length, 0);
     assert.equal(listPendingPublishParts(db, video.id).length, 0);
+    assert.equal(listVideosPendingPublish(db).some((candidate) => candidate.id === video.id), false);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -210,6 +212,7 @@ test("summaries with an embedded page marker are excluded from pending publish q
 
     assert.equal(listPendingSummaryParts(db, video.id).length, 0);
     assert.equal(listPendingPublishParts(db, video.id).length, 0);
+    assert.equal(listVideosPendingPublish(db).some((candidate) => candidate.id === video.id), false);
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
