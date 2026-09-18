@@ -19,8 +19,10 @@
 默认环境变量已经对齐：
 
 - `WORK_ROOT=work`
-- `PIPELINE_DB_PATH=work/pipeline.sqlite3`
+- `PIPELINE_DB_PATH` 可以是 `work/pipeline.sqlite3` 或 PostgreSQL URL
 - `BILI_AUTH_FILE=.auth/bili-auth.json`
+
+生产环境使用 PostgreSQL 时，参见 [POSTGRES.md](POSTGRES.md)。
 
 GPU 服务额外会使用：
 

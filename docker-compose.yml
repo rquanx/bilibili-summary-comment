@@ -11,6 +11,23 @@ x-proxy-env: &proxy-env
   GEMINI_PROXY_URL: ${GEMINI_PROXY_URL:-http://host.docker.internal:7897}
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-video_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-video_pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-video_pipeline}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   video-pipeline:
     build:
       context: .
@@ -19,6 +36,9 @@ services:
     restart: always
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       <<: *proxy-env
       TZ: ${CRON_TIMEZONE:-Asia/Shanghai}
@@ -50,6 +70,9 @@ services:
     restart: always
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       <<: *proxy-env
       TZ: ${CRON_TIMEZONE:-Asia/Shanghai}
@@ -83,3 +106,6 @@ services:
         target: /opt/videocaptioner/models
     gpus: all
     command: ["npm", "run", "start"]
+
+volumes:
+  postgres-data:
