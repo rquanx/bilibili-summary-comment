@@ -1,9 +1,11 @@
 export { openDatabase } from "./database";
 export { runInTransaction } from "./database";
 export { withDatabaseWriteLock } from "./database";
+export { isPostgresDatabase } from "./postgres-database";
 export { getDrizzleDb } from "./orm";
 export type {
   Db,
+  SqliteDb,
   DrizzleDb,
   GapNotificationInsert,
   GapNotificationRecord,

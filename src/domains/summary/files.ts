@@ -5,6 +5,7 @@ import { ensureVideoWorkDir } from "../../shared/work-paths";
 import { isSummaryMarkerOnly } from "../../shared/summary-quality";
 import {
   getPreferredSummaryText,
+  isPostgresDatabase,
   listPendingPublishParts,
   listVideoParts,
   normalizeStoredSummaryText,
@@ -149,7 +150,7 @@ export function writePartPromptArtifact({
   promptConfigPath?: string | null;
   ownerMid?: number | null;
   workRoot?: string;
-}): string | null {
+}): any {
   const normalizedSubtitleText = typeof subtitleText === "string"
     ? subtitleText
     : readPromptSubtitleText(subtitlePath, storedSubtitleText);
@@ -181,7 +182,10 @@ export function writePartPromptArtifact({
 
   fs.writeFileSync(partPromptPath, promptArtifact, "utf8");
   if (db && typeof video.id === "number") {
-    savePartPrompt(db, video.id, pageNo, promptArtifact);
+    const saved = savePartPrompt(db, video.id, pageNo, promptArtifact);
+    if (isPostgresDatabase(db)) {
+      return Promise.resolve(saved).then(() => partPromptPath);
+    }
   }
   return partPromptPath;
 }
@@ -193,7 +197,11 @@ export function writeSummaryArtifacts(
   options: {
     promptConfigPath?: string | null;
   } = {},
-): SummaryArtifacts {
+): any {
+  if (isPostgresDatabase(db)) {
+    return writeSummaryArtifactsPostgres(db, video, workRoot, options);
+  }
+
   const workDir = ensureVideoWorkDir({
     db,
     video,
@@ -238,6 +246,66 @@ export function writeSummaryArtifacts(
     });
   } else {
     cleanupPerPageArtifacts(workDir, activeParts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
+  }
+
+  return {
+    summaryPath,
+    pendingSummaryPath: pendingPath,
+  };
+}
+
+async function writeSummaryArtifactsPostgres(
+  db: Db,
+  video: VideoRecord,
+  workRoot: string,
+  options: {
+    promptConfigPath?: string | null;
+  },
+): Promise<SummaryArtifacts> {
+  const workDir = ensureVideoWorkDir({
+    db,
+    video,
+    workRoot,
+  });
+  const activeParts = await listVideoParts(db, video.id);
+  const useProcessedSummaryText = !Number(video.publish_needs_rebuild);
+  const allSummaryText = activeParts
+    .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  const pendingSourceParts = Number(video.publish_needs_rebuild)
+    ? activeParts.filter((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
+    : await listPendingPublishParts(db, video.id);
+  const pendingSummaryText = pendingSourceParts
+    .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  const compactedAllSummaryText = compactPasteLinkSummaryRanges(allSummaryText);
+  const compactedPendingSummaryText = compactPasteLinkSummaryRanges(pendingSummaryText);
+  const summaryPath = path.join(workDir, "summary.md");
+  const pendingPath = path.join(workDir, "pending-summary.md");
+
+  fs.writeFileSync(summaryPath, compactedAllSummaryText ? `${compactedAllSummaryText}\n` : "", "utf8");
+  fs.writeFileSync(pendingPath, compactedPendingSummaryText ? `${compactedPendingSummaryText}\n` : "", "utf8");
+  rewritePerPageSummaryViews(workDir, activeParts, { useProcessedSummaryText });
+
+  const shouldRewritePrompts = Object.prototype.hasOwnProperty.call(options, "promptConfigPath");
+  if (shouldRewritePrompts) {
+    await rewritePerPagePromptViewsPostgres(workDir, activeParts, {
+      db,
+      video,
+      workRoot,
+      promptConfigPath: options.promptConfigPath,
+    });
+  } else {
+    cleanupPerPageArtifacts(
+      workDir,
+      activeParts,
+      /^prompt-p\d+\.md$/u,
+      (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`,
+    );
   }
 
   return {
@@ -293,6 +361,44 @@ function rewritePerPagePromptViews(
   }
 
   cleanupPerPageArtifacts(workDir, parts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
+}
+
+async function rewritePerPagePromptViewsPostgres(
+  workDir: string,
+  parts: VideoPartRecord[],
+  {
+    db,
+    video,
+    workRoot,
+    promptConfigPath,
+  }: {
+    db: Db;
+    video: VideoRecord;
+    workRoot: string;
+    promptConfigPath?: string | null;
+  },
+) {
+  for (const part of parts) {
+    await writePartPromptArtifact({
+      db,
+      video,
+      pageNo: part.page_no,
+      partTitle: part.part_title,
+      durationSec: part.duration_sec,
+      storedSubtitleText: part.subtitle_text,
+      subtitlePath: part.subtitle_path,
+      promptText: part.prompt_text,
+      promptConfigPath,
+      ownerMid: video.owner_mid,
+      workRoot,
+    });
+  }
+  cleanupPerPageArtifacts(
+    workDir,
+    parts,
+    /^prompt-p\d+\.md$/u,
+    (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`,
+  );
 }
 
 function cleanupPerPageArtifacts(

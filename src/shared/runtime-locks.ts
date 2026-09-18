@@ -118,13 +118,15 @@ export function cleanupStaleRuntimeLocks({
     }
   }
 
-  const resolvedDbPath = path.resolve(repoRoot, dbPath);
-  candidates.push({
-    path: `${resolvedDbPath}.write-lock`,
-    ownerPath: path.join(`${resolvedDbPath}.write-lock`, "owner.json"),
-    staleMs: DB_WRITE_LOCK_STALE_MS,
-    name: path.basename(`${resolvedDbPath}.write-lock`),
-  });
+  if (!isPostgresConnectionString(dbPath)) {
+    const resolvedDbPath = path.resolve(repoRoot, dbPath);
+    candidates.push({
+      path: `${resolvedDbPath}.write-lock`,
+      ownerPath: path.join(`${resolvedDbPath}.write-lock`, "owner.json"),
+      staleMs: DB_WRITE_LOCK_STALE_MS,
+      name: path.basename(`${resolvedDbPath}.write-lock`),
+    });
+  }
 
   return cleanupLockCandidates(candidates, {
     currentHostname,
@@ -256,6 +258,10 @@ function normalizePid(value: unknown): number | null {
 
 function normalizeHostname(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function isPostgresConnectionString(value: unknown): boolean {
+  return /^postgres(?:ql)?:\/\//iu.test(String(value ?? "").trim());
 }
 
 function defaultIsProcessAlive(pid: number): boolean {

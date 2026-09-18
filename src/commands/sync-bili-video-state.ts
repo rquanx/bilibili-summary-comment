@@ -33,7 +33,7 @@ await runCli({
     const db = openDatabase(dbPath);
     try {
       const snapshot = await fetchVideoSnapshot(client, args);
-      const state = syncVideoSnapshotToDb(db, snapshot);
+      const state = await syncVideoSnapshotToDb(db, snapshot);
 
       return {
         ok: true,
@@ -62,7 +62,7 @@ await runCli({
         changeSet: state.changeSet,
       };
     } finally {
-      db.close?.();
+      await db.close?.();
     }
   },
 });

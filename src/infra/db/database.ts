@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type { Db } from "./types";
+import type { SqliteDb } from "./types";
 import { initializeDrizzleDb } from "./orm";
 import { migrateDatabase } from "./migrations";
+import { isPostgresDatabase, openPostgresDatabase } from "./postgres-database";
 import {
   cleanupStaleDatabaseWriteLock,
   DB_WRITE_LOCK_RETRY_MS,
@@ -24,6 +26,10 @@ type DbWithPath = Db & {
 };
 
 export function openDatabase(databasePath: string): Db {
+  if (isPostgresConnectionString(databasePath)) {
+    return openPostgresDatabase(databasePath) as Db;
+  }
+
   const resolvedPath = path.resolve(databasePath);
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
   cleanupStaleDatabaseWriteLock(resolvedPath);
@@ -43,16 +49,23 @@ export function openDatabase(databasePath: string): Db {
     db.pragma("foreign_keys = ON");
     migrateDatabase(db);
   });
-  return db;
+  return db as SqliteDb;
 }
 
-export function runInTransaction<T>(db: Pick<Db, "exec">, work: () => T): T {
+export function runInTransaction<T>(db: Db, work: () => T | Promise<T>): T | Promise<T> {
+  if (isPostgresDatabase(db)) {
+    return db.transaction(work);
+  }
+
   return withDatabaseWriteLock(db, () => {
     db.exec("BEGIN IMMEDIATE");
     try {
       const result = work();
+      if (isPromiseLike(result)) {
+        throw new Error("SQLite transactions require a synchronous callback.");
+      }
       db.exec("COMMIT");
-      return result;
+      return result as T;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
@@ -60,7 +73,19 @@ export function runInTransaction<T>(db: Pick<Db, "exec">, work: () => T): T {
   });
 }
 
-export function withDatabaseWriteLock<T>(dbOrPath: Pick<Db, "exec"> | string, work: () => T): T {
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(
+    value
+    && (typeof value === "object" || typeof value === "function")
+    && typeof (value as { then?: unknown }).then === "function",
+  );
+}
+
+export function withDatabaseWriteLock<T>(dbOrPath: Db | string, work: () => T): T {
+  if (isPostgresDatabase(dbOrPath)) {
+    return work();
+  }
+
   const resolvedPath = resolveDatabasePath(dbOrPath);
   const active = activeWriteLocks.get(resolvedPath);
   if (active) {
@@ -100,7 +125,7 @@ function releaseActiveWriteLock(resolvedPath: string) {
   active.release();
 }
 
-function resolveDatabasePath(dbOrPath: Pick<Db, "exec"> | string): string {
+function resolveDatabasePath(dbOrPath: SqliteDb | string): string {
   if (typeof dbOrPath === "string") {
     return path.resolve(dbOrPath);
   }
@@ -181,6 +206,10 @@ function readLockOwner(ownerPath: string): { pid?: number; hostname?: string } |
   } catch {
     return null;
   }
+}
+
+function isPostgresConnectionString(value: string): boolean {
+  return /^postgres(?:ql)?:\/\//i.test(String(value ?? "").trim());
 }
 
 function isAlreadyExistsError(error: unknown): boolean {

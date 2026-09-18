@@ -98,7 +98,7 @@ function resolvePreservedTopCommentRpid(
   return liveTopCommentRpid;
 }
 
-function persistPreservedTopComment(
+async function persistPreservedTopComment(
   db: Db,
   video: VideoRecord,
   preservedTopCommentRpid: number | null,
@@ -110,7 +110,7 @@ function persistPreservedTopComment(
     return;
   }
 
-  const updatedVideo = updateVideoPreservedTopComment(
+  const updatedVideo = await updateVideoPreservedTopComment(
     db,
     video.id,
     preservedTopCommentRpid,
@@ -171,7 +171,7 @@ export async function runPublishStage({
   ) {
     rebuildTopCommentState = await getGuestTopComment({ oid, type, fetchImpl });
     preservedTopCommentRpid = resolvePreservedTopCommentRpid(video, rebuildTopCommentState);
-    persistPreservedTopComment(db, video, preservedTopCommentRpid);
+    await persistPreservedTopComment(db, video, preservedTopCommentRpid);
     if (
       !preservedTopCommentRpid
       && shouldRebuildMissingStoredRootCommentThread(video, rebuildTopCommentState)
@@ -226,7 +226,7 @@ export async function runPublishStage({
 
     const topCommentState = rebuildTopCommentState ?? await getGuestTopComment({ oid, type, fetchImpl });
     preservedTopCommentRpid = resolvePreservedTopCommentRpid(video, topCommentState);
-    persistPreservedTopComment(db, video, preservedTopCommentRpid);
+    await persistPreservedTopComment(db, video, preservedTopCommentRpid);
     const deleteCandidates = collectRebuildDeleteCandidates(
       video,
       topCommentState,
@@ -245,8 +245,8 @@ export async function runPublishStage({
       }
     }
 
-    resetPublishedStateForVideo(db, video.id);
-    updateVideoCommentThread(db, video.id, {
+    await resetPublishedStateForVideo(db, video.id);
+    await updateVideoCommentThread(db, video.id, {
       rootCommentRpid: null,
       topCommentRpid: preservedTopCommentRpid,
     });
@@ -288,8 +288,8 @@ export async function runPublishStage({
       }
     }
 
-    clearVideoPublishRebuildNeeded(db, video.id);
-    writeSummaryArtifacts(
+    await clearVideoPublishRebuildNeeded(db, video.id);
+    await writeSummaryArtifacts(
       db,
       {
         ...video,
@@ -357,7 +357,7 @@ export async function runPublishStage({
 
   const topCommentState = await getGuestTopComment({ oid, type, fetchImpl });
   preservedTopCommentRpid = resolvePreservedTopCommentRpid(video, topCommentState);
-  persistPreservedTopComment(db, video, preservedTopCommentRpid);
+  await persistPreservedTopComment(db, video, preservedTopCommentRpid);
   const appended = await postSummaryThread({
     client,
     oid,
@@ -375,7 +375,7 @@ export async function runPublishStage({
     fetchImpl,
     uploadToPasteImpl,
   });
-  writeSummaryArtifacts(db, video, workRoot);
+  await writeSummaryArtifacts(db, video, workRoot);
   eventLogger?.log({
     scope: "publish",
     action: "comment-thread",

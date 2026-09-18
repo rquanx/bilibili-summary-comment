@@ -1042,7 +1042,7 @@ function quoteShellDouble(value) {
   return `"${String(value ?? "").replace(/(["\\$`])/gu, "\\$1")}"`;
 }
 
-function writePasteUploadAttemptArtifacts({
+async function writePasteUploadAttemptArtifacts({
   db,
   videoId,
   workRoot = "work",
@@ -1053,7 +1053,7 @@ function writePasteUploadAttemptArtifacts({
   workRoot?: string;
   message: string;
 }) {
-  const video = getVideoById(db, videoId);
+  const video = await getVideoById(db, videoId);
   if (!video) {
     return null;
   }
@@ -1396,7 +1396,7 @@ function applyProcessedPagePatch(baseText, originalBlock, processedBlock) {
   }]);
 }
 
-function resolveUploadSourcePageBlock({
+async function resolveUploadSourcePageBlock({
   db,
   videoId,
   fallbackBlock,
@@ -1404,8 +1404,8 @@ function resolveUploadSourcePageBlock({
   db: Parameters<typeof getActiveVideoPartByPageNo>[0];
   videoId: number;
   fallbackBlock: CommentPageBlock;
-}): CommentPageBlock {
-  const part = getActiveVideoPartByPageNo(db, videoId, fallbackBlock.page);
+}): Promise<CommentPageBlock> {
+  const part = await getActiveVideoPartByPageNo(db, videoId, fallbackBlock.page);
   if (!part) {
     return fallbackBlock;
   }
@@ -1420,7 +1420,7 @@ function resolveUploadSourcePageBlock({
   return rawBlock ?? fallbackBlock;
 }
 
-function persistProcessedChunk({
+async function persistProcessedChunk({
   db,
   videoId,
   originalMessage,
@@ -1435,7 +1435,7 @@ function persistProcessedChunk({
 
   for (const originalBlock of originalBlocks) {
     const processedBlock = processedBlocks.get(originalBlock.page) ?? originalBlock;
-    const part = getActiveVideoPartByPageNo(db, videoId, originalBlock.page);
+    const part = await getActiveVideoPartByPageNo(db, videoId, originalBlock.page);
     if (!part) {
       continue;
     }
@@ -1443,7 +1443,7 @@ function persistProcessedChunk({
     const baseText = getPreferredSummaryTextForPart(part) || normalizeStoredSummaryText(part.summary_text) || "";
     const nextProcessedText = applyProcessedPagePatch(baseText, originalBlock, processedBlock);
     const rawText = normalizeStoredSummaryText(part.summary_text);
-    savePartProcessedSummary(
+    await savePartProcessedSummary(
       db,
       videoId,
       originalBlock.page,
@@ -1469,11 +1469,11 @@ async function diagnoseInvisibleComment({
     };
   }
 
-  const uploadSourceBlocks = pageBlocks.map((block) => resolveUploadSourcePageBlock({
+  const uploadSourceBlocks = await Promise.all(pageBlocks.map((block) => resolveUploadSourcePageBlock({
     db,
     videoId,
     fallbackBlock: block,
-  }));
+  })));
   const pasteUrl = await uploadToPasteImpl(buildMessageFromPageBlocks(uploadSourceBlocks), fetchImpl);
   const processedPageBlocks = pageBlocks.map((block) => buildPasteOnlyPageBlock(block, pasteUrl));
 
@@ -1887,7 +1887,7 @@ async function publishCommentChunk({
       });
     }
 
-    persistProcessedChunk({
+    await persistProcessedChunk({
       db,
       videoId,
       originalMessage: chunk.message,
@@ -1960,7 +1960,7 @@ export async function postSummaryThread({
   let replacedRootCommentRpid = null;
   let reusedExistingRootComment = false;
   const uploadToPasteWithArtifacts = async (text, activeFetchImpl = fetchImpl) => {
-    const artifact = writePasteUploadAttemptArtifacts({
+    const artifact = await writePasteUploadAttemptArtifacts({
       db,
       videoId,
       workRoot,
@@ -2138,7 +2138,7 @@ export async function postSummaryThread({
     }
   }
 
-  updateVideoCommentThread(db, videoId, {
+  await updateVideoCommentThread(db, videoId, {
     rootCommentRpid: rootRpid,
     topCommentRpid: pinRoot ? rootRpid : topCommentRpidAfterPublish,
   });
@@ -2148,7 +2148,7 @@ export async function postSummaryThread({
     ...createdComments.flatMap((item) => item.pages),
   ])].sort((a, b) => a - b);
   if (coveredPages.length > 0) {
-    markPartsPublished(db, videoId, coveredPages, rootRpid);
+    await markPartsPublished(db, videoId, coveredPages, rootRpid);
   }
 
   return {

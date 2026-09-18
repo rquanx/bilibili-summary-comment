@@ -1,6 +1,6 @@
 import { runInTransaction } from "../../infra/db/database";
 import type { Db, VideoRecord } from "../../infra/db/index";
-import { getVideoByIdentity, listVideoParts, listVideos } from "../../infra/db/index";
+import { getVideoByIdentity, isPostgresDatabase, listVideoParts, listVideos } from "../../infra/db/index";
 
 const DEFAULT_INVALIDATION_REASON = "summary-input-upgrade-2026-05-05";
 
@@ -52,7 +52,21 @@ export function invalidateSummaries(
     dryRun = false,
     now = new Date(),
   }: InvalidateSummariesOptions,
-): InvalidateSummariesResult {
+): any {
+  if (isPostgresDatabase(db)) {
+    return invalidateSummariesPostgres(db, {
+      all,
+      bvid,
+      aid,
+      recentDays,
+      fromIso,
+      toIso,
+      reason,
+      dryRun,
+      now,
+    });
+  }
+
   const targetVideos = resolveTargetVideos(db, {
     all,
     bvid,
@@ -117,6 +131,95 @@ export function invalidateSummaries(
     }
   });
 
+  return result;
+}
+
+async function invalidateSummariesPostgres(
+  db: Db,
+  options: InvalidateSummariesOptions,
+): Promise<InvalidateSummariesResult> {
+  const {
+    all = false,
+    bvid = null,
+    aid = null,
+    recentDays = null,
+    fromIso = null,
+    toIso = null,
+    reason = DEFAULT_INVALIDATION_REASON,
+    dryRun = false,
+    now = new Date(),
+  } = options;
+  const normalizedReason = String(reason ?? "").trim() || DEFAULT_INVALIDATION_REASON;
+  const timeWindow = resolveTimeWindow({ recentDays, fromIso, toIso, now });
+  const targetVideos = all || (!String(bvid ?? "").trim() && aid === null)
+    ? await listVideos(db)
+    : [await getVideoByIdentity(db, { bvid: String(bvid ?? "").trim() || null, aid })].filter(Boolean);
+
+  if (!all && (String(bvid ?? "").trim() || aid !== null) && targetVideos.length === 0) {
+    throw new Error("No matching video found. Provide --all or a valid --bvid/--aid.");
+  }
+
+  const perVideo = [];
+  for (const video of targetVideos as VideoRecord[]) {
+    const activeParts = await listVideoParts(db, video.id);
+    const matchedParts = activeParts.filter((part) => partMatchesTimeWindow(part.updated_at, timeWindow));
+    const affectedParts = matchedParts.filter((part) => hasStoredSummaryState(part));
+    perVideo.push({
+      videoId: video.id,
+      bvid: video.bvid,
+      title: video.title,
+      activePartCount: activeParts.length,
+      matchedPartCount: matchedParts.length,
+      affectedPartCount: affectedParts.length,
+      partIds: affectedParts.map((part) => part.id),
+    });
+  }
+
+  const result: InvalidateSummariesResult = {
+    scope: all || (!bvid && aid === null) ? "all" : "single",
+    dryRun,
+    reason: normalizedReason,
+    fromIso: timeWindow.fromIso,
+    toIso: timeWindow.toIso,
+    videoCount: perVideo.length,
+    affectedVideoCount: perVideo.filter((item) => item.affectedPartCount > 0).length,
+    activePartCount: perVideo.reduce((sum, item) => sum + item.activePartCount, 0),
+    matchedPartCount: perVideo.reduce((sum, item) => sum + item.matchedPartCount, 0),
+    affectedPartCount: perVideo.reduce((sum, item) => sum + item.affectedPartCount, 0),
+    videos: perVideo,
+  };
+
+  if (dryRun || perVideo.length === 0) {
+    return result;
+  }
+
+  const invalidatedAtIso = now.toISOString();
+  await runInTransaction(db, async () => {
+    for (const item of perVideo) {
+      if (item.affectedPartCount === 0) {
+        continue;
+      }
+      await db.execute(`
+        UPDATE video_parts
+        SET prompt_text = NULL,
+            summary_text = NULL,
+            summary_text_processed = NULL,
+            summary_hash = NULL,
+            published = 0,
+            published_comment_rpid = NULL,
+            published_at = NULL,
+            updated_at = $1
+        WHERE id = ANY($2::bigint[])
+      `, [invalidatedAtIso, item.partIds]);
+      await db.execute(`
+        UPDATE videos
+        SET publish_needs_rebuild = 1,
+            publish_rebuild_reason = $1,
+            updated_at = $2
+        WHERE id = $3
+      `, [normalizedReason, invalidatedAtIso, item.videoId]);
+    }
+  });
   return result;
 }
 

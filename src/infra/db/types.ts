@@ -1,8 +1,10 @@
 import BetterSqlite3 from "better-sqlite3";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "./schema";
+import type { PostgresDb } from "./postgres-database";
 
-export type Db = InstanceType<typeof BetterSqlite3>;
+export type SqliteDb = InstanceType<typeof BetterSqlite3>;
+export type Db = any;
 export type DrizzleDb = BetterSQLite3Database<typeof schema>;
 
 export interface VideoIdentity {
@@ -202,7 +204,7 @@ export interface GapNotificationInsert {
 
 export interface PipelineEventLogger {
   runId: string;
-  log(event: PipelineEventInput): PipelineEventRecord | null;
+  log(event: PipelineEventInput): PipelineEventRecord | null | Promise<PipelineEventRecord | null>;
 }
 
 export type RecentReprocessRunStatus = "success" | "failed";

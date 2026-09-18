@@ -71,17 +71,18 @@ export async function runVideoPipeline(
     throw new Error("Unable to resolve BVID before acquiring the video pipeline lock.");
   }
 
-  return withSynchronizedVideoPipelineState({
-    db,
-    workRoot,
-    bvid: lockBvid,
-    videoTitle: identitySnapshot?.title ?? null,
-    publishRequested: Boolean(args.publish),
-    fetchSnapshot: () => fetchVideoSnapshot(client, args),
-  }, async ({ snapshot, state }) => {
+  try {
+    return await withSynchronizedVideoPipelineState({
+      db,
+      workRoot,
+      bvid: lockBvid,
+      videoTitle: identitySnapshot?.title ?? null,
+      publishRequested: Boolean(args.publish),
+      fetchSnapshot: () => fetchVideoSnapshot(client, args),
+    }, async ({ snapshot, state }) => {
   const preservedTopCommentRpid = normalizeOptionalPositiveInteger(args["preserve-top-rpid"]);
   if (preservedTopCommentRpid) {
-    const updatedVideo = updateVideoPreservedTopComment(
+    const updatedVideo = await updateVideoPreservedTopComment(
       db,
       state.video.id,
       preservedTopCommentRpid,
@@ -325,7 +326,10 @@ export async function runVideoPipeline(
     });
     throw error;
   }
-  });
+    });
+  } finally {
+    await db.close?.();
+  }
 }
 
 export async function withSynchronizedVideoPipelineState<T>({
@@ -349,7 +353,7 @@ export async function withSynchronizedVideoPipelineState<T>({
   >>;
 }, task: (context: {
   snapshot: Awaited<ReturnType<typeof fetchVideoSnapshot>>;
-  state: ReturnType<typeof syncVideoSnapshotToDb>;
+  state: Awaited<ReturnType<typeof syncVideoSnapshotToDb>>;
 }) => Promise<T>): Promise<T> {
   return withVideoPipelineLock({
     workRoot,
@@ -359,7 +363,7 @@ export async function withSynchronizedVideoPipelineState<T>({
     ...lockOptions,
   }, async () => {
     const snapshot = await fetchSnapshot();
-    const state = syncVideoSnapshotToDb(db, snapshot);
+    const state = await syncVideoSnapshotToDb(db, snapshot);
     return task({ snapshot, state });
   });
 }
@@ -413,7 +417,7 @@ export async function probePublishedCommentThreadHealth({
   }
 
   const rebuildReason = "missing-root-comment-thread";
-  markVideoPublishRebuildNeeded(db, video.id, rebuildReason);
+  await markVideoPublishRebuildNeeded(db, video.id, rebuildReason);
   video.publish_needs_rebuild = 1;
   video.publish_rebuild_reason = rebuildReason;
   eventLogger?.log({

@@ -64,7 +64,10 @@ export async function runPipelineForBvid({
   if (cookieFile) {
     args.push("--cookie-file", path.resolve(repoRoot, cookieFile));
   }
-  args.push("--bvid", bvid, "--db", path.resolve(repoRoot, dbPath), "--work-root", workRoot);
+  const databaseArg = isPostgresConnectionString(dbPath)
+    ? dbPath
+    : path.resolve(repoRoot, dbPath);
+  args.push("--bvid", bvid, "--db", databaseArg, "--work-root", workRoot);
   if (publish) {
     args.push("--publish");
   }
@@ -264,4 +267,8 @@ function formatFailureStep(payload: PipelineFailurePayload): string {
 function normalizePositiveInteger(value: unknown): number | null {
   const normalized = Number(value);
   return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
+}
+
+function isPostgresConnectionString(value: unknown): boolean {
+  return /^postgres(?:ql)?:\/\//iu.test(String(value ?? "").trim());
 }

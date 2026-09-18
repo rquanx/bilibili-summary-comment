@@ -2,6 +2,33 @@ import path from "node:path";
 import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
 import { getDrizzleDb } from "./orm";
+import { isPostgresDatabase } from "./postgres-database";
+import {
+  pgClearVideoPublishRebuildNeeded,
+  pgGetActiveVideoPartByPageNo,
+  pgGetVideoById,
+  pgGetVideoByIdentity,
+  pgGetVideoPartByCid,
+  pgListAllVideoParts,
+  pgListPendingPublishParts,
+  pgListPendingSummaryParts,
+  pgListVideoParts,
+  pgListVideos,
+  pgListVideosOlderThan,
+  pgListVideosPendingPublish,
+  pgMarkPartsPublished,
+  pgMarkVideoPublishRebuildNeeded,
+  pgReplaceVideoSubtitlePathPrefix,
+  pgResetPublishedStateForVideo,
+  pgSavePartProcessedSummary,
+  pgSavePartPrompt,
+  pgSavePartSubtitle,
+  pgSavePartSummary,
+  pgUpdateVideoCommentThread,
+  pgUpdateVideoPreservedTopComment,
+  pgUpsertVideo,
+  pgUpsertVideoPart,
+} from "./postgres-video-storage";
 import { videoParts, videos } from "./schema";
 import type {
   Db,
@@ -19,7 +46,10 @@ function normalizeStoredPartText(value: string | null | undefined): string | nul
   return normalized || null;
 }
 
-export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): VideoRecord | null {
+export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): any {
+  if (isPostgresDatabase(db)) {
+    return pgGetVideoByIdentity(db, { bvid, aid });
+  }
   const orm = getDrizzleDb(db);
   if (bvid) {
     const row = orm.get<VideoRecord>(sql`
@@ -43,7 +73,10 @@ export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIde
   return null;
 }
 
-export function getVideoById(db: Db, videoId: number): VideoRecord | null {
+export function getVideoById(db: Db, videoId: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgGetVideoById(db, videoId);
+  }
   return getDrizzleDb(db).get<VideoRecord>(sql`
     SELECT *
     FROM ${videos}
@@ -51,7 +84,10 @@ export function getVideoById(db: Db, videoId: number): VideoRecord | null {
   `) ?? null;
 }
 
-export function listVideos(db: Db): VideoRecord[] {
+export function listVideos(db: Db): any {
+  if (isPostgresDatabase(db)) {
+    return pgListVideos(db);
+  }
   return getDrizzleDb(db).all<VideoRecord>(sql`
     SELECT *
     FROM ${videos}
@@ -59,7 +95,10 @@ export function listVideos(db: Db): VideoRecord[] {
   `);
 }
 
-export function listVideosPendingPublish(db: Db): VideoRecord[] {
+export function listVideosPendingPublish(db: Db): any {
+  if (isPostgresDatabase(db)) {
+    return pgListVideosPendingPublish(db);
+  }
   const rows = getDrizzleDb(db).all<VideoRecord & {
     pending_summary_text: string | null;
     pending_summary_text_processed: string | null;
@@ -118,7 +157,10 @@ export function listVideosPendingPublish(db: Db): VideoRecord[] {
     .map(({ video }) => video);
 }
 
-export function listVideosOlderThan(db: Db, cutoffIso: string): VideoRecord[] {
+export function listVideosOlderThan(db: Db, cutoffIso: string): any {
+  if (isPostgresDatabase(db)) {
+    return pgListVideosOlderThan(db, cutoffIso);
+  }
   return getDrizzleDb(db).all<VideoRecord>(sql`
     SELECT *
     FROM ${videos}
@@ -127,7 +169,10 @@ export function listVideosOlderThan(db: Db, cutoffIso: string): VideoRecord[] {
   `);
 }
 
-export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
+export function upsertVideo(db: Db, video: VideoInsert): any {
+  if (isPostgresDatabase(db)) {
+    return pgUpsertVideo(db, video);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
@@ -191,6 +236,9 @@ export function upsertVideo(db: Db, video: VideoInsert): VideoRecord {
 }
 
 export function replaceVideoSubtitlePathPrefix(db: Db, videoId: number, fromPrefix: string, toPrefix: string) {
+  if (isPostgresDatabase(db)) {
+    return pgReplaceVideoSubtitlePathPrefix(db, videoId, fromPrefix, toPrefix);
+  }
   const resolvedFromPrefix = path.resolve(fromPrefix);
   const resolvedToPrefix = path.resolve(toPrefix);
   const rows = listAllVideoParts(db, videoId);
@@ -236,6 +284,9 @@ export function updateVideoCommentThread(
   videoId: number,
   { rootCommentRpid = null, topCommentRpid = null }: { rootCommentRpid?: number | null; topCommentRpid?: number | null },
 ): VideoRecord | null {
+  if (isPostgresDatabase(db)) {
+    return pgUpdateVideoCommentThread(db, videoId, { rootCommentRpid, topCommentRpid }) as any;
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
@@ -259,7 +310,10 @@ export function updateVideoPreservedTopComment(
   db: Db,
   videoId: number,
   preservedTopCommentRpid: number | null,
-): VideoRecord | null {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgUpdateVideoPreservedTopComment(db, videoId, preservedTopCommentRpid);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const normalizedRpid = Number(preservedTopCommentRpid);
@@ -285,7 +339,10 @@ export function updateVideoPreservedTopComment(
   `) ?? null;
 }
 
-export function markVideoPublishRebuildNeeded(db: Db, videoId: number, reason: string | null | undefined): VideoRecord | null {
+export function markVideoPublishRebuildNeeded(db: Db, videoId: number, reason: string | null | undefined): any {
+  if (isPostgresDatabase(db)) {
+    return pgMarkVideoPublishRebuildNeeded(db, videoId, reason);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
@@ -305,7 +362,10 @@ export function markVideoPublishRebuildNeeded(db: Db, videoId: number, reason: s
   `) ?? null;
 }
 
-export function clearVideoPublishRebuildNeeded(db: Db, videoId: number): VideoRecord | null {
+export function clearVideoPublishRebuildNeeded(db: Db, videoId: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgClearVideoPublishRebuildNeeded(db, videoId);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
@@ -325,7 +385,10 @@ export function clearVideoPublishRebuildNeeded(db: Db, videoId: number): VideoRe
   `) ?? null;
 }
 
-export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord | null {
+export function upsertVideoPart(db: Db, part: VideoPartUpsert): any {
+  if (isPostgresDatabase(db)) {
+    return pgUpsertVideoPart(db, part);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {
@@ -401,7 +464,10 @@ export function upsertVideoPart(db: Db, part: VideoPartUpsert): VideoPartRecord 
   return getVideoPartByCid(db, part.videoId, part.cid);
 }
 
-export function listVideoParts(db: Db, videoId: number): VideoPartRecord[] {
+export function listVideoParts(db: Db, videoId: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgListVideoParts(db, videoId);
+  }
   return getDrizzleDb(db).all<VideoPartRecord>(sql`
     SELECT *
     FROM ${videoParts}
@@ -411,7 +477,10 @@ export function listVideoParts(db: Db, videoId: number): VideoPartRecord[] {
   `);
 }
 
-export function listAllVideoParts(db: Db, videoId: number): VideoPartRecord[] {
+export function listAllVideoParts(db: Db, videoId: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgListAllVideoParts(db, videoId);
+  }
   return getDrizzleDb(db).all<VideoPartRecord>(sql`
     SELECT *
     FROM ${videoParts}
@@ -420,7 +489,10 @@ export function listAllVideoParts(db: Db, videoId: number): VideoPartRecord[] {
   `);
 }
 
-export function getVideoPartByCid(db: Db, videoId: number, cid: number): VideoPartRecord | null {
+export function getVideoPartByCid(db: Db, videoId: number, cid: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgGetVideoPartByCid(db, videoId, cid);
+  }
   return getDrizzleDb(db).get<VideoPartRecord>(sql`
     SELECT *
     FROM ${videoParts}
@@ -430,7 +502,10 @@ export function getVideoPartByCid(db: Db, videoId: number, cid: number): VideoPa
   `) ?? null;
 }
 
-export function getActiveVideoPartByPageNo(db: Db, videoId: number, pageNo: number): VideoPartRecord | null {
+export function getActiveVideoPartByPageNo(db: Db, videoId: number, pageNo: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgGetActiveVideoPartByPageNo(db, videoId, pageNo);
+  }
   return getDrizzleDb(db).get<VideoPartRecord>(sql`
     SELECT *
     FROM ${videoParts}
@@ -441,7 +516,10 @@ export function getActiveVideoPartByPageNo(db: Db, videoId: number, pageNo: numb
   `) ?? null;
 }
 
-export function listPendingSummaryParts(db: Db, videoId: number): VideoPartRecord[] {
+export function listPendingSummaryParts(db: Db, videoId: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgListPendingSummaryParts(db, videoId);
+  }
   return getDrizzleDb(db).all<VideoPartRecord>(sql`
     SELECT * FROM video_parts
     WHERE video_id = ${videoId}
@@ -451,7 +529,10 @@ export function listPendingSummaryParts(db: Db, videoId: number): VideoPartRecor
   `);
 }
 
-export function listPendingPublishParts(db: Db, videoId: number): VideoPartRecord[] {
+export function listPendingPublishParts(db: Db, videoId: number): any {
+  if (isPostgresDatabase(db)) {
+    return pgListPendingPublishParts(db, videoId);
+  }
   const candidates = getDrizzleDb(db).all<VideoPartRecord>(sql`
     SELECT * FROM video_parts
     WHERE video_id = ${videoId}
@@ -489,7 +570,14 @@ export function savePartSummary(
     summaryHash: string;
     processedSummaryText?: string | null;
   },
-): VideoPartRecord | null {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgSavePartSummary(db, videoId, pageNo, {
+      summaryText,
+      summaryHash,
+      processedSummaryText,
+    });
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const normalizedProcessedSummaryText = normalizeStoredSummaryText(processedSummaryText);
@@ -529,7 +617,10 @@ export function savePartProcessedSummary(
   videoId: number,
   pageNo: number,
   processedSummaryText: string | null | undefined,
-): VideoPartRecord | null {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgSavePartProcessedSummary(db, videoId, pageNo, processedSummaryText);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const normalizedProcessedSummaryText = normalizeStoredSummaryText(processedSummaryText);
@@ -562,7 +653,15 @@ export function savePartSubtitle(
     subtitleLang?: string | null;
     subtitleText?: string | null;
   },
-): VideoPartRecord | null {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgSavePartSubtitle(db, videoId, pageNo, {
+      subtitlePath,
+      subtitleSource,
+      subtitleLang,
+      subtitleText,
+    });
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const normalizedSubtitleText = normalizeStoredPartText(subtitleText);
@@ -588,7 +687,10 @@ export function savePartPrompt(
   videoId: number,
   pageNo: number,
   promptText: string | null | undefined,
-): VideoPartRecord | null {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgSavePartPrompt(db, videoId, pageNo, promptText);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const normalizedPromptText = normalizeStoredPartText(promptText);
@@ -607,6 +709,9 @@ export function savePartPrompt(
 }
 
 export function markPartsPublished(db: Db, videoId: number, pageNos: number[], publishedCommentRpid: number | null) {
+  if (isPostgresDatabase(db)) {
+    return pgMarkPartsPublished(db, videoId, pageNos, publishedCommentRpid);
+  }
   if (!Array.isArray(pageNos) || pageNos.length === 0) {
     return;
   }
@@ -638,6 +743,9 @@ export function markPartsPublished(db: Db, videoId: number, pageNos: number[], p
 }
 
 export function resetPublishedStateForVideo(db: Db, videoId: number) {
+  if (isPostgresDatabase(db)) {
+    return pgResetPublishedStateForVideo(db, videoId);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   withDatabaseWriteLock(db, () => {

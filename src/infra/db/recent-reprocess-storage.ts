@@ -1,10 +1,18 @@
 import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
 import { getDrizzleDb } from "./orm";
+import { isPostgresDatabase } from "./postgres-database";
+import {
+  pgGetLatestSuccessfulRecentReprocessRunByCandidateKey,
+  pgSaveRecentReprocessRun,
+} from "./postgres-recent-reprocess-storage";
 import { recentReprocessRuns } from "./schema";
 import type { Db, RecentReprocessRunInsert, RecentReprocessRunRecord } from "./types";
 
-export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert): RecentReprocessRunRecord {
+export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert): any {
+  if (isPostgresDatabase(db)) {
+    return pgSaveRecentReprocessRun(db, input);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const finishedAt = normalizeOptionalString(input.finishedAt) ?? now;
@@ -64,7 +72,10 @@ export function saveRecentReprocessRun(db: Db, input: RecentReprocessRunInsert):
 export function getLatestSuccessfulRecentReprocessRunByCandidateKey(
   db: Db,
   candidateKey: string,
-): RecentReprocessRunRecord | null {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgGetLatestSuccessfulRecentReprocessRunByCandidateKey(db, candidateKey);
+  }
   const normalizedCandidateKey = String(candidateKey ?? "").trim();
   if (!normalizedCandidateKey) {
     return null;

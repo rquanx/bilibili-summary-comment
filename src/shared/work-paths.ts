@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { replaceVideoSubtitlePathPrefix } from "../infra/db/index";
+import { isPostgresDatabase, replaceVideoSubtitlePathPrefix } from "../infra/db/index";
 import type { Db, VideoRecord } from "../infra/db/index";
 import { getRepoRoot } from "./runtime-tools";
 
@@ -172,7 +172,10 @@ export function ensureVideoWorkDir({
 
     renameSync(candidateDir, targetDir);
     if (db && Number(video.id ?? 0) > 0) {
-      replaceVideoSubtitlePathPrefixImpl(db, Number(video.id), candidateDir, targetDir);
+      const update = replaceVideoSubtitlePathPrefixImpl(db, Number(video.id), candidateDir, targetDir);
+      if (isPostgresDatabase(db)) {
+        db.track(Promise.resolve(update));
+      }
     }
     return targetDir;
   }

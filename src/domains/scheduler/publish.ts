@@ -4,6 +4,7 @@ import {
   getPreferredSummaryText,
   getVideoByIdentity,
   insertPipelineEvent,
+  isPostgresDatabase,
   listPendingPublishParts,
   listPipelineEvents,
   listVideosPendingPublish,
@@ -102,9 +103,9 @@ export async function runPendingVideoPublishSweep({
   let tasks: PendingPublishTask[] = [];
 
   try {
-    const videos = listVideosPendingPublishImpl(db);
+    const videos = await listVideosPendingPublishImpl(db);
 
-    tasks = buildPendingPublishTasks({
+    tasks = await buildPendingPublishTasks({
       db,
       videos,
       authFileByMid,
@@ -130,7 +131,7 @@ export async function runPendingVideoPublishSweep({
         continue;
       }
 
-      const video = getVideoByIdentityImpl(db, { bvid: upload.bvid, aid: upload.aid ?? null });
+      const video = await getVideoByIdentityImpl(db, { bvid: upload.bvid, aid: upload.aid ?? null });
       if (!video || Number(video.root_comment_rpid ?? 0) <= 0 || Number(video.publish_needs_rebuild) === 1) {
         continue;
       }
@@ -153,7 +154,7 @@ export async function runPendingVideoPublishSweep({
       taskByBvid.set(video.bvid, tasks[tasks.length - 1]);
     }
   } finally {
-    db.close?.();
+    await db.close?.();
   }
 
   tasks.sort(comparePendingPublishTasks);
@@ -199,7 +200,7 @@ export async function runPendingVideoPublishSweep({
   };
 }
 
-function buildPendingPublishTasks({
+async function buildPendingPublishTasks({
   db,
   videos,
   authFileByMid,
@@ -211,16 +212,16 @@ function buildPendingPublishTasks({
   authFileByMid: Map<number, string>;
   fallbackAuthFile: string | null;
   onLog: (message: string) => void;
-}): PendingPublishTask[] {
-  const failureCooldownByBvid = listTerminalPublishFailureCooldowns(db);
-
-  return videos.flatMap((video) => {
+}): Promise<PendingPublishTask[]> {
+  const failureCooldownByBvid = await listTerminalPublishFailureCooldowns(db);
+  const tasks: PendingPublishTask[] = [];
+  for (const video of videos) {
     const retryAfterMs = failureCooldownByBvid.get(video.bvid);
     if (retryAfterMs && retryAfterMs > Date.now()) {
       onLog(
         `Skip publish for ${video.bvid}: recent terminal comment failure is cooling down until ${new Date(retryAfterMs).toISOString()}`,
       );
-      return [];
+      continue;
     }
 
     const resolvedAuthFile = resolveAuthFileForVideo(video, authFileByMid, fallbackAuthFile);
@@ -228,17 +229,18 @@ function buildPendingPublishTasks({
       onLog(
         `Skip publish for ${video.bvid} (${video.title || "untitled"}): no auth file mapped for owner ${String(video.owner_mid ?? "unknown")}`,
       );
-      return [];
+      continue;
     }
 
-    return [{
+    tasks.push({
       video,
       authFile: resolvedAuthFile,
       publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
       uploadedAtUnix: null,
-      queueRevision: createPublishQueueRevision(db, video),
-    }];
-  });
+      queueRevision: await createPublishQueueRevision(db, video),
+    });
+  }
+  return tasks;
 }
 
 export function listTerminalPublishFailureCooldowns(
@@ -246,6 +248,10 @@ export function listTerminalPublishFailureCooldowns(
   nowMs = Date.now(),
   includeExpiredWithinMs = 0,
 ) {
+  if (isPostgresDatabase(db)) {
+    return listTerminalPublishFailureCooldownsPostgres(db, nowMs, includeExpiredWithinMs);
+  }
+
   const expiredLookbackMs = Math.max(0, Number(includeExpiredWithinMs) || 0);
   const cutoffMs = nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS - expiredLookbackMs;
   const events = listPipelineEvents(db, {
@@ -299,11 +305,64 @@ export function listTerminalPublishFailureCooldowns(
   return cooldownByBvid;
 }
 
-function createPublishQueueRevision(
+async function listTerminalPublishFailureCooldownsPostgres(
+  db: ReturnType<typeof openDatabase>,
+  nowMs: number,
+  includeExpiredWithinMs: number,
+) {
+  const expiredLookbackMs = Math.max(0, Number(includeExpiredWithinMs) || 0);
+  const events = await listPipelineEvents(db, {
+    sinceIso: new Date(nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS - expiredLookbackMs).toISOString(),
+    limit: 5_000,
+  });
+  return buildTerminalPublishFailureCooldowns(events);
+}
+
+function buildTerminalPublishFailureCooldowns(events: Awaited<ReturnType<typeof listPipelineEvents>>) {
+  const latestEventByBvid = new Map<string, (typeof events)[number]>();
+  for (const event of events) {
+    const bvid = String(event.bvid ?? "").trim();
+    if (
+      !bvid
+      || latestEventByBvid.has(bvid)
+      || event.scope !== "publish"
+      || event.action !== "comment-thread"
+    ) {
+      continue;
+    }
+    latestEventByBvid.set(bvid, event);
+  }
+
+  const cooldownByBvid = new Map<string, number>();
+  for (const [bvid, event] of latestEventByBvid) {
+    if (event.status !== "failed") {
+      continue;
+    }
+    const details = parsePipelineFailurePayload(event.details_json);
+    if (!isTerminalCommentPublishFailure({
+      message: event.message,
+      code: details?.code,
+      stdout: JSON.stringify({ ...details, message: event.message }),
+    }) && !isPublishPipelineTimeoutFailure({
+      message: event.message,
+      code: details?.code,
+      timedOut: details?.timedOut,
+    })) {
+      continue;
+    }
+    const failedAtMs = Date.parse(event.created_at);
+    if (Number.isFinite(failedAtMs)) {
+      cooldownByBvid.set(bvid, failedAtMs + TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS);
+    }
+  }
+  return cooldownByBvid;
+}
+
+async function createPublishQueueRevision(
   db: ReturnType<typeof openDatabase>,
   video: VideoRecord,
 ) {
-  const pendingParts = listPendingPublishParts(db, video.id);
+  const pendingParts = await listPendingPublishParts(db, video.id);
   return JSON.stringify({
     publishMode: Number(video.publish_needs_rebuild) === 1 ? "rebuild" : "append",
     rebuildReason: video.publish_rebuild_reason,
@@ -542,7 +601,7 @@ async function runPendingPublishTasksWithConcurrency({
             queueRevision: task.queueRevision,
             retryAfterMs: Date.now() + TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS,
           });
-          persistPublishTimeoutFailure({
+          await persistPublishTimeoutFailure({
             dbPath,
             task,
             error,
@@ -581,7 +640,7 @@ function isPublishPipelineTimeoutFailure(error: unknown) {
     || String(candidate.message ?? "").toLowerCase().includes("command timed out");
 }
 
-function persistPublishTimeoutFailure({
+async function persistPublishTimeoutFailure({
   dbPath,
   task,
   error,
@@ -595,7 +654,7 @@ function persistPublishTimeoutFailure({
     : {};
   const db = openDatabase(dbPath);
   try {
-    insertPipelineEvent(db, {
+    await insertPipelineEvent(db, {
       runId: `publish-timeout-${Date.now()}`,
       videoId: task.video.id,
       bvid: task.video.bvid,
@@ -613,7 +672,7 @@ function persistPublishTimeoutFailure({
       },
     });
   } finally {
-    db.close?.();
+    await db.close?.();
   }
 }
 

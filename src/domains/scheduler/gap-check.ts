@@ -161,7 +161,10 @@ export async function runRecentVideoGapCheck({
     };
   }
 
-  const db = openDatabaseImpl(path.resolve(repoRoot, dbPath));
+  const databaseTarget = isPostgresConnectionString(dbPath)
+    ? dbPath
+    : path.resolve(repoRoot, dbPath);
+  const db = openDatabaseImpl(databaseTarget);
   const checkedVideos: GapCheckDailyVideoRecord[] = [];
   const newGaps: GapRecord[] = [];
   let alreadyNotifiedGapCount = 0;
@@ -186,7 +189,7 @@ export async function runRecentVideoGapCheck({
         });
         const gaps = detectGapsFromVideoSnapshot(snapshot, gapThresholdSeconds);
         for (const gap of gaps) {
-          if (hasGapNotificationImpl(db, gap.gapKey)) {
+          if (await hasGapNotificationImpl(db, gap.gapKey)) {
             alreadyNotifiedGapCount += 1;
             continue;
           }
@@ -239,7 +242,7 @@ export async function runRecentVideoGapCheck({
       notificationSent = notifyResult.sent;
       if (notifyResult.sent) {
         for (const gap of newGaps) {
-          saveGapNotificationImpl(db, {
+          await saveGapNotificationImpl(db, {
             gapKey: gap.gapKey,
             bvid: gap.bvid,
             videoTitle: gap.title,
@@ -274,8 +277,12 @@ export async function runRecentVideoGapCheck({
       snapshotPath,
     };
   } finally {
-    db.close?.();
+    await db.close?.();
   }
+}
+
+function isPostgresConnectionString(value: unknown) {
+  return /^postgres(?:ql)?:\/\//iu.test(String(value ?? "").trim());
 }
 
 export function detectGapsFromVideoSnapshot(

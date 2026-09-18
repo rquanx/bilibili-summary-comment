@@ -41,7 +41,7 @@ await runCli({
     const db = openDatabase(dbPath);
     try {
       const snapshot = await fetchVideoSnapshot(client, args);
-      const state = syncVideoSnapshotToDb(db, snapshot);
+      const state = await syncVideoSnapshotToDb(db, snapshot);
 
       const summaryText = normalizeSummaryMarkers(fs.readFileSync(summaryFile, "utf8"));
       const pageInspection = inspectSummaryPageMarkers(
@@ -64,7 +64,7 @@ await runCli({
 
       const savedPages = [];
       for (const group of pageGroups) {
-        const saved = savePartSummary(db, state.video.id, group.page, {
+        const saved = await savePartSummary(db, state.video.id, group.page, {
           summaryText: group.text,
           summaryHash: createHash("sha1").update(group.text).digest("hex"),
         });
@@ -87,7 +87,7 @@ await runCli({
         savedPages,
       };
     } finally {
-      db.close?.();
+      await db.close?.();
     }
   },
 });

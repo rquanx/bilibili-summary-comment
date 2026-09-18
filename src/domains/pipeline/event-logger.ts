@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { insertPipelineEvent } from "../../infra/db/index";
+import { insertPipelineEvent, isPostgresDatabase } from "../../infra/db/index";
 import { formatBiliVideoUrlSuffix } from "../bili/video-url";
 import { writeTerminalMessage } from "./progress";
 import type { Db, PipelineEventInput, PipelineEventLogger, VideoRecord } from "../../infra/db/index";
@@ -31,28 +31,48 @@ export function createPipelineEventLogger({
     logger?.debug("pipeline-event", payload);
 
     try {
-      return insertPipelineEvent(db, payload);
-    } catch (error) {
-      if (isSqliteLockedError(error)) {
-        const action = `${String(payload.scope ?? "pipeline")}/${String(payload.action ?? "event")}`;
-        const message = String(payload.message ?? "").trim();
-        const suffix = message ? `: ${message}` : "";
-        const videoSuffix = formatBiliVideoUrlSuffix({ bvid: sharedContext.bvid });
-        logger?.warn("Skipping pipeline event log because the database is locked", {
-          ...payload,
-          actionLabel: action,
-          error,
-        });
-        writeTerminalMessage(
-          process.stderr,
-          "warn",
-          `Skipping pipeline event log because the database is locked (${action}${suffix})${videoSuffix}`,
-        );
-        return null;
+      const result = insertPipelineEvent(db, payload);
+      if (isPostgresDatabase(db)) {
+        return db.track(Promise.resolve(result).catch((error) => {
+          reportEventLogFailure(error, payload);
+          return null;
+        }));
       }
-
-      throw error;
+      return result;
+    } catch (error) {
+      return reportEventLogFailure(error, payload);
     }
+  }
+
+  function reportEventLogFailure(error: unknown, payload: PipelineEventInput) {
+    if (isSqliteLockedError(error)) {
+      const action = `${String(payload.scope ?? "pipeline")}/${String(payload.action ?? "event")}`;
+      const message = String(payload.message ?? "").trim();
+      const suffix = message ? `: ${message}` : "";
+      const videoSuffix = formatBiliVideoUrlSuffix({ bvid: sharedContext.bvid });
+      logger?.warn("Skipping pipeline event log because the database is locked", {
+        ...payload,
+        actionLabel: action,
+        error,
+      });
+      writeTerminalMessage(
+        process.stderr,
+        "warn",
+        `Skipping pipeline event log because the database is locked (${action}${suffix})${videoSuffix}`,
+      );
+      return null;
+    }
+
+    logger?.error("Failed to persist pipeline event", {
+      ...payload,
+      error,
+    });
+    writeTerminalMessage(
+      process.stderr,
+      "warn",
+      `Failed to persist pipeline event: ${error instanceof Error ? error.message : "unknown database error"}`,
+    );
+    return null;
   }
 
   return {

@@ -49,7 +49,7 @@ export async function ensureSubtitleForPart({
   transcribeWithRetriesImpl = transcribeWithRetries,
   runVenvModuleImpl = runVenvModule,
 }) {
-  const currentVideo = video ?? getVideoById(db, videoId) ?? {
+  const currentVideo = video ?? await getVideoById(db, videoId) ?? {
     id: videoId,
     bvid,
     title: videoTitle,
@@ -68,7 +68,7 @@ export async function ensureSubtitleForPart({
   const subtitlePath = path.join(workDir, `${stableBaseName}.srt`);
   const audioTemplate = path.join(workDir, `${stableBaseName}.%(ext)s`);
   const audioPath = path.join(workDir, `${stableBaseName}.m4a`);
-  const currentPart = getVideoPartByCid(db, videoId, cid);
+  const currentPart = await getVideoPartByCid(db, videoId, cid);
 
   if (existingSubtitlePath && fs.existsSync(existingSubtitlePath)) {
     if (path.resolve(existingSubtitlePath) !== path.resolve(subtitlePath)) {
@@ -158,7 +158,7 @@ export async function ensureSubtitleForPart({
     fs.rmSync(subtitlePath, { force: true });
   }
 
-  const reusableSubtitle = findReusableSubtitleSource(
+  const reusableSubtitle = await findReusableSubtitleSource(
     db,
     {
       id: videoId,
@@ -178,7 +178,7 @@ export async function ensureSubtitleForPart({
     });
   }
   const reusableSubtitlePart = reusableSubtitle?.part && reusableSubtitle?.video
-    ? getVideoPartByCid(db, reusableSubtitle.video.id, reusableSubtitle.part.cid) ?? reusableSubtitle.part
+    ? await getVideoPartByCid(db, reusableSubtitle.video.id, reusableSubtitle.part.cid) ?? reusableSubtitle.part
     : reusableSubtitle?.part ?? null;
   const reusableSubtitlePath = String(reusableSubtitlePart?.subtitle_path ?? "").trim();
   if (reusableSubtitlePath && fs.existsSync(reusableSubtitlePath)) {
@@ -527,7 +527,7 @@ function acceptSubtitleCandidate({
   return false;
 }
 
-function finalizeSubtitle({
+async function finalizeSubtitle({
   db,
   videoId,
   pageNo,
@@ -541,7 +541,7 @@ function finalizeSubtitle({
   durationSec,
 }: SubtitleFinalizeInput) {
   const subtitleText = fs.readFileSync(subtitlePath, "utf8").trim();
-  savePartSubtitle(db, videoId, pageNo, {
+  await savePartSubtitle(db, videoId, pageNo, {
     subtitlePath,
     subtitleSource,
     subtitleLang,

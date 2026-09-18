@@ -44,9 +44,9 @@ await runCli({
     const db = openDatabase(dbPath);
     try {
       const snapshot = await fetchVideoSnapshot(client, args);
-      const state = syncVideoSnapshotToDb(db, snapshot);
-      const pendingParts = listPendingPublishParts(db, state.video.id);
-      const artifacts = writeSummaryArtifacts(db, state.video);
+      const state = await syncVideoSnapshotToDb(db, snapshot);
+      const pendingParts = await listPendingPublishParts(db, state.video.id);
+      const artifacts = await writeSummaryArtifacts(db, state.video);
       const needsRebuildPublish = Boolean(state.video.publish_needs_rebuild);
 
       if (pendingParts.length === 0 && !needsRebuildPublish) {
@@ -83,7 +83,7 @@ await runCli({
         createdComments: result.createdComments ?? [],
       };
     } finally {
-      db.close?.();
+      await db.close?.();
     }
   },
 });

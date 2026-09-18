@@ -10,7 +10,7 @@ type CleanupCandidate = Pick<VideoRecord, "bvid" | "title" | "last_scan_at" | "u
   & Partial<Pick<VideoRecord, "owner_mid" | "owner_name" | "owner_dir_name" | "work_dir_name">>;
 
 type CleanupDatabaseHandle = {
-  close?: () => unknown;
+  close?: () => unknown | Promise<unknown>;
 };
 
 interface CleanupOldWorkDirectoriesOptions {
@@ -19,7 +19,10 @@ interface CleanupOldWorkDirectoriesOptions {
   olderThanDays?: number;
   onLog?: (message: string) => void;
   openDatabaseImpl?: (databasePath: string) => CleanupDatabaseHandle;
-  listVideosOlderThanImpl?: (db: CleanupDatabaseHandle, cutoffIso: string) => CleanupCandidate[];
+  listVideosOlderThanImpl?: (
+    db: CleanupDatabaseHandle,
+    cutoffIso: string,
+  ) => CleanupCandidate[] | Promise<CleanupCandidate[]>;
   repoRoot?: string;
   existsSync?: (targetPath: string) => boolean;
   rmSync?: (targetPath: string, options: { recursive: boolean; force: boolean }) => void;
@@ -42,7 +45,7 @@ export async function cleanupOldWorkDirectories({
   const db = openDatabaseImpl(dbPath);
   try {
     const cutoffDate = new Date(Date.now() - Math.max(1, Number(olderThanDays) || 2) * 24 * 3600 * 1000);
-    const candidates = listVideosOlderThanImpl(db, cutoffDate.toISOString());
+    const candidates = await listVideosOlderThanImpl(db, cutoffDate.toISOString());
     const workRootPath = path.resolve(repoRoot, workRoot);
     const removedDirectories: string[] = [];
     const missingDirectories: string[] = [];
@@ -85,7 +88,7 @@ export async function cleanupOldWorkDirectories({
       })),
     };
   } finally {
-    db.close?.();
+    await db.close?.();
   }
 }
 

@@ -1,10 +1,18 @@
 import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
 import { getDrizzleDb } from "./orm";
+import { isPostgresDatabase } from "./postgres-database";
+import {
+  pgInsertPipelineEvent,
+  pgListPipelineEvents,
+} from "./postgres-pipeline-event-storage";
 import { pipelineEvents } from "./schema";
 import type { Db, PipelineEventInput, PipelineEventRecord } from "./types";
 
-export function insertPipelineEvent(db: Db, event: PipelineEventInput): PipelineEventRecord | null {
+export function insertPipelineEvent(db: Db, event: PipelineEventInput): any {
+  if (isPostgresDatabase(db)) {
+    return pgInsertPipelineEvent(db, event);
+  }
   const orm = getDrizzleDb(db);
   const createdAt = new Date().toISOString();
   return withDatabaseWriteLock(db, () => {
@@ -52,7 +60,10 @@ export function insertPipelineEvent(db: Db, event: PipelineEventInput): Pipeline
 export function listPipelineEvents(
   db: Db,
   { bvid = null, sinceIso = null, limit = 100 }: { bvid?: string | null; sinceIso?: string | null; limit?: number } = {},
-): PipelineEventRecord[] {
+): any {
+  if (isPostgresDatabase(db)) {
+    return pgListPipelineEvents(db, { bvid, sinceIso, limit });
+  }
   const safeLimit = Math.max(1, Number(limit) || 100);
   return getDrizzleDb(db).all<PipelineEventRecord>(sql`
     SELECT *

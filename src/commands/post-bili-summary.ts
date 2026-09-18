@@ -50,7 +50,7 @@ await runCli({
     const db = openDatabase(dbPath);
     try {
       const snapshot = await fetchVideoSnapshot(client, args);
-      const state = syncVideoSnapshotToDb(db, snapshot);
+      const state = await syncVideoSnapshotToDb(db, snapshot);
       const topCommentState = await getTopComment(client, { oid, type });
       const forcedRootRpid = parseOptionalPositiveInteger(args["root-rpid"], "--root-rpid");
       const result = await postSummaryThread({
@@ -82,7 +82,7 @@ await runCli({
         createdComments: result.createdComments,
       };
     } finally {
-      db.close?.();
+      await db.close?.();
     }
   },
 });

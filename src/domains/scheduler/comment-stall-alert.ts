@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   insertPipelineEvent,
+  isPostgresDatabase,
   listPendingPublishParts,
   listVideosPendingPublish,
   openDatabase,
@@ -80,8 +81,8 @@ export async function runCommentPublishStallAlert({
   let latestPublishActivityAt: string | null;
 
   try {
-    candidates = listPendingCommentCandidates(db);
-    candidates = filterActionableCommentCandidates({
+    candidates = await listPendingCommentCandidates(db);
+    candidates = await filterActionableCommentCandidates({
       db,
       candidates,
       summaryUsers,
@@ -90,10 +91,10 @@ export async function runCommentPublishStallAlert({
       nowMs: now.getTime(),
       cooldownRecoveryWindowMs: resolveThresholdMinutes(thresholdMinutes) * 60_000,
     });
-    latestSuccessfulCommentAt = getLatestSuccessfulCommentAt(db);
-    latestPublishActivityAt = getLatestCommentPublishActivityAt(db);
+    latestSuccessfulCommentAt = await getLatestSuccessfulCommentAt(db);
+    latestPublishActivityAt = await getLatestCommentPublishActivityAt(db);
   } finally {
-    db.close?.();
+    await db.close?.();
   }
 
   const evaluation = evaluateCommentPublishStallState({
@@ -149,7 +150,7 @@ export async function runCommentPublishStallAlert({
       updatedAt: notifiedAt,
     };
     persistCommentStallAlertState(statePath, notifiedState);
-    recordCommentStallAlertEvent({
+    await recordCommentStallAlertEvent({
       dbPath,
       candidates,
       state: notifiedState,
@@ -180,7 +181,11 @@ export async function runCommentPublishStallAlert({
   }
 }
 
-export function listPendingCommentCandidates(db: Db): PendingCommentCandidate[] {
+export function listPendingCommentCandidates(db: Db): any {
+  if (isPostgresDatabase(db)) {
+    return listPendingCommentCandidatesPostgres(db);
+  }
+
   const candidates = new Map<number, PendingCommentCandidate>();
   const pendingSummaryRows = db.prepare(`
     SELECT
@@ -233,7 +238,68 @@ export function listPendingCommentCandidates(db: Db): PendingCommentCandidate[] 
   });
 }
 
-export function getLatestSuccessfulCommentAt(db: Db): string | null {
+async function listPendingCommentCandidatesPostgres(db: Db): Promise<PendingCommentCandidate[]> {
+  const candidates = new Map<number, PendingCommentCandidate>();
+  const pendingSummaryRows = await db.query(`
+    SELECT
+      v.id AS video_id,
+      v.bvid,
+      v.title,
+      v.owner_mid,
+      COUNT(*) AS pending_summary_parts,
+      MIN(p.created_at) AS first_pending_at
+    FROM videos v
+    JOIN video_parts p ON p.video_id = v.id
+    WHERE p.is_deleted = 0
+      AND (p.summary_text IS NULL OR TRIM(p.summary_text) = '')
+    GROUP BY v.id, v.bvid, v.title, v.owner_mid
+  `) as PendingSummaryRow[];
+
+  for (const row of pendingSummaryRows) {
+    candidates.set(row.video_id, {
+      videoId: row.video_id,
+      bvid: row.bvid,
+      title: row.title,
+      ownerMid: row.owner_mid,
+      pendingSummaryParts: Number(row.pending_summary_parts) || 0,
+      pendingPublishParts: 0,
+      publishNeedsRebuild: false,
+      firstPendingAt: normalizeIsoTimestamp(row.first_pending_at) ?? new Date().toISOString(),
+    });
+  }
+
+  const videos = await listVideosPendingPublish(db);
+  for (const video of videos) {
+    const pendingParts = await listPendingPublishParts(db, video.id);
+    const firstPendingAt = resolvePublishCandidateFirstPendingAt(video, pendingParts);
+    const existing = candidates.get(video.id);
+    candidates.set(video.id, {
+      videoId: video.id,
+      bvid: video.bvid,
+      title: video.title,
+      ownerMid: video.owner_mid,
+      pendingSummaryParts: existing?.pendingSummaryParts ?? 0,
+      pendingPublishParts: pendingParts.length,
+      publishNeedsRebuild: Number(video.publish_needs_rebuild) === 1,
+      firstPendingAt: earliestIsoTimestamp(existing?.firstPendingAt, firstPendingAt),
+    });
+  }
+
+  return sortPendingCommentCandidates(candidates);
+}
+
+function sortPendingCommentCandidates(candidates: Map<number, PendingCommentCandidate>) {
+  return [...candidates.values()].sort((left, right) => {
+    const timeDiff = timestampMs(left.firstPendingAt) - timestampMs(right.firstPendingAt);
+    return timeDiff || left.videoId - right.videoId;
+  });
+}
+
+export function getLatestSuccessfulCommentAt(db: Db): any {
+  if (isPostgresDatabase(db)) {
+    return getLatestSuccessfulCommentAtPostgres(db);
+  }
+
   const rows = db.prepare(`
     SELECT details_json, created_at
     FROM pipeline_events
@@ -258,7 +324,35 @@ export function getLatestSuccessfulCommentAt(db: Db): string | null {
   return null;
 }
 
-export function getLatestCommentPublishActivityAt(db: Db): string | null {
+async function getLatestSuccessfulCommentAtPostgres(db: Db): Promise<string | null> {
+  const rows = await db.query(`
+    SELECT details_json, created_at
+    FROM pipeline_events
+    WHERE scope = 'publish'
+      AND action = 'comment-thread'
+      AND status = 'succeeded'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 500
+  `) as Array<{ details_json: string | null; created_at: string }>;
+
+  for (const row of rows) {
+    try {
+      const details = JSON.parse(String(row.details_json ?? "{}")) as { createdComments?: unknown };
+      if (Number(details.createdComments ?? 0) > 0) {
+        return normalizeIsoTimestamp(row.created_at);
+      }
+    } catch {
+      // Ignore malformed historical event details.
+    }
+  }
+  return null;
+}
+
+export function getLatestCommentPublishActivityAt(db: Db): any {
+  if (isPostgresDatabase(db)) {
+    return getLatestCommentPublishActivityAtPostgres(db);
+  }
+
   const row = db.prepare(`
     SELECT created_at
     FROM pipeline_events
@@ -270,6 +364,19 @@ export function getLatestCommentPublishActivityAt(db: Db): string | null {
   `).get() as { created_at?: string } | undefined;
 
   return normalizeIsoTimestamp(row?.created_at);
+}
+
+async function getLatestCommentPublishActivityAtPostgres(db: Db): Promise<string | null> {
+  const rows = await db.query(`
+    SELECT created_at
+    FROM pipeline_events
+    WHERE scope = 'publish'
+      AND action = 'comment-thread'
+      AND status IN ('started', 'succeeded', 'failed')
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `) as Array<{ created_at?: string }>;
+  return normalizeIsoTimestamp(rows[0]?.created_at);
 }
 
 export function evaluateCommentPublishStallState({
@@ -456,7 +563,7 @@ function resolvePublishCandidateFirstPendingAt(
   );
 }
 
-function recordCommentStallAlertEvent({
+async function recordCommentStallAlertEvent({
   dbPath,
   candidates,
   state,
@@ -469,7 +576,7 @@ function recordCommentStallAlertEvent({
 }) {
   const db = openDatabase(dbPath);
   try {
-    insertPipelineEvent(db, {
+    await insertPipelineEvent(db, {
       scope: "scheduler",
       action: "comment-publish-stalled-alert",
       status: "succeeded",
@@ -483,7 +590,7 @@ function recordCommentStallAlertEvent({
       },
     });
   } finally {
-    db.close?.();
+    await db.close?.();
   }
 }
 
@@ -503,11 +610,27 @@ function filterActionableCommentCandidates({
   repoRoot: string;
   nowMs: number;
   cooldownRecoveryWindowMs: number;
-}) {
+}): any {
+  if (isPostgresDatabase(db)) {
+    return filterActionableCommentCandidatesAsync({
+      db,
+      candidates,
+      summaryUsers,
+      authFile,
+      repoRoot,
+      nowMs,
+      cooldownRecoveryWindowMs,
+    });
+  }
+
   const publishCandidates = candidates.filter(
     (candidate) => candidate.pendingPublishParts > 0 || candidate.publishNeedsRebuild,
   );
-  const cooldowns = listTerminalPublishFailureCooldowns(db, nowMs, cooldownRecoveryWindowMs);
+  const cooldowns = listTerminalPublishFailureCooldowns(
+    db,
+    nowMs,
+    cooldownRecoveryWindowMs,
+  ) as Map<string, number>;
   const candidatesOutsideCooldown = publishCandidates.flatMap((candidate) => {
     const retryAfterMs = cooldowns.get(candidate.bvid);
     if (retryAfterMs && retryAfterMs > nowMs) {
@@ -539,6 +662,55 @@ function filterActionableCommentCandidates({
   }
   const fallbackAuthFile = authFileByMid.size === 1 ? [...authFileByMid.values()][0] : null;
 
+  return candidatesOutsideCooldown.filter((candidate) => {
+    const ownerMid = Number(candidate.ownerMid ?? 0);
+    return (Number.isInteger(ownerMid) && ownerMid > 0 && authFileByMid.has(ownerMid))
+      || Boolean(fallbackAuthFile);
+  });
+}
+
+async function filterActionableCommentCandidatesAsync(options: {
+  db: Db;
+  candidates: PendingCommentCandidate[];
+  summaryUsers: unknown;
+  authFile: string | undefined;
+  repoRoot: string;
+  nowMs: number;
+  cooldownRecoveryWindowMs: number;
+}) {
+  const publishCandidates = options.candidates.filter(
+    (candidate) => candidate.pendingPublishParts > 0 || candidate.publishNeedsRebuild,
+  );
+  const cooldowns = await listTerminalPublishFailureCooldowns(
+    options.db,
+    options.nowMs,
+    options.cooldownRecoveryWindowMs,
+  );
+  const candidatesOutsideCooldown = publishCandidates.flatMap((candidate) => {
+    const retryAfterMs = cooldowns.get(candidate.bvid);
+    if (retryAfterMs && retryAfterMs > options.nowMs) {
+      return [];
+    }
+    return [{
+      ...candidate,
+      firstPendingAt: retryAfterMs
+        ? laterIsoTimestamp(candidate.firstPendingAt, new Date(retryAfterMs).toISOString())
+        : candidate.firstPendingAt,
+    }];
+  });
+
+  if (options.summaryUsers === undefined || !options.authFile) {
+    return candidatesOutsideCooldown;
+  }
+
+  const authFileByMid = new Map<number, string>();
+  for (const [index, target] of parseSummaryUsers(options.summaryUsers).entries()) {
+    const resolvedAuthFile = findAuthFileForUser(options.authFile, index + 1, { repoRoot: options.repoRoot });
+    if (resolvedAuthFile) {
+      authFileByMid.set(target.mid, resolvedAuthFile);
+    }
+  }
+  const fallbackAuthFile = authFileByMid.size === 1 ? [...authFileByMid.values()][0] : null;
   return candidatesOutsideCooldown.filter((candidate) => {
     const ownerMid = Number(candidate.ownerMid ?? 0);
     return (Number.isInteger(ownerMid) && ownerMid > 0 && authFileByMid.has(ownerMid))

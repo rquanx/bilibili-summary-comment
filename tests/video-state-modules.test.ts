@@ -42,7 +42,7 @@ test("reindexSummaryText rewrites page markers, inline page indexes, and createS
   assert.equal(createSummaryHash(reindexed), createSummaryHash("<2P>\n2#00:10 hello\n\n<2P> 2#00:20 world\n"));
 });
 
-test("syncVideoSnapshotToDb reindexes moved summaries and clears published flags", () => {
+test("syncVideoSnapshotToDb reindexes moved summaries and clears published flags", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-sync-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -83,7 +83,7 @@ test("syncVideoSnapshotToDb reindexes moved summaries and clears published flags
       isDeleted: false,
     });
 
-    const state = syncVideoSnapshotToDb(db, {
+    const state = await syncVideoSnapshotToDb(db, {
       bvid: "BVstate123456",
       aid: 123001,
       title: "Video State Test",
@@ -110,7 +110,7 @@ test("syncVideoSnapshotToDb reindexes moved summaries and clears published flags
   }
 });
 
-test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after deleting an earlier part", () => {
+test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after deleting an earlier part", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-delete-shift-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -164,7 +164,7 @@ test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after delet
       isDeleted: false,
     });
 
-    const state = syncVideoSnapshotToDb(db, {
+    const state = await syncVideoSnapshotToDb(db, {
       bvid: "BVstateDelete001",
       aid: 223344,
       title: "Delete Shift Test",
@@ -187,7 +187,7 @@ test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after delet
   }
 });
 
-test("syncVideoSnapshotToDb preserves an explicit rebuild flag after local thread state was reset", () => {
+test("syncVideoSnapshotToDb preserves an explicit rebuild flag after local thread state was reset", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-rebuild-retry-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openDatabase(dbPath);
@@ -211,7 +211,7 @@ test("syncVideoSnapshotToDb preserves an explicit rebuild flag after local threa
     });
     markVideoPublishRebuildNeeded(db, video.id, "retry-after-publish-failure");
 
-    const state = syncVideoSnapshotToDb(db, {
+    const state = await syncVideoSnapshotToDb(db, {
       bvid: video.bvid,
       aid: video.aid,
       title: video.title,

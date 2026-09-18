@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   getVideoByIdentity,
+  isPostgresDatabase,
   listAllVideoParts,
   listVideoParts,
   openDatabase,
@@ -10,7 +11,7 @@ import {
   upsertVideo,
   upsertVideoPart,
 } from "../../infra/db/index";
-import type { Db, VideoRecord } from "../../infra/db/index";
+import type { Db, VideoInsert, VideoPartRecord, VideoRecord } from "../../infra/db/index";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
 import { runGenerationStage } from "../pipeline/generation-stage";
 import { createProgressReporter } from "../pipeline/progress";
@@ -64,7 +65,7 @@ export async function runLocalVideoPipeline(args: LocalPipelineArgs) {
       videoTitle: title,
       publishRequested: false,
     }, async () => {
-      const video = syncLocalVideoToDb(db, {
+      const video = await syncLocalVideoToDb(db, {
         ...identity,
         title,
         files,
@@ -88,7 +89,7 @@ export async function runLocalVideoPipeline(args: LocalPipelineArgs) {
       });
       const summaryConfig = resolveSummaryConfig(args);
       const forceSummary = Boolean(args["force-summary"]);
-      const parts = listVideoParts(db, video.id);
+      const parts = await listVideoParts(db, video.id);
       const pendingCount = forceSummary
         ? parts.length
         : parts.filter((part) => !String(part.summary_text ?? "").trim()).length;
@@ -124,7 +125,7 @@ export async function runLocalVideoPipeline(args: LocalPipelineArgs) {
           forceSummary,
           eventLogger,
           progress,
-          ensureSubtitleForPartImpl: (options) => ensureLocalSubtitleForPart({
+          ensureSubtitleForPartImpl: async (options) => ensureLocalSubtitleForPart({
             db: options.db,
             video: options.video ?? video,
             videoId: options.videoId,
@@ -134,7 +135,7 @@ export async function runLocalVideoPipeline(args: LocalPipelineArgs) {
             cid: options.cid,
             partTitle: options.partTitle ?? "",
             durationSec: options.durationSec ?? 0,
-            sourcePath: getSourcePathForPart(db, video.id, options.cid, repoRoot),
+            sourcePath: await getSourcePathForPart(db, video.id, options.cid, repoRoot),
             workRoot: options.workRoot ?? workRoot,
             venvPath: options.venvPath ?? venvPath,
             asr: options.asr ?? asr,
@@ -193,11 +194,11 @@ export async function runLocalVideoPipeline(args: LocalPipelineArgs) {
       }
     });
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
-function syncLocalVideoToDb(
+async function syncLocalVideoToDb(
   db: Db,
   input: {
     bvid: string;
@@ -205,18 +206,19 @@ function syncLocalVideoToDb(
     title: string;
     files: LocalVideoFile[];
   },
-): VideoRecord {
-  const existingVideo = getVideoByIdentity(db, {
+): Promise<VideoRecord> {
+  const existingVideo = await getVideoByIdentity(db, {
     bvid: input.bvid,
     aid: input.aid,
   });
-  const previousParts = existingVideo ? listAllVideoParts(db, existingVideo.id) : [];
+  const previousParts = (
+    existingVideo ? await listAllVideoParts(db, existingVideo.id) : []
+  ) as VideoPartRecord[];
   const previousByCid = new Map(previousParts.map((part) => [part.cid, part]));
   const nextCids = new Set(input.files.map((file) => file.cid));
   let videoId = existingVideo?.id ?? null;
 
-  runInTransaction(db, () => {
-    const video = upsertVideo(db, {
+  const videoInput: VideoInsert = {
       bvid: input.bvid,
       aid: input.aid,
       title: input.title,
@@ -230,14 +232,11 @@ function syncLocalVideoToDb(
       sourceType: "local",
       publishEnabled: false,
       pageCount: input.files.length,
-    });
-    videoId = video.id;
-
-    for (const [index, file] of input.files.entries()) {
+  };
+  const activePartInputs = input.files.map((file, index) => {
       const pageNo = index + 1;
       const existingPart = previousByCid.get(file.cid);
-      upsertVideoPart(db, {
-        videoId: video.id,
+      return {
         pageNo,
         cid: file.cid,
         partTitle: file.stem,
@@ -253,41 +252,58 @@ function syncLocalVideoToDb(
         summaryHash: existingPart?.summary_hash ?? null,
         published: false,
         isDeleted: false,
-      });
-    }
-
-    for (const previousPart of previousParts) {
-      if (nextCids.has(previousPart.cid)) {
-        continue;
-      }
-
-      upsertVideoPart(db, {
-        videoId: video.id,
-        pageNo: previousPart.page_no,
-        cid: previousPart.cid,
-        partTitle: previousPart.part_title,
-        durationSec: previousPart.duration_sec,
-        sourcePath: previousPart.source_path,
-        subtitlePath: previousPart.subtitle_path,
-        subtitleSource: previousPart.subtitle_source,
-        subtitleLang: previousPart.subtitle_lang,
-        subtitleText: previousPart.subtitle_text,
-        promptText: previousPart.prompt_text,
-        summaryText: previousPart.summary_text,
-        processedSummaryText: previousPart.summary_text_processed,
-        summaryHash: previousPart.summary_hash,
-        published: false,
-        isDeleted: true,
-        deletedAt: new Date().toISOString(),
-      });
-    }
+      };
   });
+  const deletedPartInputs = previousParts
+    .filter((part) => !nextCids.has(part.cid))
+    .map((previousPart) => ({
+      pageNo: previousPart.page_no,
+      cid: previousPart.cid,
+      partTitle: previousPart.part_title,
+      durationSec: previousPart.duration_sec,
+      sourcePath: previousPart.source_path,
+      subtitlePath: previousPart.subtitle_path,
+      subtitleSource: previousPart.subtitle_source,
+      subtitleLang: previousPart.subtitle_lang,
+      subtitleText: previousPart.subtitle_text,
+      promptText: previousPart.prompt_text,
+      summaryText: previousPart.summary_text,
+      processedSummaryText: previousPart.summary_text_processed,
+      summaryHash: previousPart.summary_hash,
+      published: false,
+      isDeleted: true,
+      deletedAt: new Date().toISOString(),
+    }));
+
+  if (isPostgresDatabase(db)) {
+    await runInTransaction(db, async () => {
+      const video = await upsertVideo(db, videoInput);
+      videoId = video.id;
+      for (const part of activePartInputs) {
+        await upsertVideoPart(db, { videoId: video.id, ...part });
+      }
+      for (const part of deletedPartInputs) {
+        await upsertVideoPart(db, { videoId: video.id, ...part });
+      }
+    });
+  } else {
+    runInTransaction(db, () => {
+      const video = upsertVideo(db, videoInput);
+      videoId = video.id;
+      for (const part of activePartInputs) {
+        upsertVideoPart(db, { videoId: video.id, ...part });
+      }
+      for (const part of deletedPartInputs) {
+        upsertVideoPart(db, { videoId: video.id, ...part });
+      }
+    });
+  }
 
   if (!videoId) {
     throw new Error(`Failed to store local video ${input.bvid}`);
   }
 
-  const video = getVideoByIdentity(db, {
+  const video = await getVideoByIdentity(db, {
     bvid: input.bvid,
     aid: input.aid,
   });
@@ -349,7 +365,7 @@ async function ensureLocalSubtitleForPart({
   if (fs.existsSync(subtitlePath)) {
     const subtitleText = fs.readFileSync(subtitlePath, "utf8").trim();
     if (subtitleText) {
-      savePartSubtitle(db, videoId, pageNo, {
+      await savePartSubtitle(db, videoId, pageNo, {
         subtitlePath,
         subtitleSource: "local_asr",
         subtitleLang: "zh",
@@ -415,7 +431,7 @@ async function ensureLocalSubtitleForPart({
   });
 
   const subtitleText = fs.readFileSync(subtitlePath, "utf8").trim();
-  savePartSubtitle(db, videoId, pageNo, {
+  await savePartSubtitle(db, videoId, pageNo, {
     subtitlePath,
     subtitleSource: "local_asr",
     subtitleLang: "zh",
@@ -430,8 +446,8 @@ async function ensureLocalSubtitleForPart({
   };
 }
 
-function getSourcePathForPart(db: Db, videoId: number, cid: number, repoRoot: string): string {
-  const part = listVideoParts(db, videoId).find((candidate) => candidate.cid === cid);
+async function getSourcePathForPart(db: Db, videoId: number, cid: number, repoRoot: string): Promise<string> {
+  const part = (await listVideoParts(db, videoId)).find((candidate) => candidate.cid === cid);
   const sourcePath = String(part?.source_path ?? "").trim();
   if (!sourcePath) {
     throw new Error(`Missing local source path for cid ${cid}`);

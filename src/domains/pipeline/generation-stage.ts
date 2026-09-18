@@ -26,7 +26,7 @@ export async function runGenerationStage({
   summarizePartFromSubtitleImpl = summarizePartFromSubtitle,
   writeSummaryArtifactsImpl = writeSummaryArtifacts,
 }) {
-  let currentParts = listVideoParts(db, video.id);
+  let currentParts = await listVideoParts(db, video.id);
   let reusedSummarySource = null;
   let reuseCandidateVideo = null;
   const hasPendingSummaries = currentParts.some((part) => !String(part.summary_text ?? "").trim());
@@ -35,12 +35,12 @@ export async function runGenerationStage({
 
   if (!forceSummary && hasPendingSummaries) {
     reuseLookupAttempted = true;
-    reusedSummarySource = findReusableSummarySource(db, video, currentParts);
+    reusedSummarySource = await findReusableSummarySource(db, video, currentParts);
     if (reusedSummarySource) {
       reuseLookupMatchedSource = true;
       reuseCandidateVideo = reusedSummarySource.video;
-      const reusedPages = reusePartSummaries(db, video.id, reusedSummarySource.parts);
-      currentParts = listVideoParts(db, video.id);
+      const reusedPages = await reusePartSummaries(db, video.id, reusedSummarySource.parts);
+      currentParts = await listVideoParts(db, video.id);
       if (reusedPages.length > 0) {
         reusedSummarySource = {
           ...reusedSummarySource,
@@ -59,7 +59,7 @@ export async function runGenerationStage({
             summaryText: part.summary_text,
             workRoot,
           });
-          writePartPromptArtifact({
+          await writePartPromptArtifact({
             db,
             video,
             pageNo: part.page_no,
@@ -265,7 +265,7 @@ export async function runGenerationStage({
   progress?.info("Writing summary artifacts");
   let artifacts;
   try {
-    artifacts = writeSummaryArtifactsImpl(db, video, workRoot, {
+    artifacts = await writeSummaryArtifactsImpl(db, video, workRoot, {
       promptConfigPath: summaryConfig.promptConfigPath,
     });
   } catch (error) {
@@ -295,7 +295,7 @@ export async function runGenerationStage({
   }
 
   return {
-    currentParts: listVideoParts(db, video.id),
+    currentParts: await listVideoParts(db, video.id),
     targetParts,
     reusedSummarySource,
     subtitleResults,

@@ -44,7 +44,7 @@ await runCli({
     const db = openDatabase(dbPath);
 
     try {
-      return invalidateSummaries(db, {
+      return await invalidateSummaries(db, {
         all,
         bvid,
         aid,
@@ -55,7 +55,7 @@ await runCli({
         dryRun,
       });
     } finally {
-      db.close?.();
+      await db.close?.();
     }
   },
 });

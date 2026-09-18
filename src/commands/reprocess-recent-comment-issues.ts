@@ -74,7 +74,7 @@ await runCli({
       const collected = requestedBvids.length > 0
         ? {
           summaryUsers: [],
-          uploads: buildRequestedUploads({
+          uploads: await buildRequestedUploads({
             db,
             requestedBvids,
             authFile: config.authFile,
@@ -101,11 +101,12 @@ await runCli({
       }
 
       const candidates = await collectRecentReprocessCandidates(db, collected.uploads);
-      const skipped = candidates.flatMap((candidate) => {
+      const skipped = [];
+      for (const candidate of candidates) {
         const candidateKey = buildRecentReprocessCandidateKey(candidate);
-        const processed = getLatestSuccessfulRecentReprocessRunByCandidateKey(db, candidateKey);
+        const processed = await getLatestSuccessfulRecentReprocessRunByCandidateKey(db, candidateKey);
         if (!processed) {
-          return [];
+          continue;
         }
 
         logger.info("Skip already successful recent reprocess candidate", {
@@ -115,7 +116,7 @@ await runCli({
           previousRunId: processed.id,
           previousFinishedAt: processed.finished_at,
         });
-        return [{
+        skipped.push({
           bvid: candidate.bvid,
           title: candidate.title,
           candidateKey,
@@ -123,8 +124,8 @@ await runCli({
           pastePages: candidate.pastePages,
           previousRunId: processed.id,
           previousFinishedAt: processed.finished_at,
-        }];
-      });
+        });
+      }
       const skippedBvidSet = new Set(skipped.map((item) => item.bvid));
       const pendingCandidates = candidates.filter((candidate) => !skippedBvidSet.has(candidate.bvid));
 
@@ -155,13 +156,13 @@ await runCli({
         return;
       }
 
-      const prepared = pendingCandidates.map((candidate) => ({
+      const prepared = await Promise.all(pendingCandidates.map(async (candidate) => ({
         bvid: candidate.bvid,
         candidateKey: buildRecentReprocessCandidateKey(candidate),
         reasons: candidate.reasons,
         pastePages: candidate.pastePages,
-        ...prepareRecentReprocessCandidate(db, candidate),
-      }));
+        ...await prepareRecentReprocessCandidate(db, candidate),
+      })));
       const candidateByBvid = new Map(
         pendingCandidates.map((candidate) => [candidate.bvid, candidate] as const),
       );
@@ -188,7 +189,7 @@ await runCli({
           continue;
         }
 
-        saveRecentReprocessRun(db, {
+        await saveRecentReprocessRun(db, {
           videoId: candidate.videoId,
           bvid: candidate.bvid,
           videoTitle: candidate.title,
@@ -210,7 +211,7 @@ await runCli({
           continue;
         }
 
-        saveRecentReprocessRun(db, {
+        await saveRecentReprocessRun(db, {
           videoId: candidate.videoId,
           bvid: candidate.bvid,
           videoTitle: candidate.title,
@@ -242,7 +243,7 @@ await runCli({
         dryRun: false,
       }), null, 2));
     } finally {
-      db.close?.();
+      await db.close?.();
     }
   },
 });
@@ -354,7 +355,7 @@ function parseRequestedBvids(value: unknown): string[] {
   )];
 }
 
-function buildRequestedUploads({
+async function buildRequestedUploads({
   db,
   requestedBvids,
   authFile,
@@ -362,10 +363,10 @@ function buildRequestedUploads({
   db: Parameters<typeof getVideoByIdentity>[0];
   requestedBvids: string[];
   authFile: string;
-}): RecentUpload[] {
+}): Promise<RecentUpload[]> {
   const now = Date.now();
-  return requestedBvids.map((bvid, index) => {
-    const video = getVideoByIdentity(db, { bvid, aid: null });
+  return Promise.all(requestedBvids.map(async (bvid, index) => {
+    const video = await getVideoByIdentity(db, { bvid, aid: null });
     const createdAt = normalizeCreatedAt(video?.created_at, now + index * 1000);
     return {
       mid: Number(video?.owner_mid ?? 0),
@@ -377,7 +378,7 @@ function buildRequestedUploads({
       createdAt,
       source: "manual-bvids",
     };
-  });
+  }));
 }
 
 function normalizeCreatedAt(value: unknown, fallbackMs: number): string {

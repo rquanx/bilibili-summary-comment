@@ -249,11 +249,11 @@ export async function summarizePartFromSubtitle({
       const emptySummaryText = buildEmptySummaryMarker(pageNo);
       const normalized = `${emptySummaryText}\n`;
       const summaryHash = createHash("sha1").update(normalized).digest("hex");
-      const saved = savePartSummary(db, videoId, pageNo, {
+      const saved = await savePartSummary(db, videoId, pageNo, {
         summaryText: emptySummaryText,
         summaryHash,
       });
-      const video = getVideoById(db, videoId) ?? {
+      const video = await getVideoById(db, videoId) ?? {
         id: videoId,
         bvid,
         title: partTitle,
@@ -321,7 +321,7 @@ export async function summarizePartFromSubtitle({
       ownerMid,
       promptConfigPath,
     });
-    const video = getVideoById(db, videoId) ?? {
+    const video = await getVideoById(db, videoId) ?? {
       id: videoId,
       bvid,
       title: partTitle,
@@ -330,7 +330,7 @@ export async function summarizePartFromSubtitle({
       owner_dir_name: null,
       work_dir_name: null,
     };
-    promptPath = writePartPromptArtifact({
+    promptPath = await writePartPromptArtifact({
       db,
       video,
       pageNo,
@@ -405,7 +405,7 @@ export async function summarizePartFromSubtitle({
     });
     const normalized = `${normalizedSummary}\n`;
     const summaryHash = createHash("sha1").update(normalized).digest("hex");
-    const saved = savePartSummary(db, videoId, pageNo, {
+    const saved = await savePartSummary(db, videoId, pageNo, {
       summaryText: normalized.trim(),
       summaryHash,
     });

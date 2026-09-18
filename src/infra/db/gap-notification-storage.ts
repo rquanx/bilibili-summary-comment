@@ -1,10 +1,19 @@
 import { sql } from "drizzle-orm";
 import { withDatabaseWriteLock } from "./database";
 import { getDrizzleDb } from "./orm";
+import { isPostgresDatabase } from "./postgres-database";
+import {
+  pgGetGapNotificationByKey,
+  pgHasGapNotification,
+  pgSaveGapNotification,
+} from "./postgres-gap-notification-storage";
 import { gapNotifications } from "./schema";
 import type { Db, GapNotificationInsert, GapNotificationRecord } from "./types";
 
-export function getGapNotificationByKey(db: Db, gapKey: string): GapNotificationRecord | null {
+export function getGapNotificationByKey(db: Db, gapKey: string): any {
+  if (isPostgresDatabase(db)) {
+    return pgGetGapNotificationByKey(db, gapKey);
+  }
   const normalizedKey = normalizeGapKey(gapKey);
   if (!normalizedKey) {
     return null;
@@ -18,11 +27,17 @@ export function getGapNotificationByKey(db: Db, gapKey: string): GapNotification
   `) ?? null;
 }
 
-export function hasGapNotification(db: Db, gapKey: string): boolean {
+export function hasGapNotification(db: Db, gapKey: string): any {
+  if (isPostgresDatabase(db)) {
+    return pgHasGapNotification(db, gapKey);
+  }
   return Boolean(getGapNotificationByKey(db, gapKey));
 }
 
-export function saveGapNotification(db: Db, notification: GapNotificationInsert): GapNotificationRecord | null {
+export function saveGapNotification(db: Db, notification: GapNotificationInsert): any {
+  if (isPostgresDatabase(db)) {
+    return pgSaveGapNotification(db, notification);
+  }
   const orm = getDrizzleDb(db);
   const now = new Date().toISOString();
   const gapKey = requireGapKey(notification.gapKey);
