@@ -21,20 +21,24 @@ const DEFAULT_SQLITE_JOURNAL_MODE = "WAL";
 const DEFAULT_SQLITE_JOURNAL_MODE_FALLBACK = "DELETE";
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 
-type DbWithPath = Db & {
+type SqliteDbWithPath = SqliteDb & {
   [DB_PATH_SYMBOL]?: string;
 };
 
 export function openDatabase(databasePath: string): Db {
   if (isPostgresConnectionString(databasePath)) {
-    return openPostgresDatabase(databasePath) as Db;
+    return openPostgresDatabase(databasePath);
   }
 
+  return openSqliteDatabase(databasePath);
+}
+
+export function openSqliteDatabase(databasePath: string): SqliteDb {
   const resolvedPath = path.resolve(databasePath);
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
   cleanupStaleDatabaseWriteLock(resolvedPath);
 
-  const db = new BetterSqlite3(resolvedPath) as DbWithPath;
+  const db = new BetterSqlite3(resolvedPath) as SqliteDbWithPath;
   Object.defineProperty(db, DB_PATH_SYMBOL, {
     value: resolvedPath,
     configurable: false,
@@ -49,7 +53,7 @@ export function openDatabase(databasePath: string): Db {
     db.pragma("foreign_keys = ON");
     migrateDatabase(db);
   });
-  return db as SqliteDb;
+  return db;
 }
 
 export function runInTransaction<T>(db: Db, work: () => T | Promise<T>): T | Promise<T> {
@@ -71,6 +75,10 @@ export function runInTransaction<T>(db: Db, work: () => T | Promise<T>): T | Pro
       throw error;
     }
   });
+}
+
+export function trackDatabaseWork<T>(db: Db, work: Promise<T>): Promise<T> {
+  return isPostgresDatabase(db) ? db.track(work) : work;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
@@ -130,7 +138,7 @@ function resolveDatabasePath(dbOrPath: SqliteDb | string): string {
     return path.resolve(dbOrPath);
   }
 
-  const resolvedPath = (dbOrPath as DbWithPath)[DB_PATH_SYMBOL];
+  const resolvedPath = (dbOrPath as SqliteDbWithPath)[DB_PATH_SYMBOL];
   if (typeof resolvedPath === "string" && resolvedPath) {
     return resolvedPath;
   }
@@ -220,7 +228,7 @@ function sleepSync(timeoutMs: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, timeoutMs);
 }
 
-function applyConfiguredJournalMode(db: Db) {
+function applyConfiguredJournalMode(db: SqliteDb) {
   const preferredMode = normalizeJournalMode(process.env.SQLITE_JOURNAL_MODE, DEFAULT_SQLITE_JOURNAL_MODE);
 
   try {

@@ -3,16 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { listVideoParts, savePartSubtitle, upsertVideo, upsertVideoPart } from "../src/infra/db/index";
 import { resolveVideoWorkDir } from "../src/shared/work-paths";
 import { findReusableSummarySource, reusePartSummaries } from "../src/domains/summary/live-session-reuse";
 import { ensureSubtitleForPart } from "../src/domains/subtitle/pipeline";
 
-test("same-session summary reuse works across variants even when page counts differ", () => {
+test("same-session summary reuse works across variants even when page counts differ", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-live-reuse-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const sourceVideo = upsertVideo(db, {
@@ -67,11 +67,11 @@ test("same-session summary reuse works across variants even when page counts dif
     });
 
     const targetParts = listVideoParts(db, targetVideo.id);
-    const reuseSource = findReusableSummarySource(db, targetVideo, targetParts);
+    const reuseSource = await findReusableSummarySource(db, targetVideo, targetParts);
     assert.equal(reuseSource?.video.bvid, "BVSOURCE16");
     assert.deepEqual(reuseSource?.matchedPages, [1, 2, 3]);
 
-    const reusedPages = reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
+    const reusedPages = await reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
     assert.deepEqual(reusedPages, [1, 2, 3]);
 
     const updatedTargetParts = listVideoParts(db, targetVideo.id);
@@ -85,10 +85,10 @@ test("same-session summary reuse works across variants even when page counts dif
   }
 });
 
-test("same-session summary reuse does not copy processed paste-link fallbacks into the target video", () => {
+test("same-session summary reuse does not copy processed paste-link fallbacks into the target video", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-live-reuse-processed-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const sourceVideo = upsertVideo(db, {
@@ -125,10 +125,10 @@ test("same-session summary reuse does not copy processed paste-link fallbacks in
     });
 
     const targetParts = listVideoParts(db, targetVideo.id);
-    const reuseSource = findReusableSummarySource(db, targetVideo, targetParts);
+    const reuseSource = await findReusableSummarySource(db, targetVideo, targetParts);
     assert.equal(reuseSource?.video.bvid, "BVSOURCEPROC1");
 
-    const reusedPages = reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
+    const reusedPages = await reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
     assert.deepEqual(reusedPages, [1]);
 
     const [reusedPart] = listVideoParts(db, targetVideo.id);
@@ -140,10 +140,10 @@ test("same-session summary reuse does not copy processed paste-link fallbacks in
   }
 });
 
-test("same-session summary reuse sanitizes promotional outro summaries", () => {
+test("same-session summary reuse sanitizes promotional outro summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-live-reuse-promotional-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const sourceVideo = upsertVideo(db, {
@@ -179,10 +179,10 @@ test("same-session summary reuse sanitizes promotional outro summaries", () => {
     });
 
     const targetParts = listVideoParts(db, targetVideo.id);
-    const reuseSource = findReusableSummarySource(db, targetVideo, targetParts);
+    const reuseSource = await findReusableSummarySource(db, targetVideo, targetParts);
     assert.equal(reuseSource?.video.bvid, "BVSOURCEPROMO1");
 
-    const reusedPages = reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
+    const reusedPages = await reusePartSummaries(db, targetVideo.id, reuseSource?.parts ?? []);
     assert.deepEqual(reusedPages, [1]);
 
     const [reusedPart] = listVideoParts(db, targetVideo.id);
@@ -196,7 +196,7 @@ test("same-session summary reuse sanitizes promotional outro summaries", () => {
 test("ensureSubtitleForPart reuses same-session subtitles across variants with different page counts", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-subtitle-reuse-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const relativeWorkRoot = path.join(".tmp-tests", path.basename(tempRoot));
   const repoWorkRoot = path.join(process.cwd(), relativeWorkRoot);
 
@@ -289,7 +289,7 @@ test("ensureSubtitleForPart reuses same-session subtitles across variants with d
 test("ensureSubtitleForPart discards unusable local placeholder subtitles before falling back to ASR", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-subtitle-quality-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const relativeWorkRoot = path.join(".tmp-tests", path.basename(tempRoot));
   const repoWorkRoot = path.join(process.cwd(), relativeWorkRoot);
 
@@ -380,7 +380,7 @@ test("ensureSubtitleForPart discards unusable local placeholder subtitles before
 test("ensureSubtitleForPart removes invalid cached media and retries yt-dlp once", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-audio-cache-recovery-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const relativeWorkRoot = path.join(".tmp-tests", path.basename(tempRoot));
   const repoWorkRoot = path.join(process.cwd(), relativeWorkRoot);
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { listVideoParts, savePartSummary, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
 import { runGenerationStage } from "../src/domains/pipeline/generation-stage";
 import { writePartSummaryArtifact } from "../src/domains/summary/files";
@@ -14,7 +14,7 @@ test("runGenerationStage skips content-filtered summary pages and continues late
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const progressMessages: string[] = [];
 
   try {

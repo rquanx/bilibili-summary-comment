@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { insertPipelineEvent, isPostgresDatabase } from "../../infra/db/index";
+import { insertPipelineEvent, trackDatabaseWork } from "../../infra/db/index";
 import { formatBiliVideoUrlSuffix } from "../bili/video-url";
 import { writeTerminalMessage } from "./progress";
 import type { Db, PipelineEventInput, PipelineEventLogger, VideoRecord } from "../../infra/db/index";
@@ -32,13 +32,13 @@ export function createPipelineEventLogger({
 
     try {
       const result = insertPipelineEvent(db, payload);
-      if (isPostgresDatabase(db)) {
-        return db.track(Promise.resolve(result).catch((error) => {
-          reportEventLogFailure(error, payload);
-          return null;
-        }));
+      if (!(result instanceof Promise)) {
+        return result;
       }
-      return result;
+      return trackDatabaseWork(db, result.catch((error) => {
+        reportEventLogFailure(error, payload);
+        return null;
+      }));
     } catch (error) {
       return reportEventLogFailure(error, payload);
     }

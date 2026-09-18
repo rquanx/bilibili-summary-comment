@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import {
   getVideoByIdentity,
   updateVideoCommentThread,
@@ -19,7 +19,7 @@ import { withVideoPipelineLock } from "../src/domains/video/pipeline-lock";
 test("probePublishedCommentThreadHealth marks a missing stored root thread for rebuild", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-healthcheck-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const loggedEvents: Array<Record<string, unknown>> = [];
   const progressMessages: string[] = [];
 
@@ -81,7 +81,7 @@ test("probePublishedCommentThreadHealth marks a missing stored root thread for r
 test("probePublishedCommentThreadHealth skips videos without a stored root thread", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-healthcheck-skip-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   let called = false;
 
   try {
@@ -192,7 +192,7 @@ test("withVideoPipelineLock serializes concurrent runs for the same bvid", async
 test("withSynchronizedVideoPipelineState detects replacement after an in-flight publish completes", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-sync-lock-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   let finishPublish: (() => void) | null = null;
   let replacementSnapshotFetched = false;
 

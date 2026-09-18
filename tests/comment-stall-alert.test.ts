@@ -11,7 +11,7 @@ import {
   listPendingCommentCandidates,
   runCommentPublishStallAlert,
 } from "../src/domains/scheduler/comment-stall-alert";
-import { insertPipelineEvent, openDatabase, upsertVideo, upsertVideoPart } from "../src/infra/db/index";
+import { insertPipelineEvent, openSqliteDatabase, upsertVideo, upsertVideoPart } from "../src/infra/db/index";
 
 test("evaluateCommentPublishStallState alerts after one hour and deduplicates the incident", () => {
   const now = new Date("2026-08-04T12:00:00.000Z");
@@ -84,10 +84,10 @@ test("a successful new comment resets the one-hour stall window", () => {
   assert.equal(evaluation.state?.notifiedAt, null);
 });
 
-test("pending candidates and successful comment events are read from SQLite", () => {
+test("pending candidates and successful comment events are read from SQLite", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -105,7 +105,7 @@ test("pending candidates and successful comment events are read from SQLite", ()
       isDeleted: false,
     });
 
-    const candidates = listPendingCommentCandidates(db);
+    const candidates = await listPendingCommentCandidates(db);
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].pendingSummaryParts, 1);
 
@@ -120,8 +120,8 @@ test("pending candidates and successful comment events are read from SQLite", ()
         createdComments: 1,
       },
     });
-    assert.ok(getLatestSuccessfulCommentAt(db));
-    assert.ok(getLatestCommentPublishActivityAt(db));
+    assert.ok(await getLatestSuccessfulCommentAt(db));
+    assert.ok(await getLatestCommentPublishActivityAt(db));
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -155,7 +155,7 @@ test("recent publish activity resets the stall window even without a successful 
 test("runCommentPublishStallAlert ignores videos that only need summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-summary-only-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -204,7 +204,7 @@ test("runCommentPublishStallAlert ignores videos that only need summaries", asyn
 test("runCommentPublishStallAlert restarts timing when a failure cooldown expires", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-cooldown-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -289,7 +289,7 @@ test("runCommentPublishStallAlert restarts timing when a failure cooldown expire
 test("runCommentPublishStallAlert sends once and persists notification state", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-stall-run-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {

@@ -4,7 +4,7 @@ import type * as schema from "./schema";
 import type { PostgresDb } from "./postgres-database";
 
 export type SqliteDb = InstanceType<typeof BetterSqlite3>;
-export type Db = any;
+export type Db = SqliteDb | PostgresDb;
 export type DrizzleDb = BetterSQLite3Database<typeof schema>;
 
 export interface VideoIdentity {

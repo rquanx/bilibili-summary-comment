@@ -6,7 +6,6 @@ import {
   listVideos,
   normalizeStoredSummaryText,
   savePartSummary,
-  isPostgresDatabase,
 } from "../../infra/db/index";
 
 const TITLE_VARIANT_SUFFIX_PATTERN =
@@ -34,22 +33,7 @@ export function buildLiveSessionKey({ title, parts }) {
   return `${normalizedTitle}\n${normalizedParts.map((part) => part.partTitle).join("\n")}`;
 }
 
-export function findReusableSummarySource(db, currentVideo, currentParts): any {
-  if (isPostgresDatabase(db)) {
-    return findReusableSummarySourceAsync(db, currentVideo, currentParts);
-  }
-
-  return findReusableSummarySourceFromCandidates(
-    currentVideo,
-    currentParts,
-    listVideos(db).map((video) => ({
-      video,
-      parts: listVideoParts(db, video.id),
-    })),
-  );
-}
-
-async function findReusableSummarySourceAsync(db, currentVideo, currentParts) {
+export async function findReusableSummarySource(db, currentVideo, currentParts) {
   const videos = await listVideos(db);
   const candidates = [];
   for (const video of videos) {
@@ -114,21 +98,21 @@ function findReusableSummarySourceFromCandidates(currentVideo, currentParts, can
   };
 }
 
-export function reusePartSummaries(db, targetVideoId, sourceParts): any {
-  if (isPostgresDatabase(db)) {
-    return reusePartSummariesAsync(db, targetVideoId, sourceParts);
-  }
-
-  const targetParts = listVideoParts(db, targetVideoId);
-  return reusePartSummariesIntoTarget(db, targetVideoId, targetParts, sourceParts);
-}
-
-async function reusePartSummariesAsync(db, targetVideoId, sourceParts) {
+export async function reusePartSummaries(db, targetVideoId, sourceParts): Promise<number[]> {
   const targetParts = await listVideoParts(db, targetVideoId);
-  return reusePartSummariesIntoTarget(db, targetVideoId, targetParts, sourceParts, true);
+  const sourceActiveParts = Array.isArray(sourceParts) ? sourceParts : [];
+  const reusableMatches = findMatchingParts(targetParts, sourceActiveParts, {
+    canReuseTargetPart(part) {
+      return !hasRawSummaryText(part);
+    },
+    canReuseSourcePart(part) {
+      return Boolean(hasRawSummaryText(part) && String(part.summary_hash ?? "").trim());
+    },
+  });
+  return reusePartSummariesIntoTarget(db, targetVideoId, reusableMatches);
 }
 
-async function reusePartSummariesIntoTargetAsync(db, targetVideoId, reusableMatches) {
+async function reusePartSummariesIntoTarget(db, targetVideoId, reusableMatches) {
   const reusedPages = [];
   for (const match of reusableMatches) {
     const summaryText = normalizeStoredSummaryText(match.sourcePart.summary_text) ?? "";
@@ -142,51 +126,7 @@ async function reusePartSummariesIntoTargetAsync(db, targetVideoId, reusableMatc
   return reusedPages;
 }
 
-function reusePartSummariesIntoTarget(db, targetVideoId, targetParts, sourceParts, asynchronous = false) {
-  const sourceActiveParts = Array.isArray(sourceParts) ? sourceParts : [];
-  const reusableMatches = findMatchingParts(targetParts, sourceActiveParts, {
-      canReuseTargetPart(part) {
-        return !hasRawSummaryText(part);
-      },
-      canReuseSourcePart(part) {
-        return Boolean(hasRawSummaryText(part) && String(part.summary_hash ?? "").trim());
-      },
-  });
-
-  if (asynchronous) {
-    return reusePartSummariesIntoTargetAsync(db, targetVideoId, reusableMatches);
-  }
-
-  const reusedPages = [];
-  for (const match of reusableMatches) {
-    const summaryText = normalizeStoredSummaryText(match.sourcePart.summary_text) ?? "";
-    const summaryHash = createHash("sha1").update(summaryText ? `${summaryText}\n` : "").digest("hex");
-    savePartSummary(db, targetVideoId, match.targetPageNo, {
-      summaryText,
-      summaryHash,
-    });
-    reusedPages.push(match.targetPageNo);
-  }
-
-  return reusedPages;
-}
-
-export function findReusableSubtitleSource(db, currentVideo, targetPart): any {
-  if (isPostgresDatabase(db)) {
-    return findReusableSubtitleSourceAsync(db, currentVideo, targetPart);
-  }
-
-  return findReusableSubtitleSourceFromCandidates(
-    currentVideo,
-    targetPart,
-    listVideos(db).map((video) => ({
-      video,
-      parts: listVideoParts(db, video.id),
-    })),
-  );
-}
-
-async function findReusableSubtitleSourceAsync(db, currentVideo, targetPart) {
+export async function findReusableSubtitleSource(db, currentVideo, targetPart) {
   const videos = await listVideos(db);
   const candidates = [];
   for (const video of videos) {

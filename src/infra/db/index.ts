@@ -1,7 +1,7 @@
-export { openDatabase } from "./database";
+export { openDatabase, openSqliteDatabase } from "./database";
 export { runInTransaction } from "./database";
+export { trackDatabaseWork } from "./database";
 export { withDatabaseWriteLock } from "./database";
-export { isPostgresDatabase } from "./postgres-database";
 export { getDrizzleDb } from "./orm";
 export type {
   Db,
@@ -60,6 +60,7 @@ export {
   markVideoPublishRebuildNeeded,
   replaceVideoSubtitlePathPrefix,
   resetPublishedStateForVideo,
+  saveVideoAggregate,
   savePartPrompt,
   savePartProcessedSummary,
   savePartSubtitle,
@@ -77,3 +78,9 @@ export {
   getLatestSuccessfulRecentReprocessRunByCandidateKey,
   saveRecentReprocessRun,
 } from "./recent-reprocess-storage";
+export {
+  getLatestCommentPublishActivityRow,
+  invalidateStoredSummaries,
+  listPendingSummaryRows,
+  listRecentSuccessfulCommentEvents,
+} from "./maintenance-storage";

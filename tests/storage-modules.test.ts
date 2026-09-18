@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { getGapNotificationByKey, hasGapNotification, saveGapNotification } from "../src/infra/db/gap-notification-storage";
 import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipeline-event-storage";
 import { getLatestSuccessfulRecentReprocessRunByCandidateKey, saveRecentReprocessRun } from "../src/infra/db/recent-reprocess-storage";
@@ -25,7 +25,7 @@ import { invalidateSummaries } from "../src/domains/summary/invalidation";
 test("storage modules preserve video and event workflows after the split", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -83,7 +83,7 @@ test("storage modules preserve video and event workflows after the split", async
 test("marker-only summaries count as completed but are excluded from pending publish queues", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-marker-summary-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -117,7 +117,7 @@ test("marker-only summaries count as completed but are excluded from pending pub
 test("local videos remain stored but are excluded from the publish queue", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-local-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -154,7 +154,7 @@ test("local videos remain stored but are excluded from the publish queue", () =>
 test("short no-subtitle placeholder summaries are excluded from pending publish queues", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-placeholder-summary-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -188,7 +188,7 @@ test("short no-subtitle placeholder summaries are excluded from pending publish 
 test("summaries with an embedded page marker are excluded from pending publish queues", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-embedded-marker-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -222,7 +222,7 @@ test("summaries with an embedded page marker are excluded from pending publish q
 test("gap notification storage deduplicates notifications by gap key", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-gap-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const first = saveGapNotification(db, {
@@ -263,13 +263,13 @@ test("gap notification storage deduplicates notifications by gap key", async () 
 });
 
 test("storage barrel re-exports the split modules", () => {
-  assert.equal(storage.openDatabase, openDatabase);
+  assert.equal(storage.openSqliteDatabase, openSqliteDatabase);
   assert.equal(storage.upsertVideo, upsertVideo);
   assert.equal(storage.insertPipelineEvent, insertPipelineEvent);
   assert.equal(storage.saveGapNotification, saveGapNotification);
 });
 
-test("openDatabase upgrades a legacy schema and seeds drizzle migration history", () => {
+test("openSqliteDatabase upgrades a legacy schema and seeds drizzle migration history", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-legacy-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const legacyDb = new BetterSqlite3(dbPath);
@@ -341,7 +341,7 @@ test("openDatabase upgrades a legacy schema and seeds drizzle migration history"
   `);
   legacyDb.close();
 
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   try {
     const video = getVideoByIdentity(db, { bvid: "BVLEGACY001" });
     const parts = listVideoParts(db, Number(video?.id));
@@ -375,7 +375,7 @@ test("openDatabase upgrades a legacy schema and seeds drizzle migration history"
   }
 });
 
-test("openDatabase respects an explicit SQLite journal mode override", () => {
+test("openSqliteDatabase respects an explicit SQLite journal mode override", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-journal-mode-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const originalJournalMode = process.env.SQLITE_JOURNAL_MODE;
@@ -384,7 +384,7 @@ test("openDatabase respects an explicit SQLite journal mode override", () => {
   process.env.SQLITE_JOURNAL_MODE_FALLBACK = "DELETE";
 
   try {
-    const db = openDatabase(dbPath);
+    const db = openSqliteDatabase(dbPath);
     try {
       const journalMode = String(db.prepare("PRAGMA journal_mode").pluck().get() ?? "").toLowerCase();
       assert.equal(journalMode, "delete");
@@ -408,7 +408,7 @@ test("openDatabase respects an explicit SQLite journal mode override", () => {
   }
 });
 
-test("openDatabase falls back from WAL when shm open fails", () => {
+test("openSqliteDatabase falls back from WAL when shm open fails", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-journal-fallback-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const originalJournalMode = process.env.SQLITE_JOURNAL_MODE;
@@ -428,7 +428,7 @@ test("openDatabase falls back from WAL when shm open fails", () => {
   };
 
   try {
-    const db = openDatabase(dbPath);
+    const db = openSqliteDatabase(dbPath);
     try {
       const journalMode = String(db.prepare("PRAGMA journal_mode").pluck().get() ?? "").toLowerCase();
       assert.equal(journalMode, "delete");
@@ -460,9 +460,9 @@ test("SQLite busy timeout waits for an external writer and completes the pending
   const originalBusyTimeout = process.env.SQLITE_BUSY_TIMEOUT_MS;
   process.env.SQLITE_BUSY_TIMEOUT_MS = "1000";
 
-  let db: ReturnType<typeof openDatabase> | null = null;
+  let db: ReturnType<typeof openSqliteDatabase> | null = null;
   try {
-    db = openDatabase(dbPath);
+    db = openSqliteDatabase(dbPath);
     const video = upsertVideo(db, {
       bvid: "BVBUSYTEST1",
       aid: 888002,
@@ -517,7 +517,7 @@ test("SQLite busy timeout waits for an external writer and completes the pending
 test("recent reprocess run storage records successes and can query the latest successful candidate", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-reprocess-storage-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -601,10 +601,10 @@ function waitForChildExit(child: ReturnType<typeof spawn>): Promise<number | nul
   });
 }
 
-test("invalidateSummaries previews and clears stored summaries while marking publish rebuild", () => {
+test("invalidateSummaries previews and clears stored summaries while marking publish rebuild", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-invalidate-summary-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -638,7 +638,7 @@ test("invalidateSummaries previews and clears stored summaries while marking pub
       isDeleted: false,
     });
 
-    const preview = invalidateSummaries(db, {
+    const preview = await invalidateSummaries(db, {
       bvid: video.bvid,
       dryRun: true,
       reason: "summary-input-upgrade-2026-05-05",
@@ -652,7 +652,7 @@ test("invalidateSummaries previews and clears stored summaries while marking pub
     assert.equal(String(persistedBefore[0].summary_text ?? "").trim(), "<1P> old summary");
     assert.equal(Number(getVideoByIdentity(db, { bvid: video.bvid })?.publish_needs_rebuild ?? 0), 0);
 
-    const applied = invalidateSummaries(db, {
+    const applied = await invalidateSummaries(db, {
       bvid: video.bvid,
       reason: "summary-input-upgrade-2026-05-05",
     });
@@ -677,10 +677,10 @@ test("invalidateSummaries previews and clears stored summaries while marking pub
   }
 });
 
-test("invalidateSummaries can target only recently updated parts or a specific time window", () => {
+test("invalidateSummaries can target only recently updated parts or a specific time window", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-invalidate-window-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -718,7 +718,7 @@ test("invalidateSummaries can target only recently updated parts or a specific t
     db.prepare("UPDATE video_parts SET updated_at = ? WHERE id = ?").run("2026-04-01T00:00:00.000Z", oldPart.id);
     db.prepare("UPDATE video_parts SET updated_at = ? WHERE id = ?").run("2026-05-04T12:00:00.000Z", recentPart.id);
 
-    const preview = invalidateSummaries(db, {
+    const preview = await invalidateSummaries(db, {
       recentDays: 3,
       dryRun: true,
       now: new Date("2026-05-05T12:00:00.000Z"),
@@ -730,7 +730,7 @@ test("invalidateSummaries can target only recently updated parts or a specific t
     assert.equal(preview.videos[0].matchedPartCount, 1);
     assert.equal(preview.videos[0].affectedPartCount, 1);
 
-    const applied = invalidateSummaries(db, {
+    const applied = await invalidateSummaries(db, {
       recentDays: 3,
       now: new Date("2026-05-05T12:00:00.000Z"),
       reason: "summary-input-upgrade-2026-05-05",
@@ -741,7 +741,7 @@ test("invalidateSummaries can target only recently updated parts or a specific t
     assert.equal(String(partsAfterRecent[0].summary_text ?? "").trim(), "<1P> old summary");
     assert.equal(partsAfterRecent[1].summary_text, null);
 
-    const rangePreview = invalidateSummaries(db, {
+    const rangePreview = await invalidateSummaries(db, {
       fromIso: "2026-03-31",
       toIso: "2026-04-02",
       dryRun: true,
@@ -749,7 +749,7 @@ test("invalidateSummaries can target only recently updated parts or a specific t
     assert.equal(rangePreview.matchedPartCount, 1);
     assert.equal(rangePreview.affectedPartCount, 1);
 
-    invalidateSummaries(db, {
+    await invalidateSummaries(db, {
       fromIso: "2026-03-31",
       toIso: "2026-04-02",
       reason: "summary-input-upgrade-2026-05-05",

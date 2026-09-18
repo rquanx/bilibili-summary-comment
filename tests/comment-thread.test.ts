@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
 import {
   inspectVisibleGuestSummaryThread,
@@ -267,7 +267,7 @@ function createGuestCommentHarness({
 test("postSummaryThread keeps publishing when pinning a new root comment fails", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const firstPageText = `first page ${"A".repeat(640)}`;
   const secondPageText = `second page ${"B".repeat(640)}`;
 
@@ -437,7 +437,7 @@ test("inspectVisibleGuestSummaryThread recognizes top.upper wrappers and paste l
 test("postSummaryThread keeps scanning guest pages when top-level count is omitted", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const summaryMessage = "<1P>\n1#00:00 cursor pagination summary";
 
   try {
@@ -522,7 +522,7 @@ test("postSummaryThread keeps scanning guest pages when top-level count is omitt
 test("postSummaryThread splits comments so each payload stays within 700 characters", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const firstPageText = `first page ${"A".repeat(340)}`;
   const secondPageText = `second page ${"B".repeat(340)}`;
 
@@ -596,7 +596,7 @@ test("postSummaryThread splits comments so each payload stays within 700 charact
 test.skip("postSummaryThread replaces invisible timepoint lines with paste links and stores processed summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
 
   try {
@@ -680,7 +680,7 @@ test.skip("postSummaryThread replaces invisible timepoint lines with paste links
 test.skip("postSummaryThread confirms the initial comment is guest-visible before accepting duplicate-probe recovery", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
   try {
@@ -765,7 +765,7 @@ test.skip("postSummaryThread confirms the initial comment is guest-visible befor
 test.skip("postSummaryThread rejects duplicate-probe recovery when the initial comment is still not guest-visible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
   try {
@@ -844,7 +844,7 @@ test.skip("postSummaryThread rejects duplicate-probe recovery when the initial c
 test("postSummaryThread adopts a visible duplicate root comment reported by reply.add", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
   try {
@@ -935,7 +935,7 @@ test("postSummaryThread adopts a visible duplicate root comment reported by repl
 test("postSummaryThread rejects duplicate recovery when the duplicate root comment is still not guest-visible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
   try {
@@ -1019,7 +1019,7 @@ test("postSummaryThread rejects duplicate recovery when the duplicate root comme
 test("postSummaryThread reuses visible root and reply chunks after a partial failure instead of reposting them", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-partial-retry-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const firstPageText = `first page ${"A".repeat(640)}`;
   const secondPageText = `second page ${"B".repeat(640)}`;
   const thirdPageText = `third page ${"C".repeat(640)}`;
@@ -1177,7 +1177,7 @@ test("postSummaryThread reuses visible root and reply chunks after a partial fai
 test("postSummaryThread replaces an invisible comment chunk with a paste link and stores processed summaries", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const rawSummary = [
     "<1P>",
@@ -1258,7 +1258,7 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
 test("postSummaryThread retries once with a paste link instead of probe comments when the initial comment is invisible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
@@ -1336,7 +1336,7 @@ test("postSummaryThread retries once with a paste link instead of probe comments
 test("postSummaryThread merges consecutive raw pages into a single paste fallback range", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = [
     "<1P>",
@@ -1440,7 +1440,7 @@ test("postSummaryThread merges consecutive raw pages into a single paste fallbac
 test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retrying an invisible chunk", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-mixed-paste-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = [
     "<1P>",
@@ -1547,7 +1547,7 @@ test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retr
 test("postSummaryThread marks every page covered by a compacted paste-link range as published", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-range-publish-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const compactedRangeMessage = [
     "<10P> ~ <14P>",
     "https://paste.rs/MfIPi",
@@ -1619,7 +1619,7 @@ test("postSummaryThread marks every page covered by a compacted paste-link range
 test("postSummaryThread fails when the paste-link retry is still not guest-visible", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
   const fullMessage = "<1P>\n1#20:36 single chunk summary";
 
@@ -1695,7 +1695,7 @@ test("postSummaryThread fails when the paste-link retry is still not guest-visib
 test("postSummaryThread adopts an existing matching top comment instead of posting a duplicate reply", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const fullMessage = [
     "<1P>",
     "1#20:36 first page summary",
@@ -1796,7 +1796,7 @@ test("postSummaryThread adopts an existing matching top comment instead of posti
 test("postSummaryThread skips top-comment adoption when existing comment reuse is disabled", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const fullMessage = [
     "<1P>",
     "1#20:36 first page summary",

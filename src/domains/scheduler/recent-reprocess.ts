@@ -1,6 +1,5 @@
 import {
   getVideoByIdentity,
-  isPostgresDatabase,
   listAllVideoParts,
   markVideoPublishRebuildNeeded,
   resetPublishedStateForVideo,
@@ -119,54 +118,7 @@ export function buildRecentReprocessCandidate(
   };
 }
 
-export function prepareRecentReprocessCandidate(
-  db: Db,
-  candidate: RecentReprocessCandidate,
-): any {
-  if (isPostgresDatabase(db)) {
-    return prepareRecentReprocessCandidatePostgres(db, candidate);
-  }
-
-  if (!candidate.videoId) {
-    return {
-      videoId: null,
-      clearedProcessedPages: [],
-      resetPublishedState: false,
-      markedPublishRebuild: false,
-    };
-  }
-
-  const clearedProcessedPages: number[] = [];
-  if (candidate.reasons.includes("paste-rs-processed-summary")) {
-    for (const pageNo of candidate.pastePages) {
-      savePartProcessedSummary(db, candidate.videoId, pageNo, null);
-      clearedProcessedPages.push(pageNo);
-    }
-
-    markVideoPublishRebuildNeeded(db, candidate.videoId, "recent-reprocess-paste-rs");
-  }
-
-  let resetPublishedState = false;
-  if (candidate.reasons.includes("missing-comment-thread")) {
-    resetPublishedStateForVideo(db, candidate.videoId);
-    updateVideoCommentThread(db, candidate.videoId, {
-      rootCommentRpid: null,
-      topCommentRpid: null,
-    });
-    resetPublishedState = true;
-  }
-
-  return {
-    videoId: candidate.videoId,
-    clearedProcessedPages,
-    resetPublishedState,
-    markedPublishRebuild:
-      candidate.reasons.includes("paste-rs-processed-summary")
-      || candidate.reasons.includes("publish-rebuild-needed"),
-  };
-}
-
-async function prepareRecentReprocessCandidatePostgres(
+export async function prepareRecentReprocessCandidate(
   db: Db,
   candidate: RecentReprocessCandidate,
 ): Promise<RecentReprocessPreparationResult> {
@@ -185,6 +137,7 @@ async function prepareRecentReprocessCandidatePostgres(
       await savePartProcessedSummary(db, candidate.videoId, pageNo, null);
       clearedProcessedPages.push(pageNo);
     }
+
     await markVideoPublishRebuildNeeded(db, candidate.videoId, "recent-reprocess-paste-rs");
   }
 

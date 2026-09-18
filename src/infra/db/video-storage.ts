@@ -1,6 +1,6 @@
 import path from "node:path";
 import { sql } from "drizzle-orm";
-import { withDatabaseWriteLock } from "./database";
+import { runInTransaction, withDatabaseWriteLock } from "./database";
 import { getDrizzleDb } from "./orm";
 import { isPostgresDatabase } from "./postgres-database";
 import {
@@ -44,6 +44,52 @@ import { isPublishableSummaryText } from "../../shared/summary-quality";
 function normalizeStoredPartText(value: string | null | undefined): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+export async function saveVideoAggregate(
+  db: Db,
+  {
+    video,
+    activeParts,
+    deletedParts = [],
+    publishRebuildReason = null,
+  }: {
+    video: VideoInsert;
+    activeParts: Array<Omit<VideoPartUpsert, "videoId">>;
+    deletedParts?: Array<Omit<VideoPartUpsert, "videoId">>;
+    publishRebuildReason?: string | null;
+  },
+): Promise<VideoRecord> {
+  if (isPostgresDatabase(db)) {
+    return await runInTransaction(db, async () => {
+      const storedVideo = await pgUpsertVideo(db, video);
+      for (const part of activeParts) {
+        await pgUpsertVideoPart(db, { videoId: storedVideo.id, ...part });
+      }
+      for (const part of deletedParts) {
+        await pgUpsertVideoPart(db, { videoId: storedVideo.id, ...part });
+      }
+      if (!Number(storedVideo.publish_needs_rebuild) && publishRebuildReason) {
+        return await pgMarkVideoPublishRebuildNeeded(db, storedVideo.id, publishRebuildReason)
+          ?? storedVideo;
+      }
+      return storedVideo;
+    });
+  }
+
+  return runInTransaction(db, () => {
+    const storedVideo = upsertVideo(db, video) as VideoRecord;
+    for (const part of activeParts) {
+      upsertVideoPart(db, { videoId: storedVideo.id, ...part });
+    }
+    for (const part of deletedParts) {
+      upsertVideoPart(db, { videoId: storedVideo.id, ...part });
+    }
+    if (!Number(storedVideo.publish_needs_rebuild) && publishRebuildReason) {
+      return markVideoPublishRebuildNeeded(db, storedVideo.id, publishRebuildReason) as VideoRecord;
+    }
+    return storedVideo;
+  }) as VideoRecord;
 }
 
 export function getVideoByIdentity(db: Db, { bvid = null, aid = null }: VideoIdentity): any {

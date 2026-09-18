@@ -3,13 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   getVideoByIdentity,
-  isPostgresDatabase,
   listAllVideoParts,
   listVideoParts,
   openDatabase,
-  runInTransaction,
-  upsertVideo,
-  upsertVideoPart,
+  saveVideoAggregate,
 } from "../../infra/db/index";
 import type { Db, VideoInsert, VideoPartRecord, VideoRecord } from "../../infra/db/index";
 import { createPipelineEventLogger } from "../pipeline/event-logger";
@@ -216,8 +213,6 @@ async function syncLocalVideoToDb(
   ) as VideoPartRecord[];
   const previousByCid = new Map(previousParts.map((part) => [part.cid, part]));
   const nextCids = new Set(input.files.map((file) => file.cid));
-  let videoId = existingVideo?.id ?? null;
-
   const videoInput: VideoInsert = {
       bvid: input.bvid,
       aid: input.aid,
@@ -275,33 +270,11 @@ async function syncLocalVideoToDb(
       deletedAt: new Date().toISOString(),
     }));
 
-  if (isPostgresDatabase(db)) {
-    await runInTransaction(db, async () => {
-      const video = await upsertVideo(db, videoInput);
-      videoId = video.id;
-      for (const part of activePartInputs) {
-        await upsertVideoPart(db, { videoId: video.id, ...part });
-      }
-      for (const part of deletedPartInputs) {
-        await upsertVideoPart(db, { videoId: video.id, ...part });
-      }
-    });
-  } else {
-    runInTransaction(db, () => {
-      const video = upsertVideo(db, videoInput);
-      videoId = video.id;
-      for (const part of activePartInputs) {
-        upsertVideoPart(db, { videoId: video.id, ...part });
-      }
-      for (const part of deletedPartInputs) {
-        upsertVideoPart(db, { videoId: video.id, ...part });
-      }
-    });
-  }
-
-  if (!videoId) {
-    throw new Error(`Failed to store local video ${input.bvid}`);
-  }
+  await saveVideoAggregate(db, {
+    video: videoInput,
+    activeParts: activePartInputs,
+    deletedParts: deletedPartInputs,
+  });
 
   const video = await getVideoByIdentity(db, {
     bvid: input.bvid,

@@ -4,7 +4,6 @@ import {
   getPreferredSummaryText,
   getVideoByIdentity,
   insertPipelineEvent,
-  isPostgresDatabase,
   listPendingPublishParts,
   listPipelineEvents,
   listVideosPendingPublish,
@@ -243,76 +242,15 @@ async function buildPendingPublishTasks({
   return tasks;
 }
 
-export function listTerminalPublishFailureCooldowns(
+export async function listTerminalPublishFailureCooldowns(
   db: ReturnType<typeof openDatabase>,
   nowMs = Date.now(),
   includeExpiredWithinMs = 0,
-) {
-  if (isPostgresDatabase(db)) {
-    return listTerminalPublishFailureCooldownsPostgres(db, nowMs, includeExpiredWithinMs);
-  }
-
+): Promise<Map<string, number>> {
   const expiredLookbackMs = Math.max(0, Number(includeExpiredWithinMs) || 0);
   const cutoffMs = nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS - expiredLookbackMs;
-  const events = listPipelineEvents(db, {
-    sinceIso: new Date(cutoffMs).toISOString(),
-    limit: 5_000,
-  });
-  const latestEventByBvid = new Map<string, (typeof events)[number]>();
-
-  for (const event of events) {
-    const bvid = String(event.bvid ?? "").trim();
-    if (
-      !bvid
-      || latestEventByBvid.has(bvid)
-      || event.scope !== "publish"
-      || event.action !== "comment-thread"
-    ) {
-      continue;
-    }
-    latestEventByBvid.set(bvid, event);
-  }
-
-  const cooldownByBvid = new Map<string, number>();
-  for (const [bvid, event] of latestEventByBvid) {
-    if (event.status !== "failed") {
-      continue;
-    }
-
-    const details = parsePipelineFailurePayload(event.details_json);
-    if (!isTerminalCommentPublishFailure({
-      message: event.message,
-      code: details?.code,
-      stdout: JSON.stringify({
-        ...details,
-        message: event.message,
-      }),
-    }) && !isPublishPipelineTimeoutFailure({
-      message: event.message,
-      code: details?.code,
-      timedOut: details?.timedOut,
-    })) {
-      continue;
-    }
-
-    const failedAtMs = Date.parse(event.created_at);
-    if (!Number.isFinite(failedAtMs)) {
-      continue;
-    }
-    cooldownByBvid.set(bvid, failedAtMs + TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS);
-  }
-
-  return cooldownByBvid;
-}
-
-async function listTerminalPublishFailureCooldownsPostgres(
-  db: ReturnType<typeof openDatabase>,
-  nowMs: number,
-  includeExpiredWithinMs: number,
-) {
-  const expiredLookbackMs = Math.max(0, Number(includeExpiredWithinMs) || 0);
   const events = await listPipelineEvents(db, {
-    sinceIso: new Date(nowMs - TERMINAL_PUBLISH_FAILURE_COOLDOWN_MS - expiredLookbackMs).toISOString(),
+    sinceIso: new Date(cutoffMs).toISOString(),
     limit: 5_000,
   });
   return buildTerminalPublishFailureCooldowns(events);

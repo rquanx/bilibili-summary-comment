@@ -5,7 +5,6 @@ import { ensureVideoWorkDir } from "../../shared/work-paths";
 import { isSummaryMarkerOnly } from "../../shared/summary-quality";
 import {
   getPreferredSummaryText,
-  isPostgresDatabase,
   listPendingPublishParts,
   listVideoParts,
   normalizeStoredSummaryText,
@@ -118,7 +117,7 @@ export function buildPartPromptArtifact({
   return lines.join("\n").trimEnd() + "\n";
 }
 
-export function writePartPromptArtifact({
+export async function writePartPromptArtifact({
   db = null,
   video,
   pageNo,
@@ -150,7 +149,7 @@ export function writePartPromptArtifact({
   promptConfigPath?: string | null;
   ownerMid?: number | null;
   workRoot?: string;
-}): any {
+}): Promise<string | null> {
   const normalizedSubtitleText = typeof subtitleText === "string"
     ? subtitleText
     : readPromptSubtitleText(subtitlePath, storedSubtitleText);
@@ -182,85 +181,18 @@ export function writePartPromptArtifact({
 
   fs.writeFileSync(partPromptPath, promptArtifact, "utf8");
   if (db && typeof video.id === "number") {
-    const saved = savePartPrompt(db, video.id, pageNo, promptArtifact);
-    if (isPostgresDatabase(db)) {
-      return Promise.resolve(saved).then(() => partPromptPath);
-    }
+    await savePartPrompt(db, video.id, pageNo, promptArtifact);
   }
   return partPromptPath;
 }
 
-export function writeSummaryArtifacts(
+export async function writeSummaryArtifacts(
   db: Db,
   video: VideoRecord,
   workRoot = "work",
   options: {
     promptConfigPath?: string | null;
   } = {},
-): any {
-  if (isPostgresDatabase(db)) {
-    return writeSummaryArtifactsPostgres(db, video, workRoot, options);
-  }
-
-  const workDir = ensureVideoWorkDir({
-    db,
-    video,
-    workRoot,
-  });
-  const activeParts = listVideoParts(db, video.id);
-  const useProcessedSummaryText = !Number(video.publish_needs_rebuild);
-
-  const allSummaryText = activeParts
-    .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-
-  const pendingSourceParts = Number(video.publish_needs_rebuild)
-    ? activeParts.filter((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
-    : listPendingPublishParts(db, video.id);
-
-  const pendingSummaryText = pendingSourceParts
-    .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-
-  const compactedAllSummaryText = compactPasteLinkSummaryRanges(allSummaryText);
-  const compactedPendingSummaryText = compactPasteLinkSummaryRanges(pendingSummaryText);
-
-  const summaryPath = path.join(workDir, "summary.md");
-  const pendingPath = path.join(workDir, "pending-summary.md");
-
-  fs.writeFileSync(summaryPath, compactedAllSummaryText ? `${compactedAllSummaryText}\n` : "", "utf8");
-  fs.writeFileSync(pendingPath, compactedPendingSummaryText ? `${compactedPendingSummaryText}\n` : "", "utf8");
-  rewritePerPageSummaryViews(workDir, activeParts, { useProcessedSummaryText });
-
-  const shouldRewritePrompts = Object.prototype.hasOwnProperty.call(options, "promptConfigPath");
-  if (shouldRewritePrompts) {
-    rewritePerPagePromptViews(workDir, activeParts, {
-      db,
-      video,
-      workRoot,
-      promptConfigPath: options.promptConfigPath,
-    });
-  } else {
-    cleanupPerPageArtifacts(workDir, activeParts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
-  }
-
-  return {
-    summaryPath,
-    pendingSummaryPath: pendingPath,
-  };
-}
-
-async function writeSummaryArtifactsPostgres(
-  db: Db,
-  video: VideoRecord,
-  workRoot: string,
-  options: {
-    promptConfigPath?: string | null;
-  },
 ): Promise<SummaryArtifacts> {
   const workDir = ensureVideoWorkDir({
     db,
@@ -269,21 +201,26 @@ async function writeSummaryArtifactsPostgres(
   });
   const activeParts = await listVideoParts(db, video.id);
   const useProcessedSummaryText = !Number(video.publish_needs_rebuild);
+
   const allSummaryText = activeParts
     .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
     .filter(Boolean)
     .join("\n\n")
     .trim();
+
   const pendingSourceParts = Number(video.publish_needs_rebuild)
     ? activeParts.filter((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
     : await listPendingPublishParts(db, video.id);
+
   const pendingSummaryText = pendingSourceParts
     .map((part) => getAlignedSummaryText(part, { useProcessedSummaryText }))
     .filter(Boolean)
     .join("\n\n")
     .trim();
+
   const compactedAllSummaryText = compactPasteLinkSummaryRanges(allSummaryText);
   const compactedPendingSummaryText = compactPasteLinkSummaryRanges(pendingSummaryText);
+
   const summaryPath = path.join(workDir, "summary.md");
   const pendingPath = path.join(workDir, "pending-summary.md");
 
@@ -293,19 +230,14 @@ async function writeSummaryArtifactsPostgres(
 
   const shouldRewritePrompts = Object.prototype.hasOwnProperty.call(options, "promptConfigPath");
   if (shouldRewritePrompts) {
-    await rewritePerPagePromptViewsPostgres(workDir, activeParts, {
+    await rewritePerPagePromptViews(workDir, activeParts, {
       db,
       video,
       workRoot,
       promptConfigPath: options.promptConfigPath,
     });
   } else {
-    cleanupPerPageArtifacts(
-      workDir,
-      activeParts,
-      /^prompt-p\d+\.md$/u,
-      (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`,
-    );
+    cleanupPerPageArtifacts(workDir, activeParts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
   }
 
   return {
@@ -329,41 +261,7 @@ function rewritePerPageSummaryViews(
   cleanupPerPageArtifacts(workDir, parts, /^summary-p\d+\.md$/u, (part) => `summary-p${String(part.page_no).padStart(2, "0")}.md`);
 }
 
-function rewritePerPagePromptViews(
-  workDir: string,
-  parts: VideoPartRecord[],
-  {
-    db,
-    video,
-    workRoot,
-    promptConfigPath,
-  }: {
-    db: Db;
-    video: VideoRecord;
-    workRoot: string;
-    promptConfigPath?: string | null;
-  },
-) {
-  for (const part of parts) {
-    writePartPromptArtifact({
-      db,
-      video,
-      pageNo: part.page_no,
-      partTitle: part.part_title,
-      durationSec: part.duration_sec,
-      storedSubtitleText: part.subtitle_text,
-      subtitlePath: part.subtitle_path,
-      promptText: part.prompt_text,
-      promptConfigPath,
-      ownerMid: video.owner_mid,
-      workRoot,
-    });
-  }
-
-  cleanupPerPageArtifacts(workDir, parts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
-}
-
-async function rewritePerPagePromptViewsPostgres(
+async function rewritePerPagePromptViews(
   workDir: string,
   parts: VideoPartRecord[],
   {
@@ -393,12 +291,8 @@ async function rewritePerPagePromptViewsPostgres(
       workRoot,
     });
   }
-  cleanupPerPageArtifacts(
-    workDir,
-    parts,
-    /^prompt-p\d+\.md$/u,
-    (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`,
-  );
+
+  cleanupPerPageArtifacts(workDir, parts, /^prompt-p\d+\.md$/u, (part) => `prompt-p${String(part.page_no).padStart(2, "0")}.md`);
 }
 
 function cleanupPerPageArtifacts(

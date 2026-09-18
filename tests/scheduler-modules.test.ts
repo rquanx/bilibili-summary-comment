@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { listPendingPublishParts, listVideosPendingPublish, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
 import { insertPipelineEvent, listPipelineEvents } from "../src/infra/db/pipeline-event-storage";
 import { resolveSchedulerConfig } from "../src/infra/config/app-config";
@@ -42,7 +42,7 @@ test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
   ]);
 });
 
-test("resolveSchedulerConfig uses one shared pipeline concurrency", () => {
+test("resolveSchedulerConfig separates recent and historical pipeline concurrency", () => {
   const explicit = resolveSchedulerConfig({
     "pipeline-concurrency": 4,
     "summary-concurrency": 3,
@@ -53,12 +53,13 @@ test("resolveSchedulerConfig uses one shared pipeline concurrency", () => {
   });
   const defaults = resolveSchedulerConfig();
 
-  assert.equal(explicit.pipelineConcurrency, 4);
+  assert.equal(explicit.summaryConcurrency, 3);
+  assert.equal(explicit.historicalSummaryConcurrency, 2);
   assert.equal(explicit.commentStallAlertMinutes, 120);
-  assert.equal(legacy.pipelineConcurrency, 2);
-  assert.equal(defaults.pipelineConcurrency, 1);
-  assert.equal("summaryConcurrency" in explicit, false);
-  assert.equal("historicalSummaryConcurrency" in explicit, false);
+  assert.equal(legacy.summaryConcurrency, 2);
+  assert.equal(legacy.historicalSummaryConcurrency, 2);
+  assert.equal(defaults.summaryConcurrency, 2);
+  assert.equal(defaults.historicalSummaryConcurrency, 1);
 });
 
 test("resolveCookieFileForUser falls back from indexed cookie to cookie_1 then base cookie", () => {
@@ -840,7 +841,7 @@ test("runRecentVideoGapCheck sends notifications only for previously unseen gaps
   };
 
   try {
-    openDatabase(dbPath).close?.();
+    openSqliteDatabase(dbPath).close?.();
 
     const runOptions = {
       summaryUsers: "123",
@@ -1470,7 +1471,7 @@ test("runPipelineForBvid appends the video link to command failures", async () =
 test("listVideosPendingPublish returns newest videos first regardless of publish mode", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-list-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const appendVideo = upsertVideo(db, {
@@ -1511,7 +1512,7 @@ test("runPendingVideoPublishSweep stops scheduling new work after the first fail
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-sweep-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const publishedBvids: string[] = [];
 
   try {
@@ -1594,7 +1595,7 @@ test("runPendingVideoPublishSweep skips deleted comment failures and continues t
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-skip-terminal-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const publishedBvids: string[] = [];
 
   try {
@@ -1676,7 +1677,7 @@ test("runPendingVideoPublishSweep records publish timeouts and continues the que
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-timeout-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const attemptedBvids: string[] = [];
 
   try {
@@ -1753,7 +1754,7 @@ test("runPendingVideoPublishSweep skips videos with a recent persisted terminal 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-persisted-cooldown-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const publishedBvids: string[] = [];
 
   try {
@@ -1819,7 +1820,7 @@ test("runPendingVideoPublishSweep healthchecks recently uploaded published video
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-healthcheck-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const publishedBvids: string[] = [];
 
   try {
@@ -1892,7 +1893,7 @@ test("runPendingVideoPublishSweep only cools down after tasks that actually crea
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-cooldown-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const sleepCalls: number[] = [];
 
   try {
@@ -2004,7 +2005,7 @@ test("runPendingVideoPublishSweep defers newly queued parts to the next sweep", 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-requeue-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const publishedPages: number[][] = [];
 
   try {
@@ -2100,7 +2101,7 @@ test("runPendingVideoPublishSweep does not requeue when only part updated_at cha
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-stable-revision-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   let runCount = 0;
 
   try {
@@ -2166,7 +2167,7 @@ test("runPendingVideoPublishSweep serializes a stable queue snapshot", async () 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-publish-concurrency-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.relative(process.cwd(), path.join(tempRoot, "work"));
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   const started: string[] = [];
   const finished: string[] = [];
   const running = new Set<string>();

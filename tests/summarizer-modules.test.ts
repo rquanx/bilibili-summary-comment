@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
 import { resolveSummaryConfig } from "../src/domains/summary/config";
 import {
@@ -1064,7 +1064,7 @@ test("summarizePartFromSubtitle skips short parts with no usable subtitle cues b
   const repoWorkRoot = path.join(repoRoot, workRoot);
   fs.writeFileSync(subtitlePath, "", "utf8");
 
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
   let requestCallCount = 0;
 
   try {
@@ -1233,7 +1233,7 @@ test("summarizePartFromSubtitle records rate-limit fallback success metadata whe
 
   const events = [];
   const requestModels = [];
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1329,7 +1329,7 @@ test("summarizePartFromSubtitle records empty-text fallback success metadata whe
 
   const events = [];
   const requestModels = [];
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1418,7 +1418,7 @@ test("summarizePartFromSubtitle records Gemini fallback success metadata for hig
   const events = [];
   const requestCalls = [];
   const geminiCalls = [];
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1532,7 +1532,7 @@ test("summarizePartFromSubtitle writes prompt artifact before a summary request 
     "",
   ].join("\n"), "utf8");
 
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1589,13 +1589,13 @@ test("summarizePartFromSubtitle writes prompt artifact before a summary request 
   }
 });
 
-test("writeSummaryArtifacts refreshes per-page prompt files and removes stale prompt files", () => {
+test("writeSummaryArtifacts refreshes per-page prompt files and removes stale prompt files", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-prompts-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1647,7 +1647,7 @@ test("writeSummaryArtifacts refreshes per-page prompt files and removes stale pr
     fs.mkdirSync(workDir, { recursive: true });
     fs.writeFileSync(path.join(workDir, "prompt-p03.md"), "stale", "utf8");
 
-    writeSummaryArtifacts(db, video, workRoot, {
+    await writeSummaryArtifacts(db, video, workRoot, {
       promptConfigPath: null,
     });
 
@@ -1665,13 +1665,13 @@ test("writeSummaryArtifacts refreshes per-page prompt files and removes stale pr
   }
 });
 
-test("writeSummaryArtifacts can rebuild prompt files from stored subtitle text after subtitle files are removed", () => {
+test("writeSummaryArtifacts can rebuild prompt files from stored subtitle text after subtitle files are removed", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-stored-subtitles-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1700,7 +1700,7 @@ test("writeSummaryArtifacts can rebuild prompt files from stored subtitle text a
       isDeleted: false,
     });
 
-    writeSummaryArtifacts(db, video, workRoot, {
+    await writeSummaryArtifacts(db, video, workRoot, {
       promptConfigPath: null,
     });
 
@@ -1719,13 +1719,13 @@ test("writeSummaryArtifacts can rebuild prompt files from stored subtitle text a
   }
 });
 
-test("writeSummaryArtifacts prefers processed summary text when present", () => {
+test("writeSummaryArtifacts prefers processed summary text when present", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-processed-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1747,7 +1747,7 @@ test("writeSummaryArtifacts prefers processed summary text when present", () => 
       isDeleted: false,
     });
 
-    const artifacts = writeSummaryArtifacts(db, video, workRoot, {
+    const artifacts = await writeSummaryArtifacts(db, video, workRoot, {
       promptConfigPath: null,
     });
 
@@ -1766,13 +1766,13 @@ test("writeSummaryArtifacts prefers processed summary text when present", () => 
   }
 });
 
-test("writeSummaryArtifacts compacts consecutive paste-only processed summaries in aggregate views", () => {
+test("writeSummaryArtifacts compacts consecutive paste-only processed summaries in aggregate views", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-paste-ranges-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1826,7 +1826,7 @@ test("writeSummaryArtifacts compacts consecutive paste-only processed summaries 
       isDeleted: false,
     });
 
-    const artifacts = writeSummaryArtifacts(db, video, workRoot, {
+    const artifacts = await writeSummaryArtifacts(db, video, workRoot, {
       promptConfigPath: null,
     });
     const workDir = resolveVideoWorkDir(video, workRoot);
@@ -1866,13 +1866,13 @@ test("writeSummaryArtifacts compacts consecutive paste-only processed summaries 
   }
 });
 
-test("writeSummaryArtifacts uses raw summary text during rebuild publish preparation", () => {
+test("writeSummaryArtifacts uses raw summary text during rebuild publish preparation", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-rebuild-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1909,7 +1909,7 @@ test("writeSummaryArtifacts uses raw summary text during rebuild publish prepara
       isDeleted: false,
     });
 
-    const artifacts = writeSummaryArtifacts(db, rebuildVideo, workRoot, {
+    const artifacts = await writeSummaryArtifacts(db, rebuildVideo, workRoot, {
       promptConfigPath: null,
     });
 
@@ -1932,13 +1932,13 @@ test("writeSummaryArtifacts uses raw summary text during rebuild publish prepara
   }
 });
 
-test("writeSummaryArtifacts hides marker-only summaries during rebuild publish preparation", () => {
+test("writeSummaryArtifacts hides marker-only summaries during rebuild publish preparation", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-rebuild-marker-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -1973,7 +1973,7 @@ test("writeSummaryArtifacts hides marker-only summaries during rebuild publish p
       isDeleted: false,
     });
 
-    const artifacts = writeSummaryArtifacts(db, rebuildVideo, workRoot, {
+    const artifacts = await writeSummaryArtifacts(db, rebuildVideo, workRoot, {
       promptConfigPath: null,
     });
     const workDir = resolveVideoWorkDir(rebuildVideo, workRoot, repoRoot);
@@ -1997,13 +1997,13 @@ test("writeSummaryArtifacts hides marker-only summaries during rebuild publish p
   }
 });
 
-test("writeSummaryArtifacts hides short no-subtitle placeholder summaries during rebuild publish preparation", () => {
+test("writeSummaryArtifacts hides short no-subtitle placeholder summaries during rebuild publish preparation", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-rebuild-placeholder-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -2038,7 +2038,7 @@ test("writeSummaryArtifacts hides short no-subtitle placeholder summaries during
       isDeleted: false,
     });
 
-    const artifacts = writeSummaryArtifacts(db, rebuildVideo, workRoot, {
+    const artifacts = await writeSummaryArtifacts(db, rebuildVideo, workRoot, {
       promptConfigPath: null,
     });
     const workDir = resolveVideoWorkDir(rebuildVideo, workRoot, repoRoot);
@@ -2071,13 +2071,13 @@ test("reindexSummaryTextToPage aligns markers and page-prefixed timestamps to th
   assert.equal(reindexed, "<16P>\n16#00:00 开场\n00:30 继续\n16#01:00 收尾");
 });
 
-test("writeSummaryArtifacts reindexes stored page markers across summary, pending, and per-page views", () => {
+test("writeSummaryArtifacts reindexes stored page markers across summary, pending, and per-page views", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-artifacts-reindex-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const workRoot = path.join(".tmp-tests", path.basename(tempRoot)).replace(/\\/gu, "/");
   const repoRoot = process.cwd();
   const repoWorkRoot = path.join(repoRoot, workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -2122,7 +2122,7 @@ test("writeSummaryArtifacts reindexes stored page markers across summary, pendin
       isDeleted: false,
     });
 
-    const artifacts = writeSummaryArtifacts(db, video, workRoot, {
+    const artifacts = await writeSummaryArtifacts(db, video, workRoot, {
       promptConfigPath: null,
     });
     const workDir = resolveVideoWorkDir(video, workRoot, repoRoot);

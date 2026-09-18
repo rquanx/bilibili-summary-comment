@@ -1,15 +1,11 @@
 import {
   getVideoByIdentity,
-  isPostgresDatabase,
   listAllVideoParts,
   listPendingPublishParts,
   listPendingSummaryParts,
   listVideoParts,
   listVideos,
-  markVideoPublishRebuildNeeded,
-  runInTransaction,
-  upsertVideo,
-  upsertVideoPart,
+  saveVideoAggregate,
 } from "../../infra/db/index";
 import type { Db, VideoIdentity, VideoPartRecord, VideoSnapshot, VideoState } from "../../infra/db/index";
 import { buildOwnerDirName, buildVideoWorkDirName } from "../../shared/work-paths";
@@ -71,42 +67,16 @@ export async function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): Pr
     };
   });
   const deletedParts = previousParts.filter((part) => !nextCidSet.has(part.cid));
-  let videoId = existingVideo?.id ?? null;
-
   const videoInput = { ...snapshot, ownerDirName, workDirName };
-  if (isPostgresDatabase(db)) {
-    await runInTransaction(db, async () => {
-      const video = await upsertVideo(db, videoInput);
-      videoId = video.id;
-      for (const input of activePartInputs) {
-        await upsertVideoPart(db, buildActivePartUpsert(video.id, input));
-      }
-      for (const part of deletedParts) {
-        await upsertVideoPart(db, buildDeletedPartUpsert(video.id, part));
-      }
-      if (!Number(video.publish_needs_rebuild) && hadPublishedThread && changeSet.requiresRebuild) {
-        await markVideoPublishRebuildNeeded(db, video.id, changeSet.rebuildReason);
-      }
-    });
-  } else {
-    runInTransaction(db, () => {
-      const video = upsertVideo(db, videoInput);
-      videoId = video.id;
-      for (const input of activePartInputs) {
-        upsertVideoPart(db, buildActivePartUpsert(video.id, input));
-      }
-      for (const part of deletedParts) {
-        upsertVideoPart(db, buildDeletedPartUpsert(video.id, part));
-      }
-      if (!Number(video.publish_needs_rebuild) && hadPublishedThread && changeSet.requiresRebuild) {
-        markVideoPublishRebuildNeeded(db, video.id, changeSet.rebuildReason);
-      }
-    });
-  }
-
-  if (!videoId) {
-    throw new Error(`Failed to sync video snapshot for ${snapshot.bvid}`);
-  }
+  const storedVideo = await saveVideoAggregate(db, {
+    video: videoInput,
+    activeParts: activePartInputs.map((input) => buildActivePartUpsert(input)),
+    deletedParts: deletedParts.map((part) => buildDeletedPartUpsert(part)),
+    publishRebuildReason: hadPublishedThread && changeSet.requiresRebuild
+      ? changeSet.rebuildReason
+      : null,
+  });
+  const videoId = storedVideo.id;
 
   const refreshedVideo = await getVideoByIdentity(db, { bvid: snapshot.bvid, aid: snapshot.aid });
   if (!refreshedVideo) {
@@ -123,10 +93,9 @@ export async function syncVideoSnapshotToDb(db: Db, snapshot: VideoSnapshot): Pr
   };
 }
 
-function buildActivePartUpsert(videoId: number, input: any) {
+function buildActivePartUpsert(input: any) {
   const { page, existingPart } = input;
   return {
-    videoId,
     pageNo: page.pageNo,
     cid: page.cid,
     partTitle: page.partTitle,
@@ -148,9 +117,8 @@ function buildActivePartUpsert(videoId: number, input: any) {
   };
 }
 
-function buildDeletedPartUpsert(videoId: number, part: VideoPartRecord) {
+function buildDeletedPartUpsert(part: VideoPartRecord) {
   return {
-    videoId,
     pageNo: Number(part.page_no ?? 0),
     cid: part.cid,
     partTitle: part.part_title,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import {
   listVideoParts,
   markVideoPublishRebuildNeeded,
@@ -45,7 +45,7 @@ test("reindexSummaryText rewrites page markers, inline page indexes, and createS
 test("syncVideoSnapshotToDb reindexes moved summaries and clears published flags", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-sync-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -113,7 +113,7 @@ test("syncVideoSnapshotToDb reindexes moved summaries and clears published flags
 test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after deleting an earlier part", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-delete-shift-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -190,7 +190,7 @@ test("syncVideoSnapshotToDb keeps moved summary page indexes in sync after delet
 test("syncVideoSnapshotToDb preserves an explicit rebuild flag after local thread state was reset", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-state-rebuild-retry-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {

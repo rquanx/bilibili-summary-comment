@@ -45,10 +45,10 @@ const command = addWorkRootOption(
       .option("--auth-file <path>", "Optional. TV auth file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
-      .option("--pipeline-concurrency <count>", "Optional. Shared recent, historical, and publish pipeline concurrency. Default: 1", parsePositiveIntegerArg)
-      .option("--summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
+      .option("--pipeline-concurrency <count>", "Legacy alias for --summary-concurrency.", parsePositiveIntegerArg)
+      .option("--summary-concurrency <count>", "Optional. Recent summary pipeline concurrency. Default: 2", parsePositiveIntegerArg)
       .option("--historical-summary-daily-limit <count>", "Optional. Historical pipeline starts per calendar day. Default: 200", parsePositiveIntegerArg)
-      .option("--historical-summary-concurrency <count>", "Legacy alias for --pipeline-concurrency.", parsePositiveIntegerArg)
+      .option("--historical-summary-concurrency <count>", "Optional. Historical summary pipeline concurrency. Default: 1", parsePositiveIntegerArg)
       .option("--historical-request-delay-ms <ms>", "Optional. Minimum delay between historical Bilibili requests. Default: 2000")
       .option("--comment-stall-alert-minutes <minutes>", "Optional. Alert after this many minutes without a successful new comment. Default: 60", parsePositiveIntegerArg)
       .option("--refresh-days <days>", "Optional. Refresh auth when older than this many days.", parsePositiveIntegerArg)
@@ -67,8 +67,11 @@ await runCli({
     config.authFile = resolveBiliAuthFile(config.authFile);
     const resolvedCookieFile = config.cookieFile ? resolveBiliCookieFile(config.cookieFile) : null;
     const runningTasks = new Set<string>();
-    const pipelineTaskLimiter = createPriorityTaskLimiter({
-      maxConcurrent: config.pipelineConcurrency,
+    const summaryTaskLimiter = createPriorityTaskLimiter({
+      maxConcurrent: config.summaryConcurrency,
+    });
+    const historicalTaskLimiter = createPriorityTaskLimiter({
+      maxConcurrent: config.historicalSummaryConcurrency,
     });
     const schedulerLogger = createWorkFileLogger({
       workRoot: config.workRoot,
@@ -177,14 +180,14 @@ await runCli({
         authFile: config.authFile,
         cookieFile: resolvedCookieFile ?? undefined,
         sinceHours: config.summarySinceHours,
-        maxConcurrent: config.pipelineConcurrency,
+        maxConcurrent: config.summaryConcurrency,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
         logDay,
         logGroup,
         publish: false,
         runPipelineTask(task) {
-          return pipelineTaskLimiter.run(PIPELINE_TASK_PRIORITY.recent, task);
+          return summaryTaskLimiter.run(PIPELINE_TASK_PRIORITY.recent, task);
         },
         logger: summaryLogger,
         onLog(message) {
@@ -320,11 +323,11 @@ await runCli({
         workRoot: config.workRoot,
         timezone: config.timezone ?? null,
         dailyLimit: config.historicalSummaryDailyLimit,
-        maxConcurrent: config.pipelineConcurrency,
-        maxPipelineStartsPerRun: config.pipelineConcurrency,
+        maxConcurrent: config.historicalSummaryConcurrency,
+        maxPipelineStartsPerRun: config.historicalSummaryConcurrency,
         requestDelayMs: config.historicalRequestDelayMs,
         runPipelineTask(task) {
-          return pipelineTaskLimiter.run(PIPELINE_TASK_PRIORITY.historical, task);
+          return historicalTaskLimiter.run(PIPELINE_TASK_PRIORITY.historical, task);
         },
         logDay,
         logGroup,
@@ -506,9 +509,7 @@ await runCli({
     const publishRunner = createCoalescedRunner({
       name: "publish",
       runningTasks,
-      task() {
-        return pipelineTaskLimiter.run(PIPELINE_TASK_PRIORITY.publish, runPublishTask);
-      },
+      task: runPublishTask,
       onLog(message) {
         log(message);
       },
@@ -592,7 +593,7 @@ await runCli({
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
     log(
-      `Pipeline slots: total=${pipelineTaskLimiter.capacity}, shared-by=recent+historical+publish, priority=recent-first`,
+      `Pipeline slots: recent=${summaryTaskLimiter.capacity}, historical=${historicalTaskLimiter.capacity}, publish=1, asr=1`,
     );
     log("Cron plan: summary=every15min, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every15min with recent-video pipeline priority");
     attachSignalHandlers(scheduledTasks, log);
@@ -611,7 +612,8 @@ await runCli({
       mode: "daemon",
       timezone: config.timezone ?? "system",
       summaryUsers: config.summaryUsers,
-      pipelineConcurrency: config.pipelineConcurrency,
+      summaryConcurrency: config.summaryConcurrency,
+      historicalSummaryConcurrency: config.historicalSummaryConcurrency,
       historicalSummaryDailyLimit: config.historicalSummaryDailyLimit,
       historicalRequestDelayMs: config.historicalRequestDelayMs,
       commentStallAlertMinutes: config.commentStallAlertMinutes,

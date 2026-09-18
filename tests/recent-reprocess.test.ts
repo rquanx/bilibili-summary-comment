@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import {
   getVideoByIdentity,
   listVideoParts,
@@ -60,7 +60,7 @@ test("buildRecentReprocessCandidate matches missing comment threads and paste.rs
 test("collectRecentReprocessCandidates detects paste.rs from the visible Bilibili thread even when processed summaries are empty", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-recent-reprocess-live-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -151,10 +151,10 @@ test("collectRecentReprocessCandidates detects paste.rs from the visible Bilibil
   }
 });
 
-test("prepareRecentReprocessCandidate clears paste.rs processed summaries and resets missing comment publish state", () => {
+test("prepareRecentReprocessCandidate clears paste.rs processed summaries and resets missing comment publish state", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-recent-reprocess-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const video = upsertVideo(db, {
@@ -194,7 +194,7 @@ test("prepareRecentReprocessCandidate clears paste.rs processed summaries and re
       isDeleted: false,
     });
 
-    const result = prepareRecentReprocessCandidate(db, {
+    const result = await prepareRecentReprocessCandidate(db, {
       mid: 1,
       bvid: "BVRECENT2",
       aid: 1002,

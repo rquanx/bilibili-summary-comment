@@ -36,7 +36,8 @@ const schedulerConfigSchema = z.object({
   cookieFile: optionalTrimmedStringSchema,
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
-  pipelineConcurrency: positiveIntegerLikeSchema,
+  summaryConcurrency: positiveIntegerLikeSchema,
+  historicalSummaryConcurrency: positiveIntegerLikeSchema,
   historicalSummaryDailyLimit: positiveIntegerLikeSchema,
   historicalRequestDelayMs: nonNegativeIntegerLikeSchema,
   commentStallAlertMinutes: positiveIntegerLikeSchema,
@@ -95,13 +96,15 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
-    pipelineConcurrency:
-      options["pipeline-concurrency"]
-      ?? process.env.PIPELINE_CONCURRENCY
-      ?? options["historical-summary-concurrency"]
-      ?? options["summary-concurrency"]
-      ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
+    summaryConcurrency:
+      options["summary-concurrency"]
       ?? process.env.SUMMARY_PIPELINE_CONCURRENCY
+      ?? options["pipeline-concurrency"]
+      ?? process.env.PIPELINE_CONCURRENCY
+      ?? 2,
+    historicalSummaryConcurrency:
+      options["historical-summary-concurrency"]
+      ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
       ?? 1,
     historicalSummaryDailyLimit:
       options["historical-summary-daily-limit"]

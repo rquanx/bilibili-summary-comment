@@ -4,7 +4,7 @@ import path from "node:path";
 import { migrate as migrateDrizzle } from "drizzle-orm/better-sqlite3/migrator";
 import { getRepoRoot } from "../../shared/runtime-tools";
 import { getDrizzleDb } from "./orm";
-import type { Db } from "./types";
+import type { SqliteDb } from "./types";
 
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 
@@ -19,7 +19,7 @@ interface MigrationJournal {
   entries: MigrationJournalEntry[];
 }
 
-export function migrateDatabase(db: Db) {
+export function migrateDatabase(db: SqliteDb) {
   const hasPipelineTables = hasAnyPipelineTable(db);
   const hasDrizzleMigrationsTable = hasTable(db, DRIZZLE_MIGRATIONS_TABLE);
 
@@ -40,7 +40,7 @@ function getDrizzleMigrationsFolder(): string {
   return path.join(getRepoRoot(), "drizzle");
 }
 
-function hasAnyPipelineTable(db: Db): boolean {
+function hasAnyPipelineTable(db: SqliteDb): boolean {
   return [
     "videos",
     "video_parts",
@@ -50,7 +50,7 @@ function hasAnyPipelineTable(db: Db): boolean {
   ].some((tableName) => hasTable(db, tableName));
 }
 
-function hasTable(db: Db, tableName: string): boolean {
+function hasTable(db: SqliteDb, tableName: string): boolean {
   const table = db.prepare(`
     SELECT name
     FROM sqlite_master
@@ -60,7 +60,7 @@ function hasTable(db: Db, tableName: string): boolean {
   return Boolean(table);
 }
 
-function markCurrentMigrationsAsApplied(db: Db) {
+function markCurrentMigrationsAsApplied(db: SqliteDb) {
   const migrations = readMigrations();
   if (migrations.length === 0) {
     return;
@@ -114,7 +114,7 @@ function readMigrations(): Array<{ hash: string; createdAt: number }> {
     });
 }
 
-function migrateLegacyDatabase(db: Db) {
+function migrateLegacyDatabase(db: SqliteDb) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS videos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +174,7 @@ function migrateLegacyDatabase(db: Db) {
   `);
 }
 
-function ensureVideoColumn(db: Db, columnName: string, definition: string) {
+function ensureVideoColumn(db: SqliteDb, columnName: string, definition: string) {
   const columns = db.prepare("PRAGMA table_info(videos)").all() as Array<{ name?: string }>;
   if (columns.some((column) => column.name === columnName)) {
     return;
@@ -183,7 +183,7 @@ function ensureVideoColumn(db: Db, columnName: string, definition: string) {
   db.exec(`ALTER TABLE videos ADD COLUMN ${columnName} ${definition}`);
 }
 
-function migrateLegacyVideoPartsTable(db: Db) {
+function migrateLegacyVideoPartsTable(db: SqliteDb) {
   if (!hasTable(db, "video_parts")) {
     createVideoPartsTable(db);
     return;
@@ -267,7 +267,7 @@ function migrateLegacyVideoPartsTable(db: Db) {
   }
 }
 
-function createVideoPartsTable(db: Db) {
+function createVideoPartsTable(db: SqliteDb) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS video_parts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,7 +297,7 @@ function createVideoPartsTable(db: Db) {
   `);
 }
 
-function ensureVideoPartColumn(db: Db, columnName: string, definition: string) {
+function ensureVideoPartColumn(db: SqliteDb, columnName: string, definition: string) {
   const columns = db.prepare("PRAGMA table_info(video_parts)").all() as Array<{ name?: string }>;
   if (columns.some((column) => column.name === columnName)) {
     return;
@@ -306,7 +306,7 @@ function ensureVideoPartColumn(db: Db, columnName: string, definition: string) {
   db.exec(`ALTER TABLE video_parts ADD COLUMN ${columnName} ${definition}`);
 }
 
-function createPipelineEventsTable(db: Db) {
+function createPipelineEventsTable(db: SqliteDb) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS pipeline_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -328,7 +328,7 @@ function createPipelineEventsTable(db: Db) {
   `);
 }
 
-function createGapNotificationsTable(db: Db) {
+function createGapNotificationsTable(db: SqliteDb) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS gap_notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -349,7 +349,7 @@ function createGapNotificationsTable(db: Db) {
   `);
 }
 
-function createRecentReprocessRunsTable(db: Db) {
+function createRecentReprocessRunsTable(db: SqliteDb) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS recent_reprocess_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

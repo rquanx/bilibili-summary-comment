@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDatabase } from "../src/infra/db/database";
+import { openSqliteDatabase } from "../src/infra/db/database";
 import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
 import { createSummaryHash } from "../src/domains/video/change-detection";
 import { runPublishStage } from "../src/domains/pipeline/publish-stage";
@@ -166,7 +166,7 @@ test("runPublishStage rebuild deletes stale old threads before posting a fresh r
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const fullMessage = ["<1P>", "first page", "", "<2P>", "second page"].join("\n");
@@ -326,7 +326,7 @@ test("runPublishStage preserves a manual top comment and creates an unpinned sum
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const summary = "<1P>\n1#00:00 first page summary";
@@ -416,7 +416,7 @@ test("runPublishStage rebuild preserves a manual top and deletes only the summar
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const summary = "<1P>\n1#00:00 rebuilt summary";
@@ -523,7 +523,7 @@ test("runPublishStage clears stale manual-top protection and resumes normal pinn
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const summary = "<1P>\n1#00:00 rebuilt summary";
@@ -614,7 +614,7 @@ test("runPublishStage forceFreshThread deletes the old pinned thread before rebu
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const fullMessage = ["<1P>", "first page", "", "<2P>", "second page"].join("\n");
@@ -738,7 +738,7 @@ test("runPublishStage keeps persisted thread state when forceFreshThread deletio
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const summaryPath = path.join(tempRoot, "summary.md");
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     fs.writeFileSync(summaryPath, "<1P>\nsummary\n", "utf8");
@@ -822,7 +822,7 @@ test("runPublishStage rebuilds when stored root comment is missing even without 
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const fullMessage = ["<1P>", "first page", "", "<2P>", "second page"].join("\n");
@@ -937,7 +937,7 @@ test("runPublishStage rebuilds when stored root comment is missing even with pen
   const pendingSummaryPath = path.join(tempRoot, "pending-summary.md");
   const workRoot = `work-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const repoWorkRoot = path.join(process.cwd(), workRoot);
-  const db = openDatabase(dbPath);
+  const db = openSqliteDatabase(dbPath);
 
   try {
     const fullMessage = ["<1P>", "first page", "", "<2P>", "second page"].join("\n");
