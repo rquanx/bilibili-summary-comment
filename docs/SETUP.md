@@ -70,7 +70,7 @@ CLI 脚本默认会自动加载仓库根目录 `.env`。最小可用配置通常
 
 ```dotenv
 SUMMARY_API_KEY=your_api_key
-SUMMARY_MODEL=gpt-4o-mini
+SUMMARY_MODEL=gpt-5.6-luna
 SUMMARY_USERS=https://space.bilibili.com/123456
 CRON_TIMEZONE=Asia/Shanghai
 ```
@@ -80,6 +80,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `SUMMARY_API_KEY` 或 `OPENAI_API_KEY`
 - `SUMMARY_API_BASE_URL` 或 `OPENAI_BASE_URL`
 - `SUMMARY_MODEL` 或 `OPENAI_MODEL`
+- `SUMMARY_FALLBACK_MODEL`：主模型失败、不可用或下线时使用的备用模型
 - `SUMMARY_API_FORMAT` 或 `OPENAI_API_FORMAT`
 - `SUMMARY_OPENCODE_SESSION`：可选。OpenCode 路由 session；未设置时每次视频流水线自动生成
 
@@ -96,10 +97,16 @@ OpenCode Go 示例：
 SUMMARY_API_KEY=your_opencode_go_key
 SUMMARY_API_BASE_URL=https://opencode.ai/zen/go/v1
 SUMMARY_API_FORMAT=openai-chat
-SUMMARY_MODEL=glm-5
+SUMMARY_MODEL=gpt-5.6-luna
+# 主模型因限流、网络错误、空响应或模型下线时使用
+SUMMARY_FALLBACK_MODEL=deepseek-v4-pro
 # 可选；未设置时，每次视频流水线会自动生成一个 session id
 SUMMARY_OPENCODE_SESSION=your_stable_session_id
 ```
+
+`SUMMARY_MODEL` 和 `SUMMARY_FALLBACK_MODEL` 必须使用当前 OpenCode Go 可用的模型 ID。
+fallback 不再绑定某个固定主模型；如果主模型 ID 不存在或已下线，也会尝试切换到 `SUMMARY_FALLBACK_MODEL`。
+未配置 `SUMMARY_FALLBACK_MODEL` 时，默认使用 `deepseek-v4-pro`。
 
 调度相关变量：
 

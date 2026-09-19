@@ -42,6 +42,7 @@ test("resolveSummaryConfig normalizes args and env values", () => {
   );
 
   assert.equal(config.model, "gpt-test");
+  assert.equal(config.fallbackModel, "deepseek-v4-pro");
   assert.equal(config.apiKey, "key-123");
   assert.equal(config.apiBaseUrl, "https://example.com/v1");
   assert.equal(config.apiFormat, "openai-chat");
@@ -358,6 +359,53 @@ test("shouldRetrySummaryWithGeminiFlash only matches high-risk content filter er
   );
 });
 
+test("resolveSummaryConfig accepts a configurable fallback model", () => {
+  const config = resolveSummaryConfig({}, {
+    SUMMARY_MODEL: "deepseek-v4-pro-0813",
+    SUMMARY_FALLBACK_MODEL: "glm-5.3",
+  });
+
+  assert.equal(config.model, "deepseek-v4-pro-0813");
+  assert.equal(config.fallbackModel, "glm-5.3");
+});
+
+test("resolveSummaryConfig defaults to the OpenCode primary and fallback models", () => {
+  const config = resolveSummaryConfig({}, {});
+
+  assert.equal(config.model, "gpt-5.6-luna");
+  assert.equal(config.fallbackModel, "deepseek-v4-pro");
+});
+
+test("requestSummaryWithFallback falls back when a configured model is unavailable", async () => {
+  const calls = [];
+  const result = await requestSummaryWithFallback({
+    requestArgs: {
+      pageNo: 2,
+      partTitle: "P2",
+      durationSec: 120,
+      subtitleText: "subtitle text",
+      segments: [],
+      promptProfile: null,
+      model: "deepseek-v4-pro",
+      apiKey: "key-123",
+      apiBaseUrl: "https://example.com/v1",
+      apiFormat: "openai-chat",
+    },
+    fallbackModel: "deepseek-v4-pro-0813",
+    requestSummaryImpl: async (args) => {
+      calls.push(args.model);
+      if (args.model === "deepseek-v4-pro") {
+        throw new Error("Summary request failed: 400 Bad Request model not found");
+      }
+      return "<2P> 2#00:00 fallback summary";
+    },
+  });
+
+  assert.deepEqual(calls, ["deepseek-v4-pro", "deepseek-v4-pro-0813"]);
+  assert.equal(result.modelUsed, "deepseek-v4-pro-0813");
+  assert.equal(result.fallbackReason, "primary-model-unavailable");
+});
+
 test("requestSummaryWithFallback uses CLI Proxy before opencode", async () => {
   const calls = [];
   const result = await requestSummaryWithFallback({
@@ -470,7 +518,7 @@ test("requestSummaryWithFallback retries CLI Proxy three times before falling ba
   assert.equal(result.fallbackHistory.length, 1);
 });
 
-test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_tokens errors", async () => {
+test("requestSummaryWithFallback retries once with deepseek-v4-pro for known kimi prompt_tokens errors", async () => {
   const calls = [];
   const result = await requestSummaryWithFallback({
     requestArgs: {
@@ -494,8 +542,8 @@ test("requestSummaryWithFallback retries once with glm-5 for known kimi prompt_t
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
-  assert.equal(result.modelUsed, "glm-5");
+  assert.deepEqual(calls, ["kimi-k2.5", "deepseek-v4-pro"]);
+  assert.equal(result.modelUsed, "deepseek-v4-pro");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-prompt_tokens-error");
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
@@ -525,8 +573,8 @@ test("requestSummaryWithFallback records the rate-limit fallback reason when a 4
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
-  assert.equal(result.modelUsed, "glm-5");
+  assert.deepEqual(calls, ["kimi-k2.5", "deepseek-v4-pro"]);
+  assert.equal(result.modelUsed, "deepseek-v4-pro");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-rate-limit");
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
@@ -557,7 +605,7 @@ test("requestSummaryWithFallback retries 429 responses once before surfacing the
     /429 Too Many Requests/u,
   );
 
-  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
+  assert.deepEqual(calls, ["kimi-k2.5", "deepseek-v4-pro"]);
 });
 
 test("requestSummaryWithFallback retries transient network failures on the same model before succeeding", async () => {
@@ -598,7 +646,7 @@ test("requestSummaryWithFallback retries transient network failures on the same 
   assert.equal(result.summaryText, "<2P> 2#00:00 recovered summary");
 });
 
-test("requestSummaryWithFallback falls back to glm-5 after kimi network retries are exhausted", async () => {
+test("requestSummaryWithFallback falls back to deepseek-v4-pro after kimi network retries are exhausted", async () => {
   const calls = [];
   const sleepCalls = [];
   const result = await requestSummaryWithFallback({
@@ -626,15 +674,15 @@ test("requestSummaryWithFallback falls back to glm-5 after kimi network retries 
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
+  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "deepseek-v4-pro"]);
   assert.deepEqual(sleepCalls, [5000, 15000, 45000]);
-  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.modelUsed, "deepseek-v4-pro");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-network-error");
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
 });
 
-test("requestSummaryWithFallback falls back to glm-5 after kimi 'other side closed' retries are exhausted", async () => {
+test("requestSummaryWithFallback falls back to deepseek-v4-pro after kimi 'other side closed' retries are exhausted", async () => {
   const calls = [];
   const sleepCalls = [];
   const result = await requestSummaryWithFallback({
@@ -662,15 +710,15 @@ test("requestSummaryWithFallback falls back to glm-5 after kimi 'other side clos
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "glm-5"]);
+  assert.deepEqual(calls, ["kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "kimi-k2.5", "deepseek-v4-pro"]);
   assert.deepEqual(sleepCalls, [5000, 15000, 45000]);
-  assert.equal(result.modelUsed, "glm-5");
+  assert.equal(result.modelUsed, "deepseek-v4-pro");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-network-error");
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
 });
 
-test("requestSummaryWithFallback retries empty-text responses once with glm-5", async () => {
+test("requestSummaryWithFallback retries empty-text responses once with deepseek-v4-pro", async () => {
   const calls = [];
   const result = await requestSummaryWithFallback({
     requestArgs: {
@@ -694,8 +742,8 @@ test("requestSummaryWithFallback retries empty-text responses once with glm-5", 
     },
   });
 
-  assert.deepEqual(calls, ["kimi-k2.5", "glm-5"]);
-  assert.equal(result.modelUsed, "glm-5");
+  assert.deepEqual(calls, ["kimi-k2.5", "deepseek-v4-pro"]);
+  assert.equal(result.modelUsed, "deepseek-v4-pro");
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.fallbackReason, "kimi-empty-text-response");
   assert.equal(result.summaryText, "<2P> 2#00:00 fallback summary");
@@ -1246,7 +1294,7 @@ test("inspectSummaryPageMarkers reports duplicate and invalid page markers", () 
   assert.deepEqual(inspection.invalidPages, [5]);
 });
 
-test("summarizePartFromSubtitle records rate-limit fallback success metadata when glm-5 retry succeeds", async () => {
+test("summarizePartFromSubtitle records rate-limit fallback success metadata when deepseek-v4-pro retry succeeds", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const subtitlePath = path.join(tempRoot, "p2.srt");
@@ -1308,8 +1356,8 @@ test("summarizePartFromSubtitle records rate-limit fallback success metadata whe
       },
     });
 
-    assert.deepEqual(requestModels, ["kimi-k2.5", "glm-5"]);
-    assert.equal(result.modelUsed, "glm-5");
+    assert.deepEqual(requestModels, ["kimi-k2.5", "deepseek-v4-pro"]);
+    assert.equal(result.modelUsed, "deepseek-v4-pro");
     assert.equal(result.fallbackUsed, true);
     assert.ok(result.promptPath);
     assert.equal(fs.existsSync(result.promptPath), true);
@@ -1319,12 +1367,12 @@ test("summarizePartFromSubtitle records rate-limit fallback success metadata whe
     const fallbackStarted = events.find((event) => event.action === "llm-fallback" && event.status === "started");
     assert.ok(fallbackStarted);
     assert.equal(fallbackStarted.details.failedModel, "kimi-k2.5");
-    assert.equal(fallbackStarted.details.fallbackModel, "glm-5");
+    assert.equal(fallbackStarted.details.fallbackModel, "deepseek-v4-pro");
     assert.equal(fallbackStarted.details.fallbackReason, "kimi-rate-limit");
 
     const llmSucceeded = events.find((event) => event.action === "llm" && event.status === "succeeded");
     assert.ok(llmSucceeded);
-    assert.equal(llmSucceeded.details.model, "glm-5");
+    assert.equal(llmSucceeded.details.model, "deepseek-v4-pro");
     assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
     assert.equal(llmSucceeded.details.fallbackUsed, true);
     assert.equal(llmSucceeded.details.fallbackReason, "kimi-rate-limit");
@@ -1342,7 +1390,7 @@ test("summarizePartFromSubtitle records rate-limit fallback success metadata whe
   }
 });
 
-test("summarizePartFromSubtitle records empty-text fallback success metadata when glm-5 retry succeeds", async () => {
+test("summarizePartFromSubtitle records empty-text fallback success metadata when deepseek-v4-pro retry succeeds", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-service-empty-text-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const subtitlePath = path.join(tempRoot, "p2.srt");
@@ -1404,19 +1452,19 @@ test("summarizePartFromSubtitle records empty-text fallback success metadata whe
       },
     });
 
-    assert.deepEqual(requestModels, ["kimi-k2.5", "glm-5"]);
-    assert.equal(result.modelUsed, "glm-5");
+    assert.deepEqual(requestModels, ["kimi-k2.5", "deepseek-v4-pro"]);
+    assert.equal(result.modelUsed, "deepseek-v4-pro");
     assert.equal(result.fallbackUsed, true);
 
     const fallbackStarted = events.find((event) => event.action === "llm-fallback" && event.status === "started");
     assert.ok(fallbackStarted);
     assert.equal(fallbackStarted.details.failedModel, "kimi-k2.5");
-    assert.equal(fallbackStarted.details.fallbackModel, "glm-5");
+    assert.equal(fallbackStarted.details.fallbackModel, "deepseek-v4-pro");
     assert.equal(fallbackStarted.details.fallbackReason, "kimi-empty-text-response");
 
     const llmSucceeded = events.find((event) => event.action === "llm" && event.status === "succeeded");
     assert.ok(llmSucceeded);
-    assert.equal(llmSucceeded.details.model, "glm-5");
+    assert.equal(llmSucceeded.details.model, "deepseek-v4-pro");
     assert.equal(llmSucceeded.details.requestedModel, "kimi-k2.5");
     assert.equal(llmSucceeded.details.fallbackUsed, true);
     assert.equal(llmSucceeded.details.fallbackReason, "kimi-empty-text-response");
