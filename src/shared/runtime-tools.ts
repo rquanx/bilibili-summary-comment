@@ -92,6 +92,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
     const stderrStream = options.stderrStream ?? outputStream;
     const logger = options.logger ?? null;
     const logContext = options.logContext ?? {};
+    const sanitizedArgs = sanitizeCommandArgs(args);
     const childEnv = withSuppressedExperimentalWarning({
       ...process.env,
       ...(options.env ?? {}),
@@ -99,7 +100,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
     logger?.debug("Starting command", {
       ...logContext,
       command,
-      args,
+      args: sanitizedArgs,
       cwd: options.cwd ?? getRepoRoot(),
     });
     const child = spawn(command, args, {
@@ -124,7 +125,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
           logger?.error("Command timed out", {
             ...logContext,
             command,
-            args,
+            args: sanitizedArgs,
             timeoutMs,
           });
           child.kill("SIGTERM");
@@ -176,7 +177,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
       logger?.error("Command process error", {
         ...logContext,
         command,
-        args,
+        args: sanitizedArgs,
         error,
       });
       reject(error);
@@ -197,7 +198,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
 
       if (timedOut && timeoutMs !== null) {
         const error = new Error(
-          `Command timed out after ${timeoutMs}ms: ${command} ${args.join(" ")}`,
+          `Command timed out after ${timeoutMs}ms: ${command} ${sanitizedArgs.join(" ")}`,
         ) as CommandError;
         error.code = "ETIMEDOUT";
         error.stdout = stdout;
@@ -212,7 +213,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
         logger?.info("Command completed", {
           ...logContext,
           command,
-          args,
+          args: sanitizedArgs,
           code,
           stdoutLength: stdout.length,
           stderrLength: stderr.length,
@@ -221,14 +222,14 @@ export async function runCommand(command: string, args: string[], options: RunCo
         return;
       }
 
-      const error = new Error(`Command failed with exit code ${code}: ${command} ${args.join(" ")}`) as CommandError;
+      const error = new Error(`Command failed with exit code ${code}: ${command} ${sanitizedArgs.join(" ")}`) as CommandError;
       error.code = code;
       error.stdout = stdout;
       error.stderr = stderr;
       logger?.error("Command failed", {
         ...logContext,
         command,
-        args,
+        args: sanitizedArgs,
         code,
         stdoutLength: stdout.length,
         stderrLength: stderr.length,
@@ -236,6 +237,58 @@ export async function runCommand(command: string, args: string[], options: RunCo
       reject(error);
     });
   });
+}
+
+const SENSITIVE_COMMAND_FLAGS = new Set([
+  "--api-key",
+  "--db",
+  "--password",
+  "--token",
+]);
+
+export function sanitizeCommandArgs(args: string[]): string[] {
+  let redactNext = false;
+  return args.map((arg) => {
+    if (redactNext) {
+      redactNext = false;
+      return "[REDACTED]";
+    }
+
+    const normalized = String(arg);
+    const equalsIndex = normalized.indexOf("=");
+    const flag = equalsIndex >= 0 ? normalized.slice(0, equalsIndex) : normalized;
+    if (SENSITIVE_COMMAND_FLAGS.has(flag)) {
+      if (equalsIndex >= 0) {
+        return `${flag}=[REDACTED]`;
+      }
+      redactNext = true;
+      return normalized;
+    }
+
+    return redactConnectionStringCredentials(normalized);
+  });
+}
+
+function redactConnectionStringCredentials(value: string): string {
+  if (!/^postgres(?:ql)?:\/\//iu.test(value)) {
+    return value;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.username) {
+      url.username = "[REDACTED]";
+    }
+    if (url.password) {
+      url.password = "[REDACTED]";
+    }
+    return url.toString();
+  } catch {
+    return value.replace(
+      /^(postgres(?:ql)?:\/\/)[^@\s/]+@/iu,
+      "$1[REDACTED]@",
+    );
+  }
 }
 
 function normalizeCommandTimeoutMs(value: number | null | undefined): number | null {

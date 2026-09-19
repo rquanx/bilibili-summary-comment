@@ -46,7 +46,7 @@ export async function runVideoPipeline(
   const cookie = readCookie(args);
   const client = createClient(cookie);
   const commentType = getType(args);
-  const dbPath = args.db ?? "work/pipeline.sqlite3";
+  const dbPath = args.db ?? process.env.PIPELINE_DB_PATH ?? "work/pipeline.sqlite3";
   const workRoot = args["work-root"] ?? "work";
   const logDay = args["log-day"] ?? process.env.PIPELINE_LOG_DAY ?? null;
   const logGroup = args["log-group"] ?? process.env.PIPELINE_LOG_GROUP ?? null;
@@ -64,14 +64,16 @@ export async function runVideoPipeline(
     );
   }
   const db = openDatabase(dbPath);
-  const requestedBvid = String(args.bvid ?? "").trim();
-  const identitySnapshot = requestedBvid ? null : await fetchVideoSnapshot(client, args);
-  const lockBvid = requestedBvid || String(identitySnapshot?.bvid ?? "").trim();
-  if (!lockBvid) {
-    throw new Error("Unable to resolve BVID before acquiring the video pipeline lock.");
-  }
+  let activeEventLogger: PipelineEventLogger | null = null;
 
   try {
+    const requestedBvid = String(args.bvid ?? "").trim();
+    const identitySnapshot = requestedBvid ? null : await fetchVideoSnapshot(client, args);
+    const lockBvid = requestedBvid || String(identitySnapshot?.bvid ?? "").trim();
+    if (!lockBvid) {
+      throw new Error("Unable to resolve BVID before acquiring the video pipeline lock.");
+    }
+
     return await withSynchronizedVideoPipelineState({
       db,
       workRoot,
@@ -110,6 +112,7 @@ export async function runVideoPipeline(
     video: state.video,
     logger,
   });
+  activeEventLogger = eventLogger;
   onEventLogger?.(eventLogger);
   const summaryConfig = resolveSummaryConfig(args);
   const forceSummary = Boolean(args["force-summary"]);
@@ -327,6 +330,9 @@ export async function runVideoPipeline(
     throw error;
   }
     });
+  } catch (error) {
+    await logPipelineFailureEvent(error, activeEventLogger);
+    throw error;
   } finally {
     await db.close?.();
   }
@@ -446,12 +452,15 @@ function normalizeOptionalPositiveInteger(value: unknown): number | null {
   return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }
 
-export function printPipelineFailure(error: CommandError | Error | unknown, activeEventLogger: PipelineEventLogger | null = null) {
+export async function logPipelineFailureEvent(
+  error: CommandError | Error | unknown,
+  activeEventLogger: PipelineEventLogger | null,
+) {
   const commandError = (typeof error === "object" && error !== null ? error : {}) as CommandError;
   const errorDetails = extractErrorDetails(error);
   if (activeEventLogger) {
     try {
-      activeEventLogger.log({
+      await activeEventLogger.log({
         scope: "pipeline",
         action: "run",
         status: "failed",
@@ -467,6 +476,10 @@ export function printPipelineFailure(error: CommandError | Error | unknown, acti
       writeTerminalMessage(process.stderr, "warn", `Failed to write pipeline failure event: ${logMessage}`);
     }
   }
+}
+
+export function printPipelineFailure(error: CommandError | Error | unknown) {
+  const commandError = (typeof error === "object" && error !== null ? error : {}) as CommandError;
   printJson({
     ...errorToJson(error),
     stderr: trimCommandOutput(commandError.stderr),

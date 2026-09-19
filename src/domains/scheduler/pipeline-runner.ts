@@ -67,7 +67,7 @@ export async function runPipelineForBvid({
   const databaseArg = isPostgresConnectionString(dbPath)
     ? dbPath
     : path.resolve(repoRoot, dbPath);
-  args.push("--bvid", bvid, "--db", databaseArg, "--work-root", workRoot);
+  args.push("--bvid", bvid, "--work-root", workRoot);
   if (publish) {
     args.push("--publish");
   }
@@ -93,6 +93,7 @@ export async function runPipelineForBvid({
     }) ?? null;
     result = await runCommandImpl(process.execPath, args, {
       env: {
+        PIPELINE_DB_PATH: databaseArg,
         PIPELINE_LOG_DAY: logDay ?? "",
         PIPELINE_LOG_GROUP: logGroup ?? "",
       },

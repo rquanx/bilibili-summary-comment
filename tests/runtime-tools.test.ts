@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   getRepoRoot,
   runCommand,
+  sanitizeCommandArgs,
   withSuppressedExperimentalWarning,
 } from "../src/shared/runtime-tools";
 
@@ -16,6 +17,29 @@ test("getRepoRoot resolves to the project root", () => {
 
   assert.equal(fs.existsSync(path.join(repoRoot, "package.json")), true);
   assert.equal(hasSchedulerEntry, true);
+});
+
+test("sanitizeCommandArgs redacts credentials and sensitive flag values", () => {
+  assert.deepEqual(
+    sanitizeCommandArgs([
+      "--db",
+      "postgresql://video:secret@postgres:5432/pipeline",
+      "--api-key=top-secret",
+      "--bvid",
+      "BV1TEST",
+    ]),
+    [
+      "--db",
+      "[REDACTED]",
+      "--api-key=[REDACTED]",
+      "--bvid",
+      "BV1TEST",
+    ],
+  );
+  assert.equal(
+    sanitizeCommandArgs(["postgresql://video:secret@postgres:5432/pipeline"])[0].includes("secret"),
+    false,
+  );
 });
 
 test("runCommand can stream stdout and stderr to separate destinations", async () => {

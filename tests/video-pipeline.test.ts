@@ -11,10 +11,33 @@ import {
   upsertVideoPart,
 } from "../src/infra/db/video-storage";
 import {
+  logPipelineFailureEvent,
   probePublishedCommentThreadHealth,
   withSynchronizedVideoPipelineState,
 } from "../src/domains/video/pipeline-runner";
 import { withVideoPipelineLock } from "../src/domains/video/pipeline-lock";
+
+test("logPipelineFailureEvent waits for the failure event write", async () => {
+  let persisted = false;
+  await logPipelineFailureEvent(
+    Object.assign(new Error("summary failed"), {
+      failedStep: "summary",
+    }),
+    {
+      runId: "run-1",
+      async log(event) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        persisted = true;
+        assert.equal(event.scope, "pipeline");
+        assert.equal(event.action, "run");
+        assert.equal(event.status, "failed");
+        return null;
+      },
+    },
+  );
+
+  assert.equal(persisted, true);
+});
 
 test("probePublishedCommentThreadHealth marks a missing stored root thread for rebuild", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "video-pipeline-healthcheck-"));

@@ -29,7 +29,11 @@ import {
 } from "../src/domains/scheduler/gap-check";
 import { runPipelineForBvid } from "../src/domains/scheduler/pipeline-runner";
 import { runPendingVideoPublishSweep } from "../src/domains/scheduler/publish";
-import { collectRecentUploadsFromUsers, syncSummaryUsersRecentVideos } from "../src/domains/scheduler/uploads";
+import {
+  buildSummaryFailureCooldowns,
+  collectRecentUploadsFromUsers,
+  syncSummaryUsersRecentVideos,
+} from "../src/domains/scheduler/uploads";
 import { runCommand } from "../src/shared/runtime-tools";
 import { compareTimestampDesc, formatEast8DateTime } from "../src/shared/time";
 
@@ -163,9 +167,103 @@ test("syncSummaryUsersRecentVideos short-circuits cleanly when no users are conf
   assert.deepEqual(result, {
     summaryUsers: [],
     uploads: [],
+    cooldownSkippedUploads: [],
     runs: [],
     failures: [],
   });
+});
+
+test("buildSummaryFailureCooldowns keeps configuration failures out until the cooldown expires", () => {
+  const nowMs = Date.parse("2026-09-19T08:00:00.000Z");
+  const baseEvent = {
+    id: 1,
+    run_id: "run-1",
+    video_id: 1,
+    video_title: "Video",
+    page_no: 1,
+    cid: 1,
+    part_title: "P1",
+    scope: "summary",
+    action: "llm",
+    details_json: null,
+  };
+  const cooldowns = buildSummaryFailureCooldowns([
+    {
+      ...baseEvent,
+      bvid: "BVSESSION",
+      status: "failed",
+      message: "RegionError: model requires explicit opt in",
+      created_at: "2026-09-19T07:30:00.000Z",
+    },
+    {
+      ...baseEvent,
+      id: 2,
+      bvid: "BVRECOVERED",
+      status: "succeeded",
+      message: "LLM summary ready",
+      created_at: "2026-09-19T07:45:00.000Z",
+    },
+    {
+      ...baseEvent,
+      id: 3,
+      bvid: "BVRECOVERED",
+      status: "failed",
+      message: "RegionError: requires explicit opt in",
+      created_at: "2026-09-19T07:15:00.000Z",
+    },
+  ], {
+    nowMs,
+    cooldownMs: 60 * 60_000,
+  });
+
+  assert.equal(cooldowns.get("BVSESSION"), Date.parse("2026-09-19T08:30:00.000Z"));
+  assert.equal(cooldowns.has("BVRECOVERED"), false);
+});
+
+test("syncSummaryUsersRecentVideos skips uploads with an active provider configuration cooldown", async () => {
+  const scheduledBvids: string[] = [];
+  const result = await syncSummaryUsersRecentVideos({
+    summaryUsers: "123",
+    dbPath: "unused",
+    applySummaryFailureCooldown: true,
+    nowMs: 1_000,
+    collectRecentUploadsImpl: async () => ({
+      summaryUsers: [{ mid: 123, source: "123" }],
+      uploads: [
+        {
+          mid: 123,
+          bvid: "BVCOOLDOWN",
+          aid: 1,
+          title: "Cooling down",
+          createdAtUnix: 100,
+          createdAt: new Date(100 * 1000).toISOString(),
+          source: "123",
+        },
+        {
+          mid: 123,
+          bvid: "BVRUN",
+          aid: 2,
+          title: "Runnable",
+          createdAtUnix: 90,
+          createdAt: new Date(90 * 1000).toISOString(),
+          source: "123",
+        },
+      ],
+    }),
+    loadSummaryFailureCooldownsImpl: async () => new Map([
+      ["BVCOOLDOWN", 2_000],
+    ]),
+    async runPipelinesWithConcurrencyImpl(options) {
+      scheduledBvids.push(...(options.uploads ?? []).map((upload) => String(upload.bvid)));
+      return {
+        runs: [],
+        failures: [],
+      };
+    },
+  });
+
+  assert.deepEqual(scheduledBvids, ["BVRUN"]);
+  assert.deepEqual(result.cooldownSkippedUploads.map((upload) => upload.bvid), ["BVCOOLDOWN"]);
 });
 
 test("syncSummaryUsersRecentVideos forwards publish=false to pipeline runs", async () => {
@@ -1277,7 +1375,12 @@ test("cleanupOldWorkDirectories removes only safe candidate directories", async 
 });
 
 test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
-  const calls: Array<{ command: string; args: string[]; timeoutMs?: number | null }> = [];
+  const calls: Array<{
+    command: string;
+    args: string[];
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number | null;
+  }> = [];
 
   await runPipelineForBvid({
     cookieFile: "cookie.txt",
@@ -1287,7 +1390,7 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
     publish: true,
     repoRoot: "D:\\repo",
     async runCommandImpl(command, args, options) {
-      calls.push({ command, args, timeoutMs: options?.timeoutMs });
+      calls.push({ command, args, env: options?.env, timeoutMs: options?.timeoutMs });
       return {
         code: 0,
         stdout: '{"ok":true}',
@@ -1299,6 +1402,7 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, process.execPath);
   assert.equal(calls[0].timeoutMs, 90 * 60_000);
+  assert.equal(calls[0].env?.PIPELINE_DB_PATH, "D:\\repo\\work\\pipeline.sqlite3");
   assert.deepEqual(calls[0].args, [
     "--import",
     "tsx",
@@ -1307,8 +1411,6 @@ test("runPipelineForBvid launches the TypeScript entry via tsx", async () => {
     "D:\\repo\\cookie.txt",
     "--bvid",
     "BV1TEST",
-    "--db",
-    "D:\\repo\\work\\pipeline.sqlite3",
     "--work-root",
     "work",
     "--publish",
@@ -1363,8 +1465,6 @@ test("runPipelineForBvid appends --force-fresh-thread when requested", async () 
     "D:\\repo\\cookie.txt",
     "--bvid",
     "BV1FRESH",
-    "--db",
-    "D:\\repo\\work\\pipeline.sqlite3",
     "--work-root",
     "work",
     "--publish",
@@ -1416,8 +1516,8 @@ test("runPipelineForBvid launches the compiled JavaScript entry directly when di
       bvid: "BV1DIST",
       publish: false,
       repoRoot: tempRepoRoot,
-      async runCommandImpl(command, args) {
-        calls.push({ command, args });
+      async runCommandImpl(command, args, options) {
+        calls.push({ command, args, env: options?.env });
         return {
           code: 0,
           stdout: '{"ok":true}',
@@ -1431,14 +1531,16 @@ test("runPipelineForBvid launches the compiled JavaScript entry directly when di
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, process.execPath);
+  assert.equal(
+    calls[0].env?.PIPELINE_DB_PATH,
+    path.join(tempRepoRoot, "work", "pipeline.sqlite3"),
+  );
   assert.deepEqual(calls[0].args, [
     compiledEntryPath,
     "--cookie-file",
     path.join(tempRepoRoot, "cookie.txt"),
     "--bvid",
     "BV1DIST",
-    "--db",
-    path.join(tempRepoRoot, "work", "pipeline.sqlite3"),
     "--work-root",
     "work",
   ]);

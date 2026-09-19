@@ -9,8 +9,6 @@ import {
 } from "../shared/cli/tools";
 import { printPipelineFailure, runVideoPipeline } from "../domains/video/pipeline-runner";
 
-let activeEventLogger = null;
-
 const command = addSummaryApiOptions(
   addWorkRootOption(
     addDatabaseOption(
@@ -36,14 +34,10 @@ const command = addSummaryApiOptions(
 await runCli({
   command,
   async handler(args) {
-    return runVideoPipeline(args, {
-      onEventLogger(eventLogger) {
-        activeEventLogger = eventLogger;
-      },
-    });
+    return runVideoPipeline(args);
   },
   onError(error) {
-    printPipelineFailure(error, activeEventLogger);
+    printPipelineFailure(error);
     process.exitCode = 1;
     return undefined;
   },
