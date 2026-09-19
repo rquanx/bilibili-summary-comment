@@ -203,6 +203,7 @@ export async function runGenerationStage({
         durationSec: part.duration_sec,
         subtitlePath: subtitleResult.subtitlePath,
         model: summaryConfig.model,
+        fallbackModel: summaryConfig.fallbackModel,
         apiKey: summaryConfig.apiKey,
         apiBaseUrl: summaryConfig.apiBaseUrl,
         apiFormat: summaryConfig.apiFormat,

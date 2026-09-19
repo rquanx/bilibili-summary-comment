@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const summaryConfigSchema = z.object({
   model: z.string().trim().min(1),
+  fallbackModel: z.string().trim().min(1),
   apiKey: z.string(),
   apiBaseUrl: z.string().trim().url(),
   apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
@@ -32,7 +33,8 @@ export function resolveSummaryConfig(args: SummaryConfigArgs = {}, env = process
   const cliProxyApiKey = String(env.SUMMARY_CLI_PROXY_API_KEY ?? "").trim();
 
   return summaryConfigSchema.parse({
-    model: args.model ?? env.SUMMARY_MODEL ?? env.OPENAI_MODEL ?? "gpt-4o-mini",
+    model: args.model ?? env.SUMMARY_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.6-luna",
+    fallbackModel: env.SUMMARY_FALLBACK_MODEL ?? "deepseek-v4-pro",
     apiKey: args["api-key"] ?? env.SUMMARY_API_KEY ?? env.OPENAI_API_KEY ?? "",
     apiBaseUrl: normalizeSummaryApiBaseUrl(
       args["api-base-url"] ?? env.SUMMARY_API_BASE_URL ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",

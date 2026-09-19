@@ -10,7 +10,7 @@ import { normalizeSummaryOutput } from "./output";
 import { resolveSummaryPromptProfile } from "./prompt-config";
 
 const KIMI_PRIMARY_MODEL = "kimi-k2.5";
-const GLM_FALLBACK_MODEL = "glm-5";
+const DEFAULT_FALLBACK_MODEL = "deepseek-v4-pro";
 const GEMINI_FLASH_FALLBACK_MODEL = "gemini-3-flash-preview";
 const SUMMARY_REQUEST_MAX_ATTEMPTS = 4;
 const SUMMARY_RETRY_DELAYS_MS = [5_000, 15_000, 45_000];
@@ -22,19 +22,37 @@ const SUMMARY_TOO_MANY_REQUEST = /429 Too Many Requests/iu;
 const SUMMARY_FETCH_FAILED_PATTERN = /fetch failed/iu;
 const SUMMARY_TRANSIENT_NETWORK_ERROR_PATTERN = /(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|socket closed|other side closed|network error|headers timeout|body timeout|\bterminated\b)/iu;
 const SUMMARY_TRANSIENT_HTTP_STATUS_PATTERN = /(?:408 Request Timeout|425 Too Early|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)/iu;
+const SUMMARY_UNSUPPORTED_MODEL_PATTERN = /(?:model(?:_not_found| not found| does not exist| is not available| unavailable)|unsupported model|unknown model)/iu;
 const EMPTY_SUMMARY_MAX_DURATION_SEC = 20;
 const CLI_PROXY_FALLBACK_REASON = "cli-proxy-request-failed";
 const CLI_PROXY_MAX_ATTEMPTS = 4;
 
 export function shouldRetrySummaryWithGlm5({ model, error }) {
+  return shouldRetrySummaryWithFallbackModel({
+    model,
+    error,
+    fallbackModel: DEFAULT_FALLBACK_MODEL,
+    onlyKimi: true,
+  });
+}
+
+function shouldRetrySummaryWithFallbackModel({
+  model,
+  error,
+  fallbackModel,
+  onlyKimi = false,
+}) {
   const normalizedModel = String(model ?? "").trim().toLowerCase();
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return normalizedModel === KIMI_PRIMARY_MODEL
+  const canUseFallback = String(fallbackModel ?? "").trim()
+    && (!onlyKimi || normalizedModel === KIMI_PRIMARY_MODEL);
+  return Boolean(canUseFallback)
     && (
       KIMI_PROMPT_TOKENS_ERROR_PATTERN.test(message)
       || SUMMARY_TOO_MANY_REQUEST.test(message)
       || SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
       || shouldRetrySummaryRequest({ error })
+      || SUMMARY_UNSUPPORTED_MODEL_PATTERN.test(message)
     );
 }
 
@@ -62,6 +80,7 @@ export async function requestSummaryWithFallback({
   onFallback = null,
   onRetry = null,
   geminiApiKey = process.env.GEMINI_KEY ?? "",
+  fallbackModel = process.env.SUMMARY_FALLBACK_MODEL ?? DEFAULT_FALLBACK_MODEL,
   maxRequestAttempts = SUMMARY_REQUEST_MAX_ATTEMPTS,
   sleepImpl = delay,
 }) {
@@ -123,6 +142,7 @@ export async function requestSummaryWithFallback({
       model: requestArgs.model,
       error,
       geminiApiKey,
+      fallbackModel,
     });
     if (!fallbackTarget) {
       throw error;
@@ -231,6 +251,7 @@ export async function summarizePartFromSubtitle({
   requestSummaryImpl = requestSummary,
   requestGeminiSummaryImpl = requestSummaryWithGeminiSdk,
   geminiApiKey = process.env.GEMINI_KEY ?? "",
+  fallbackModel = process.env.SUMMARY_FALLBACK_MODEL ?? DEFAULT_FALLBACK_MODEL,
 }) {
   const cliProxyEnabled = Boolean(cliProxy?.enabled && String(cliProxy?.apiKey ?? "").trim());
   if (!apiKey && !(cliProxyEnabled && cliProxy?.apiKey)) {
@@ -373,6 +394,7 @@ export async function summarizePartFromSubtitle({
       requestSummaryImpl,
       requestGeminiSummaryImpl,
       geminiApiKey,
+      fallbackModel,
       onFallback: async ({
         failedProvider,
         failedModel,
@@ -505,20 +527,28 @@ export async function summarizePartFromSubtitle({
   }
 }
 
-function resolveSummaryFallbackTarget({ model, error, geminiApiKey }) {
-  if (shouldRetrySummaryWithGlm5({ model, error })) {
+function resolveSummaryFallbackTarget({ model, error, geminiApiKey, fallbackModel }) {
+  const normalizedFallbackModel = String(fallbackModel ?? "").trim();
+  if (shouldRetrySummaryWithFallbackModel({
+    model,
+    error,
+    fallbackModel: normalizedFallbackModel,
+  })) {
     const message = error instanceof Error ? error.message : String(error ?? "");
+    const isKimiPrimary = String(model ?? "").trim().toLowerCase() === KIMI_PRIMARY_MODEL;
     return {
-      model: GLM_FALLBACK_MODEL,
-      reason: SUMMARY_TOO_MANY_REQUEST.test(message)
+      model: normalizedFallbackModel,
+      reason: isKimiPrimary && SUMMARY_TOO_MANY_REQUEST.test(message)
         ? "kimi-rate-limit"
         : shouldRetrySummaryRequest({ error })
-          ? "kimi-network-error"
+          ? isKimiPrimary ? "kimi-network-error" : "primary-network-error"
+        : SUMMARY_UNSUPPORTED_MODEL_PATTERN.test(message)
+          ? "primary-model-unavailable"
         : SUMMARY_EMPTY_TEXT_OUTPUT_PATTERN.test(message)
-          ? "kimi-empty-text-response"
-          : "kimi-prompt_tokens-error",
+          ? isKimiPrimary ? "kimi-empty-text-response" : "primary-empty-text-response"
+          : isKimiPrimary ? "kimi-prompt_tokens-error" : "primary-provider-error",
       requestOverrides: {
-        model: GLM_FALLBACK_MODEL,
+        model: normalizedFallbackModel,
       },
     };
   }
