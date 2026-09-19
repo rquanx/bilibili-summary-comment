@@ -45,11 +45,26 @@ test("resolveSummaryConfig normalizes args and env values", () => {
   assert.equal(config.apiKey, "key-123");
   assert.equal(config.apiBaseUrl, "https://example.com/v1");
   assert.equal(config.apiFormat, "openai-chat");
+  assert.equal(config.sessionId, null);
   assert.equal(config.cliProxy.enabled, false);
   assert.equal(config.cliProxy.model, "gpt-5.6-luna");
   assert.equal(config.cliProxy.apiBaseUrl, "http://host.docker.internal:8317/v1");
   assert.equal(config.cliProxy.apiFormat, "responses");
   assert.equal(config.promptConfigPath, "config/custom-prompts.json");
+});
+
+test("resolveSummaryConfig creates an OpenCode session and honors an explicit override", () => {
+  const generated = resolveSummaryConfig({}, {
+    SUMMARY_API_BASE_URL: "https://opencode.ai/zen/go/v1",
+  });
+  const explicit = resolveSummaryConfig({
+    "api-session": "session-fixed",
+  }, {
+    SUMMARY_API_BASE_URL: "https://opencode.ai/zen/go/v1",
+  });
+
+  assert.match(generated.sessionId ?? "", /^[0-9a-f-]{36}$/u);
+  assert.equal(explicit.sessionId, "session-fixed");
 });
 
 test("resolveSummaryConfig enables CLI Proxy when its API key is configured", () => {
@@ -112,6 +127,19 @@ test("buildSummaryHttpRequest closes the connection for retry attempts", () => {
   });
 
   assert.equal(request.headers.connection, "close");
+});
+
+test("buildSummaryHttpRequest includes an OpenCode session header", () => {
+  const request = buildSummaryHttpRequest({
+    apiFormat: "openai-chat",
+    model: "gpt-test",
+    apiKey: "key-123",
+    sessionId: "session-123",
+    systemPrompt: "system",
+    userPrompt: "user",
+  });
+
+  assert.equal(request.headers["x-opencode-session"], "session-123");
 });
 
 test("requestSummary reads OpenAI chat-completions SSE output", async () => {

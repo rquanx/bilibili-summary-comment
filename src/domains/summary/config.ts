@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 const summaryConfigSchema = z.object({
@@ -5,6 +6,7 @@ const summaryConfigSchema = z.object({
   apiKey: z.string(),
   apiBaseUrl: z.string().trim().url(),
   apiFormat: z.enum(["auto", "responses", "openai-chat", "anthropic-messages"]),
+  sessionId: z.string().trim().min(1).nullable(),
   cliProxy: z.object({
     enabled: z.boolean(),
     model: z.string().trim().min(1),
@@ -22,6 +24,7 @@ interface SummaryConfigArgs extends Record<string, unknown> {
   ["api-key"]?: unknown;
   ["api-base-url"]?: unknown;
   ["api-format"]?: unknown;
+  ["api-session"]?: unknown;
   ["prompt-config"]?: unknown;
 }
 
@@ -37,6 +40,10 @@ export function resolveSummaryConfig(args: SummaryConfigArgs = {}, env = process
     apiFormat: normalizeSummaryApiFormat(
       args["api-format"] ?? env.SUMMARY_API_FORMAT ?? env.OPENAI_API_FORMAT ?? "auto",
     ),
+    sessionId: resolveSummarySessionId({
+      configuredSessionId: args["api-session"] ?? env.SUMMARY_OPENCODE_SESSION,
+      apiBaseUrl: args["api-base-url"] ?? env.SUMMARY_API_BASE_URL ?? env.OPENAI_BASE_URL,
+    }),
     cliProxy: {
       enabled: normalizeBoolean(env.SUMMARY_CLI_PROXY_ENABLED, Boolean(cliProxyApiKey)),
       model: env.SUMMARY_CLI_PROXY_MODEL ?? "gpt-5.6-luna",
@@ -67,6 +74,29 @@ export function normalizeSummaryApiFormat(value: unknown): SummaryConfig["apiFor
 function normalizeOptionalSummaryPromptConfigPath(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function resolveSummarySessionId({
+  configuredSessionId,
+  apiBaseUrl,
+}: {
+  configuredSessionId: unknown;
+  apiBaseUrl: unknown;
+}): string | null {
+  const configured = String(configuredSessionId ?? "").trim();
+  if (configured) {
+    return configured;
+  }
+
+  return isOpenCodeApiBaseUrl(apiBaseUrl) ? randomUUID() : null;
+}
+
+function isOpenCodeApiBaseUrl(value: unknown): boolean {
+  try {
+    return new URL(String(value ?? "")).hostname.toLowerCase() === "opencode.ai";
+  } catch {
+    return false;
+  }
 }
 
 function normalizeBoolean(value: unknown, defaultValue: boolean): boolean {

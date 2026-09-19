@@ -221,6 +221,7 @@ export async function summarizePartFromSubtitle({
   apiKey,
   apiBaseUrl,
   apiFormat,
+  sessionId = null,
   cliProxy = null,
   promptConfigPath = null,
   ownerMid = null,
@@ -355,6 +356,7 @@ export async function summarizePartFromSubtitle({
       apiKey,
       apiBaseUrl,
       apiFormat,
+      sessionId,
     };
     const summaryAttempt = await requestSummaryWithFallback({
       requestArgs: summaryRequest,
@@ -365,6 +367,7 @@ export async function summarizePartFromSubtitle({
             apiKey: cliProxy.apiKey,
             apiBaseUrl: cliProxy.apiBaseUrl,
             apiFormat: cliProxy.apiFormat,
+            sessionId: null,
           }
         : null,
       requestSummaryImpl,

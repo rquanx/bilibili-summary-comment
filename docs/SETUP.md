@@ -81,6 +81,7 @@ CRON_TIMEZONE=Asia/Shanghai
 - `SUMMARY_API_BASE_URL` 或 `OPENAI_BASE_URL`
 - `SUMMARY_MODEL` 或 `OPENAI_MODEL`
 - `SUMMARY_API_FORMAT` 或 `OPENAI_API_FORMAT`
+- `SUMMARY_OPENCODE_SESSION`：可选。OpenCode 路由 session；未设置时每次视频流水线自动生成
 
 支持的 `SUMMARY_API_FORMAT`：
 
@@ -96,6 +97,8 @@ SUMMARY_API_KEY=your_opencode_go_key
 SUMMARY_API_BASE_URL=https://opencode.ai/zen/go/v1
 SUMMARY_API_FORMAT=openai-chat
 SUMMARY_MODEL=glm-5
+# 可选；未设置时，每次视频流水线会自动生成一个 session id
+SUMMARY_OPENCODE_SESSION=your_stable_session_id
 ```
 
 调度相关变量：

@@ -5,12 +5,18 @@ import { buildAuthFileCandidates, findAuthFileForUser } from "./auth-files";
 import { runPipelineForBvid } from "./pipeline-runner";
 import { formatErrorMessage } from "../subtitle/utils";
 import { parseSummaryUsers } from "./user-targets";
+import { listPipelineEvents, openDatabase } from "../../infra/db/index";
 import type { PipelineUpload } from "./concurrency";
 import type { PipelineRunResult, PipelineFailureResult } from "./concurrency";
 import type { PipelineTaskRunner } from "./concurrency";
 import type { PipelineProcessResult } from "./pipeline-runner";
 import type { SummaryUserTarget } from "./user-targets";
 import type { FileLogger } from "../../shared/logger";
+import type { PipelineEventRecord } from "../../infra/db/index";
+
+export const SUMMARY_CONFIGURATION_FAILURE_COOLDOWN_MS = 6 * 60 * 60_000;
+const SUMMARY_CONFIGURATION_FAILURE_PATTERN =
+  /(?:RegionError|requires explicit opt in|401 Unauthorized|403 Forbidden|invalid api key|missing summary api key)/iu;
 
 export interface RecentUpload extends PipelineUpload {
   mid: number;
@@ -65,6 +71,9 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
   }>;
   runPipelineForBvidImpl?: typeof runPipelineForBvid;
   runPipelineTask?: PipelineTaskRunner;
+  applySummaryFailureCooldown?: boolean;
+  loadSummaryFailureCooldownsImpl?: typeof loadSummaryFailureCooldowns;
+  nowMs?: number;
 }
 
 export async function collectRecentUploadsFromUsers({
@@ -180,6 +189,9 @@ export async function syncSummaryUsersRecentVideos({
   runPipelinesWithConcurrencyImpl = runPipelinesWithConcurrency,
   runPipelineForBvidImpl = runPipelineForBvid,
   runPipelineTask = (task) => task(),
+  applySummaryFailureCooldown = false,
+  loadSummaryFailureCooldownsImpl = loadSummaryFailureCooldowns,
+  nowMs = Date.now(),
 }: SyncSummaryUsersRecentVideosOptions = {}) {
   const collected = await collectRecentUploadsImpl({
     summaryUsers,
@@ -192,10 +204,31 @@ export async function syncSummaryUsersRecentVideos({
     ...collected,
     uploads: deduplicatedUploads,
   };
+  let runnableUploads = deduplicatedUploads;
+  let cooldownSkippedUploads: RecentUpload[] = [];
+
+  if (applySummaryFailureCooldown && deduplicatedUploads.length > 0) {
+    const cooldowns = await loadSummaryFailureCooldownsImpl(dbPath, {
+      nowMs,
+    });
+    cooldownSkippedUploads = deduplicatedUploads.filter((upload) => {
+      const retryAfterMs = cooldowns.get(upload.bvid);
+      if (!retryAfterMs || retryAfterMs <= nowMs) {
+        return false;
+      }
+      onLog(
+        `Skip summary for ${upload.bvid}: provider configuration failure is cooling down until ${new Date(retryAfterMs).toISOString()}`,
+      );
+      return true;
+    });
+    const skippedBvids = new Set(cooldownSkippedUploads.map((upload) => upload.bvid));
+    runnableUploads = deduplicatedUploads.filter((upload) => !skippedBvids.has(upload.bvid));
+  }
 
   if (effectiveCollected.summaryUsers.length === 0) {
     return {
       ...effectiveCollected,
+      cooldownSkippedUploads,
       runs: [],
       failures: [],
     };
@@ -205,13 +238,14 @@ export async function syncSummaryUsersRecentVideos({
     onLog("No uploads found within the recent time window");
     return {
       ...effectiveCollected,
+      cooldownSkippedUploads,
       runs: [],
       failures: [],
     };
   }
 
   const executionResult = await runRecentUploadsPipelines({
-    uploads: effectiveCollected.uploads,
+    uploads: runnableUploads,
     dbPath,
     workRoot,
     logDay,
@@ -229,9 +263,77 @@ export async function syncSummaryUsersRecentVideos({
 
   return {
     ...effectiveCollected,
+    cooldownSkippedUploads,
     runs: executionResult.runs,
     failures: executionResult.failures,
   };
+}
+
+export async function loadSummaryFailureCooldowns(
+  dbPath: string,
+  {
+    nowMs = Date.now(),
+    cooldownMs = SUMMARY_CONFIGURATION_FAILURE_COOLDOWN_MS,
+  }: {
+    nowMs?: number;
+    cooldownMs?: number;
+  } = {},
+): Promise<Map<string, number>> {
+  const db = openDatabase(dbPath);
+  try {
+    const events = await listPipelineEvents(db, {
+      sinceIso: new Date(nowMs - cooldownMs).toISOString(),
+      limit: 5_000,
+    });
+    return buildSummaryFailureCooldowns(events, {
+      nowMs,
+      cooldownMs,
+    });
+  } finally {
+    await db.close?.();
+  }
+}
+
+export function buildSummaryFailureCooldowns(
+  events: PipelineEventRecord[],
+  {
+    nowMs = Date.now(),
+    cooldownMs = SUMMARY_CONFIGURATION_FAILURE_COOLDOWN_MS,
+  }: {
+    nowMs?: number;
+    cooldownMs?: number;
+  } = {},
+): Map<string, number> {
+  const latestSummaryEventByBvid = new Map<string, PipelineEventRecord>();
+  for (const event of events) {
+    const bvid = String(event.bvid ?? "").trim();
+    if (
+      !bvid
+      || latestSummaryEventByBvid.has(bvid)
+      || event.scope !== "summary"
+      || event.action !== "llm"
+      || !["failed", "succeeded"].includes(event.status)
+    ) {
+      continue;
+    }
+    latestSummaryEventByBvid.set(bvid, event);
+  }
+
+  const cooldowns = new Map<string, number>();
+  for (const [bvid, event] of latestSummaryEventByBvid) {
+    if (
+      event.status !== "failed"
+      || !SUMMARY_CONFIGURATION_FAILURE_PATTERN.test(String(event.message ?? ""))
+    ) {
+      continue;
+    }
+    const failedAtMs = Date.parse(event.created_at);
+    const retryAfterMs = failedAtMs + cooldownMs;
+    if (Number.isFinite(failedAtMs) && retryAfterMs > nowMs) {
+      cooldowns.set(bvid, retryAfterMs);
+    }
+  }
+  return cooldowns;
 }
 
 export async function runRecentUploadsPipelines({

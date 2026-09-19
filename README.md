@@ -206,6 +206,8 @@ SUMMARY_API_KEY=your_opencode_go_key
 SUMMARY_API_BASE_URL=https://opencode.ai/zen/go/v1
 SUMMARY_API_FORMAT=openai-chat
 SUMMARY_MODEL=glm-5
+# 可选；未设置时，每次视频流水线会自动生成一个 session id
+SUMMARY_OPENCODE_SESSION=your_stable_session_id
 ```
 
 ### 3. 调度与运行时配置

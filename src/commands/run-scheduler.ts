@@ -186,6 +186,7 @@ await runCli({
         logDay,
         logGroup,
         publish: false,
+        applySummaryFailureCooldown: true,
         runPipelineTask(task) {
           return summaryTaskLimiter.run(PIPELINE_TASK_PRIORITY.recent, task);
         },
@@ -197,15 +198,19 @@ await runCli({
       });
       summaryLogger.info("Summary sweep finished", {
         uploads: result.uploads.length,
+        cooldownSkipped: result.cooldownSkippedUploads.length,
         failures: result.failures.length,
         runs: result.runs.length,
       });
-      log(`Summary sweep finished: uploads=${result.uploads.length}, failures=${result.failures.length}`, {
-        details: {
-          task: "summary",
-          logPath: summaryLogger.filePath,
+      log(
+        `Summary sweep finished: uploads=${result.uploads.length}, cooldownSkipped=${result.cooldownSkippedUploads.length}, failures=${result.failures.length}`,
+        {
+          details: {
+            task: "summary",
+            logPath: summaryLogger.filePath,
+          },
         },
-      });
+      );
       if (result.runs.length > 0) {
         log("Recent summaries generated; requesting one publish sweep");
         requestDetachedRun({
@@ -229,6 +234,7 @@ await runCli({
       return {
         action: "summary",
         uploads: result.uploads.length,
+        cooldownSkipped: result.cooldownSkippedUploads.length,
         runs: result.runs.length,
         failures: result.failures.length,
         failureDetails: result.failures.map((failure) => formatSummaryFailure(failure)),
@@ -370,6 +376,7 @@ await runCli({
         action: "historical-summary",
         targetDate: result.targetDate,
         uploads: result.uploads.length,
+        cooldownSkipped: result.cooldownSkippedUploads.length,
         runs: result.runs.length,
         skippedPinnedSummary: result.skippedPinnedSummary.length,
         failures: result.failures.length,

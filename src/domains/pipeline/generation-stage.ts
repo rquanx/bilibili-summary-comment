@@ -206,6 +206,7 @@ export async function runGenerationStage({
         apiKey: summaryConfig.apiKey,
         apiBaseUrl: summaryConfig.apiBaseUrl,
         apiFormat: summaryConfig.apiFormat,
+        sessionId: summaryConfig.sessionId ?? null,
         cliProxy: summaryConfig.cliProxy,
         promptConfigPath: summaryConfig.promptConfigPath,
         ownerMid: summaryOwnerMid,

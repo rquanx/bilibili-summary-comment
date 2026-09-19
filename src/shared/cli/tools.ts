@@ -72,10 +72,11 @@ export function addCommentTypeOption(command: Command): Command {
 export function addSummaryApiOptions(command: Command): Command {
   return command
     .option("--model <model>", "Optional. Summary model override.")
-    .option("--api-key <key>", "Optional. Summary API key override.")
-    .option("--api-base-url <url>", "Optional. Summary API base URL override.")
-    .option("--api-format <format>", "Optional. Summary API format override.")
-    .option("--prompt-config <path>", "Optional. Summary prompt config path override.");
+      .option("--api-key <key>", "Optional. Summary API key override.")
+      .option("--api-base-url <url>", "Optional. Summary API base URL override.")
+      .option("--api-format <format>", "Optional. Summary API format override.")
+      .option("--api-session <id>", "Optional. OpenCode session id override.")
+      .option("--prompt-config <path>", "Optional. Summary prompt config path override.");
 }
 
 export function addMessageOptions(command: Command): Command {

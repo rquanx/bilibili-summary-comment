@@ -12,6 +12,7 @@ export async function requestSummary({
   apiKey,
   apiBaseUrl,
   apiFormat,
+  sessionId = null,
   forceFreshConnection = false,
   fetchImpl = fetch,
 }) {
@@ -32,6 +33,7 @@ export async function requestSummary({
         apiFormat: api.apiFormat,
         model,
         apiKey,
+        sessionId,
         systemPrompt,
         userPrompt,
         forceFreshConnection,
@@ -301,6 +303,7 @@ export function buildSummaryHttpRequest({
   apiFormat,
   model,
   apiKey,
+  sessionId = null,
   systemPrompt,
   userPrompt,
   forceFreshConnection = false,
@@ -315,6 +318,7 @@ export function buildSummaryHttpRequest({
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
+        ...buildOpenCodeSessionHeader(sessionId),
         ...connectionHeaders,
       },
       body: JSON.stringify({
@@ -335,6 +339,7 @@ export function buildSummaryHttpRequest({
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
         "x-api-key": apiKey,
+        ...buildOpenCodeSessionHeader(sessionId),
         "anthropic-version": "2023-06-01",
         ...connectionHeaders,
       },
@@ -357,6 +362,7 @@ export function buildSummaryHttpRequest({
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
+      ...buildOpenCodeSessionHeader(sessionId),
       ...connectionHeaders,
     },
     body: JSON.stringify({
@@ -373,6 +379,11 @@ export function buildSummaryHttpRequest({
       ],
     }),
   };
+}
+
+function buildOpenCodeSessionHeader(sessionId) {
+  const normalized = String(sessionId ?? "").trim();
+  return normalized ? { "x-opencode-session": normalized } : {};
 }
 
 async function readOpenAiChatCompletionResponse(response) {
