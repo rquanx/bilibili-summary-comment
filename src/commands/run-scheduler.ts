@@ -376,7 +376,6 @@ await runCli({
         action: "historical-summary",
         targetDate: result.targetDate,
         uploads: result.uploads.length,
-        cooldownSkipped: result.cooldownSkippedUploads.length,
         runs: result.runs.length,
         skippedPinnedSummary: result.skippedPinnedSummary.length,
         failures: result.failures.length,
@@ -558,6 +557,7 @@ await runCli({
         return {
           action: "summary-failed",
           uploads: 0,
+          cooldownSkipped: 0,
           runs: 0,
           failures: 1,
           failureDetails: [message],
