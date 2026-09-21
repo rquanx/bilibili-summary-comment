@@ -520,6 +520,7 @@ export async function summarizePartFromSubtitle({
           model,
           error,
           geminiApiKey,
+          fallbackModel,
         })),
       },
     });
