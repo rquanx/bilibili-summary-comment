@@ -592,17 +592,27 @@ await runCli({
       cron.schedule("0,15,30,45 * * * *", summaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("5 * * * *", publishRunner, buildCronOptions(config.timezone)),
       cron.schedule("2-59/5 * * * *", commentStallAlertRunner, buildCronOptions(config.timezone)),
-      cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
-      cron.schedule("0,15,30,45 * * * *", historicalSummaryRunner, buildCronOptions(config.timezone)),
       cron.schedule("15 3 * * *", refreshRunner, buildCronOptions(config.timezone)),
       cron.schedule("45 3 * * *", cleanupRunner, buildCronOptions(config.timezone)),
     ];
+    if (config.gapCheckEnabled) {
+      scheduledTasks.push(
+        cron.schedule("10 * * * *", gapCheckRunner, buildCronOptions(config.timezone)),
+      );
+    }
+    if (config.historicalSummaryEnabled) {
+      scheduledTasks.push(
+        cron.schedule("0,15,30,45 * * * *", historicalSummaryRunner, buildCronOptions(config.timezone)),
+      );
+    }
 
     log(`Scheduler started with timezone=${config.timezone ?? "system"}`);
     log(
       `Pipeline slots: recent=${summaryTaskLimiter.capacity}, historical=${historicalTaskLimiter.capacity}, publish=1, asr=1`,
     );
-    log("Cron plan: summary=every15min, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=hourly@minute10, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=every15min with recent-video pipeline priority");
+    log(
+      `Cron plan: summary=every15min, publish=hourly@minute5, comment-stall-alert=every5min@minute2, gap-check=${config.gapCheckEnabled ? "hourly@minute10" : "disabled"}, refresh=daily@03:15 when due, cleanup=daily@03:45, historical-summary=${config.historicalSummaryEnabled ? "every15min with recent-video pipeline priority" : "disabled"}`,
+    );
     attachSignalHandlers(scheduledTasks, log);
 
     if (args["run-on-start"]) {
@@ -610,7 +620,9 @@ await runCli({
       await summaryRunner();
       await publishRunner();
       await commentStallAlertRunner();
-      await gapCheckRunner();
+      if (config.gapCheckEnabled) {
+        await gapCheckRunner();
+      }
       await cleanupRunner();
     }
 
@@ -620,9 +632,11 @@ await runCli({
       timezone: config.timezone ?? "system",
       summaryUsers: config.summaryUsers,
       summaryConcurrency: config.summaryConcurrency,
+      historicalSummaryEnabled: config.historicalSummaryEnabled,
       historicalSummaryConcurrency: config.historicalSummaryConcurrency,
       historicalSummaryDailyLimit: config.historicalSummaryDailyLimit,
       historicalRequestDelayMs: config.historicalRequestDelayMs,
+      gapCheckEnabled: config.gapCheckEnabled,
       commentStallAlertMinutes: config.commentStallAlertMinutes,
       publishTask: "serial-newest-first",
       refreshDays: config.refreshDays,

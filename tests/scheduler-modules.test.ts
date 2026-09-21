@@ -50,7 +50,9 @@ test("resolveSchedulerConfig separates recent and historical pipeline concurrenc
   const explicit = resolveSchedulerConfig({
     "pipeline-concurrency": 4,
     "summary-concurrency": 3,
+    "historical-summary-enabled": "true",
     "historical-summary-concurrency": 2,
+    "gap-check-enabled": 1,
   });
   const legacy = resolveSchedulerConfig({
     "historical-summary-concurrency": 2,
@@ -58,12 +60,16 @@ test("resolveSchedulerConfig separates recent and historical pipeline concurrenc
   const defaults = resolveSchedulerConfig();
 
   assert.equal(explicit.summaryConcurrency, 3);
+  assert.equal(explicit.historicalSummaryEnabled, true);
   assert.equal(explicit.historicalSummaryConcurrency, 2);
+  assert.equal(explicit.gapCheckEnabled, true);
   assert.equal(explicit.commentStallAlertMinutes, 120);
   assert.equal(legacy.summaryConcurrency, 2);
   assert.equal(legacy.historicalSummaryConcurrency, 2);
   assert.equal(defaults.summaryConcurrency, 2);
+  assert.equal(defaults.historicalSummaryEnabled, false);
   assert.equal(defaults.historicalSummaryConcurrency, 1);
+  assert.equal(defaults.gapCheckEnabled, false);
 });
 
 test("resolveCookieFileForUser falls back from indexed cookie to cookie_1 then base cookie", () => {

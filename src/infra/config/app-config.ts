@@ -4,6 +4,9 @@ import { DEFAULT_AUTH_FILE } from "../../domains/bili/auth";
 const nonEmptyStringSchema = z.string().trim().min(1);
 const positiveIntegerLikeSchema = z.coerce.number().int().positive();
 const nonNegativeIntegerLikeSchema = z.coerce.number().int().nonnegative();
+const booleanLikeSchema = z
+  .union([z.boolean(), z.string(), z.number()])
+  .transform((value) => normalizeBoolean(value));
 const optionalTrimmedStringSchema = z
   .union([z.string(), z.undefined(), z.null()])
   .transform((value) => {
@@ -37,9 +40,11 @@ const schedulerConfigSchema = z.object({
   summaryUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
   summaryConcurrency: positiveIntegerLikeSchema,
+  historicalSummaryEnabled: booleanLikeSchema,
   historicalSummaryConcurrency: positiveIntegerLikeSchema,
   historicalSummaryDailyLimit: positiveIntegerLikeSchema,
   historicalRequestDelayMs: nonNegativeIntegerLikeSchema,
+  gapCheckEnabled: booleanLikeSchema,
   commentStallAlertMinutes: positiveIntegerLikeSchema,
   refreshDays: positiveIntegerLikeSchema,
   cleanupDays: positiveIntegerLikeSchema,
@@ -59,9 +64,11 @@ interface AppConfigOptions extends Record<string, unknown> {
   ["cleanup-days"]?: unknown;
   ["pipeline-concurrency"]?: unknown;
   ["summary-concurrency"]?: unknown;
+  ["historical-summary-enabled"]?: unknown;
   ["historical-summary-daily-limit"]?: unknown;
   ["historical-summary-concurrency"]?: unknown;
   ["historical-request-delay-ms"]?: unknown;
+  ["gap-check-enabled"]?: unknown;
   ["comment-stall-alert-minutes"]?: unknown;
   ["summary-users"]?: unknown;
   ["cookie-file"]?: unknown;
@@ -102,6 +109,10 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
       ?? options["pipeline-concurrency"]
       ?? process.env.PIPELINE_CONCURRENCY
       ?? 2,
+    historicalSummaryEnabled:
+      options["historical-summary-enabled"]
+      ?? process.env.HISTORICAL_SUMMARY_ENABLED
+      ?? false,
     historicalSummaryConcurrency:
       options["historical-summary-concurrency"]
       ?? process.env.HISTORICAL_SUMMARY_CONCURRENCY
@@ -114,6 +125,10 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
       options["historical-request-delay-ms"]
       ?? process.env.HISTORICAL_SUMMARY_REQUEST_DELAY_MS
       ?? 2000,
+    gapCheckEnabled:
+      options["gap-check-enabled"]
+      ?? process.env.GAP_CHECK_ENABLED
+      ?? false,
     commentStallAlertMinutes:
       options["comment-stall-alert-minutes"]
       ?? process.env.COMMENT_STALL_ALERT_MINUTES
@@ -124,4 +139,9 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     workRoot: options["work-root"] ?? process.env.WORK_ROOT ?? "work",
     timezone: options.timezone ?? process.env.CRON_TIMEZONE,
   });
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  const normalized = String(value).trim().toLowerCase();
+  return !["", "0", "false", "no", "off"].includes(normalized);
 }

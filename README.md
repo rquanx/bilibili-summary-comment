@@ -218,9 +218,11 @@ SUMMARY_OPENCODE_SESSION=your_stable_session_id
 - `SUMMARY_SINCE_HOURS`：扫描最近多少小时的投稿，默认 `24`
 - `PIPELINE_CONCURRENCY`：兼容变量，作为调度器最近视频并发数的后备值
 - `SUMMARY_PIPELINE_CONCURRENCY`：最近视频总结任务的流水线并发数，默认 `2`
+- `HISTORICAL_SUMMARY_ENABLED`：是否启用历史回补定时任务，默认 `false`；手动执行 `--once historical-summary` 不受影响
 - `HISTORICAL_SUMMARY_DAILY_LIMIT`：历史回补任务每天最多启动的视频流水线总数，默认 `200`
 - `HISTORICAL_SUMMARY_CONCURRENCY`：历史回补任务的独立并发数，默认 `1`；同一 UP 主仍保持串行
 - `HISTORICAL_SUMMARY_REQUEST_DELAY_MS`：历史投稿扫描和网页置顶评论检查之间的最小请求间隔，默认 `2000`
+- `GAP_CHECK_ENABLED`：是否启用稿件缺段定时巡检，默认 `false`；手动执行 `--once gap-check` 不受影响
 - `COMMENT_STALL_ALERT_MINUTES`：存在待总结或待发布视频时，连续多少分钟没有成功发出新评论后触发告警，默认 `120`
 - `BILI_AUTH_FILE`：授权文件路径，默认 `.auth/bili-auth.json`
 - `BILI_COOKIE_FILE`：可选。cookie 文件路径；仅在你显式使用 `--cookie-file` 或要求额外输出 cookie 文件时使用
@@ -413,7 +415,7 @@ tsx src/commands/run-scheduler.ts --once all
 
 说明：
 
-- 调度器当前会注册 6 个任务：每小时 `00` 分和 `30` 分跑最近投稿总结、每小时 `05` 分跑发布队列、每小时 `10` 分跑缺段巡检、每天 `03:15` 检查授权刷新、每天 `03:45` 清理工作目录；历史回补每分钟唤醒一次，并由持久化节流游标决定当前是否到达执行时间
+- 调度器默认运行最近投稿总结、发布队列、评论停滞告警、授权刷新和工作目录清理。历史回补与稿件缺段巡检默认停止，分别设置 `HISTORICAL_SUMMARY_ENABLED=true`、`GAP_CHECK_ENABLED=true` 后才注册对应定时任务
 - 调度器里的 summary 任务只负责生成 / 更新摘要，不在单条视频流水线里直接发布；如果这一轮扫到了 recent uploads，结束后会立即请求一次 publish sweep，`05` 分的 publish sweep 继续作为兜底与线程健康检查入口
 - 历史回补游标保存在 `work/state/historical-summary-cursor.json`。每条候选视频都先通过游客网页评论接口读取当前置顶评论；只有明确确认没有置顶总结时才进入流水线，接口失败或结果不明确时不会处理
 - 历史扫描按用户轮转请求，并通过 `HISTORICAL_SUMMARY_REQUEST_DELAY_MS` 控制全局最小间隔；每天最多启动 `HISTORICAL_SUMMARY_DAILY_LIMIT` 条历史视频流水线，默认总量为 `200`。默认按约 `7 分 12 秒/条` 均匀分布到 24 小时，不会在启动或整点集中跑满额度

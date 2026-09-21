@@ -59,8 +59,12 @@ CRON_TIMEZONE=Asia/Shanghai
   兼容变量，仅在没有配置 `SUMMARY_PIPELINE_CONCURRENCY` 时作为最近视频并发数的后备值。
 - `SUMMARY_PIPELINE_CONCURRENCY`
   最近视频总结任务的独立流水线并发数，默认 `2`。
+- `HISTORICAL_SUMMARY_ENABLED`
+  是否启用历史回补定时任务，默认 `false`。设置为 `true` 后每 15 分钟检查一次；手动执行 `--once historical-summary` 不受此开关影响。
 - `HISTORICAL_SUMMARY_CONCURRENCY`
   历史回补任务的独立流水线并发数，默认 `1`；同一 UP 主仍保持串行。
+- `GAP_CHECK_ENABLED`
+  是否启用稿件缺段定时巡检，默认 `false`。设置为 `true` 后每小时 `10` 分执行；手动执行 `--once gap-check` 不受此开关影响。
 - `BILI_AUTH_FILE`
   TV 登录授权文件路径，默认 `.auth/bili-auth.json`。
 - `BILI_COOKIE_FILE`
@@ -88,7 +92,7 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
 
 ## 3. 调度行为
 
-`npm run schedule` 启动后，会注册这 5 个定时任务：
+`npm run schedule` 启动后，默认注册最近投稿总结、发布队列、评论停滞告警、授权刷新和工作目录清理任务。历史回补和稿件缺段巡检默认停止，需要通过环境变量显式启用：
 
 - 每小时 `00` 分和 `30` 分：
   扫描 `SUMMARY_USERS` 最近 `SUMMARY_SINCE_HOURS` 小时投稿，并对命中的视频执行完整流水线，但这里的流水线会以 `publish=false` 运行，只负责生成 / 更新摘要与发布状态。
@@ -96,12 +100,14 @@ npm run schedule -- --summary-concurrency 2 --timezone Asia/Shanghai
   扫描数据库里的待发布视频，串行执行 publish sweep；除了真正待发布的视频，也会顺带检查最近 24 小时内已发布视频的评论线程是否仍然健康。
 - 每 5 分钟（从每小时 `02` 分开始）：
   检查待总结和待发布队列。如果连续 `COMMENT_STALL_ALERT_MINUTES` 分钟没有成功创建新评论，则发送一次 ServerChan 告警；同一轮停滞不会重复通知。
-- 每小时 `10` 分：
+- 启用 `GAP_CHECK_ENABLED=true` 后，每小时 `10` 分：
   对最近投稿执行缺段巡检；如果分 P 标题中的时间戳之间存在超过 `1` 分钟的缺口，会把结果写入当天快照，并在配置了 `SERVER_CHAN_SEND_KEY` 时只通知“新发现”的缺口。
 - 每天 `03:15`：
   检查 `.auth/bili-auth.json` 是否超过 `BILI_REFRESH_DAYS` 天未更新；如果过期，则刷新授权信息。
 - 每天 `03:45`：
   清理数据库里最后扫描时间早于 `WORK_CLEANUP_DAYS` 天之前的 `work/<owner_dir>/<video_dir>` 目录。
+- 启用 `HISTORICAL_SUMMARY_ENABLED=true` 后，每 15 分钟：
+  按持久化游标和每日额度执行历史回补。
 
 说明：
 
