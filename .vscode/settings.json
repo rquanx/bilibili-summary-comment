@@ -8,8 +8,7 @@
     "**/__pycache__": true,
     "**/dist": true,
     "**/node_modules": true,
-    "**/temp": true,
-    "**/work": true
+    "**/temp": true
   },
   "files.watcherExclude": {
     "**/.3.11/**": true,
