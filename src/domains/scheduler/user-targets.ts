@@ -1,14 +1,19 @@
 export interface SummaryUserTarget {
   mid: number;
   source: string;
+  includeOnlySelfVisible?: boolean;
 }
 
-export function parseSummaryUsers(summaryUsers: unknown): SummaryUserTarget[] {
+export function parseSummaryUsers(
+  summaryUsers: unknown,
+  includeOnlySelfVisibleUsers: unknown = "",
+): SummaryUserTarget[] {
   const raw = String(summaryUsers ?? "");
   if (!raw.trim()) {
     return [];
   }
 
+  const onlySelfVisibleMids = parseBiliUserIds(includeOnlySelfVisibleUsers);
   const targets: SummaryUserTarget[] = [];
   const seen = new Set<number>();
 
@@ -27,10 +32,22 @@ export function parseSummaryUsers(summaryUsers: unknown): SummaryUserTarget[] {
     targets.push({
       mid,
       source: input,
+      includeOnlySelfVisible: onlySelfVisibleMids.has(mid),
     });
   }
 
   return targets;
+}
+
+function parseBiliUserIds(value: unknown): Set<number> {
+  const mids = new Set<number>();
+  for (const entry of String(value ?? "").split(/[,\r\n]+/)) {
+    const mid = extractBiliMid(entry);
+    if (mid) {
+      mids.add(mid);
+    }
+  }
+  return mids;
 }
 
 export function normalizePipelineUserKey(value: unknown): string {

@@ -215,6 +215,7 @@ SUMMARY_OPENCODE_SESSION=your_stable_session_id
 常用环境变量：
 
 - `SUMMARY_USERS`：逗号或换行分隔的 Bilibili 空间链接或 UID
+- `SUMMARY_ONLY_SELF_VISIBLE_USERS`：可选。填写 `SUMMARY_USERS` 中允许处理“仅自己可见”视频的 UID 或空间链接；未列入的用户仍会跳过此类视频
 - `SUMMARY_SINCE_HOURS`：扫描最近多少小时的投稿，默认 `24`
 - `PIPELINE_CONCURRENCY`：兼容变量，作为调度器最近视频并发数的后备值
 - `SUMMARY_PIPELINE_CONCURRENCY`：最近视频总结任务的流水线并发数，默认 `2`
@@ -379,6 +380,7 @@ npm run sync:users -- --auth-file ./.auth/bili-auth.json --summary-users "https:
 说明：
 
 - 该命令当前默认会为命中的视频执行完整流水线并自动发布
+- 如需仅对指定用户处理“仅自己可见”视频，可设置 `SUMMARY_ONLY_SELF_VISIBLE_USERS=<UID>`；该用户仍必须同时存在于 `SUMMARY_USERS` 中
 - 多账号时建议按用户顺序准备 `.auth/bili-auth_1.json`、`.auth/bili-auth_2.json`……；第 1 个用户也可以直接使用基础文件 `.auth/bili-auth.json`
 - 同一 UP、同一场录播的不同标题变体会串行运行，避免并发抢占同一份总结 / 评论线程
 

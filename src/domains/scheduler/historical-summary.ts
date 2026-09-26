@@ -102,6 +102,7 @@ type HistoricalAbandonedFailure = PipelineFailureResult<RecentUpload> & {
 
 interface RunHistoricalSummaryBackfillOptions {
   summaryUsers?: unknown;
+  includeOnlySelfVisibleUsers?: unknown;
   authFile?: string;
   dbPath?: string;
   workRoot?: string;
@@ -152,6 +153,7 @@ export async function runHistoricalSummaryBackfill({
 
 async function runHistoricalSummaryBackfillUnlocked({
   summaryUsers,
+  includeOnlySelfVisibleUsers = process.env.SUMMARY_ONLY_SELF_VISIBLE_USERS ?? "",
   authFile = DEFAULT_AUTH_FILE,
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
@@ -175,7 +177,7 @@ async function runHistoricalSummaryBackfillUnlocked({
   runPipelineTask = (task) => task(),
   sleepImpl = delay,
 }: RunHistoricalSummaryBackfillOptions = {}) {
-  const targets = parseSummaryUsers(summaryUsers);
+  const targets = parseSummaryUsers(summaryUsers, includeOnlySelfVisibleUsers);
   const resolvedCursorPath = resolveHistoricalCursorPath({
     cursorPath,
     workRoot,
@@ -670,9 +672,13 @@ async function collectHistoricalUploadsForDate({
 
         hasTarget = true;
         scan.firstTargetPage ??= scan.page;
-        if (isOnlySelfVisibleVideo(video)) {
+        if (isOnlySelfVisibleVideo(video) && !scan.target.includeOnlySelfVisible) {
           onLog(`Skip only-self-visible historical video ${bvid}`);
           continue;
+        }
+
+        if (isOnlySelfVisibleVideo(video)) {
+          onLog(`Include only-self-visible historical video ${bvid} for allowlisted uid ${scan.target.mid}`);
         }
 
         uploadMap.set(bvid, {

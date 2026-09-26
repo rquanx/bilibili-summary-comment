@@ -111,6 +111,7 @@ fallback 不再绑定某个固定主模型；如果主模型 ID 不存在或已�
 调度相关变量：
 
 - `SUMMARY_USERS`
+- `SUMMARY_ONLY_SELF_VISIBLE_USERS`：可选。允许处理“仅自己可见”视频的用户 UID 或空间链接名单
 - `SUMMARY_SINCE_HOURS`
 - `SUMMARY_PIPELINE_CONCURRENCY`
 - `BILI_AUTH_FILE`

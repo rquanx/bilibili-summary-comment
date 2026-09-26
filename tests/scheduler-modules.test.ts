@@ -38,11 +38,14 @@ import { runCommand } from "../src/shared/runtime-tools";
 import { compareTimestampDesc, formatEast8DateTime } from "../src/shared/time";
 
 test("parseSummaryUsers deduplicates ids from mixed inputs", () => {
-  const users = parseSummaryUsers("123, https://space.bilibili.com/456\n123\ninvalid");
+  const users = parseSummaryUsers(
+    "123, https://space.bilibili.com/456\n123\ninvalid",
+    "https://space.bilibili.com/456",
+  );
 
   assert.deepEqual(users, [
-    { mid: 123, source: "123" },
-    { mid: 456, source: "https://space.bilibili.com/456" },
+    { mid: 123, source: "123", includeOnlySelfVisible: false },
+    { mid: 456, source: "https://space.bilibili.com/456", includeOnlySelfVisible: true },
   ]);
 });
 
@@ -53,6 +56,7 @@ test("resolveSchedulerConfig separates recent and historical pipeline concurrenc
     "historical-summary-enabled": "true",
     "historical-summary-concurrency": 2,
     "gap-check-enabled": 1,
+    "include-only-self-visible-users": "456",
   });
   const legacy = resolveSchedulerConfig({
     "historical-summary-concurrency": 2,
@@ -63,6 +67,7 @@ test("resolveSchedulerConfig separates recent and historical pipeline concurrenc
   assert.equal(explicit.historicalSummaryEnabled, true);
   assert.equal(explicit.historicalSummaryConcurrency, 2);
   assert.equal(explicit.gapCheckEnabled, true);
+  assert.equal(explicit.includeOnlySelfVisibleUsers, "456");
   assert.equal(explicit.commentStallAlertMinutes, 120);
   assert.equal(legacy.summaryConcurrency, 2);
   assert.equal(legacy.historicalSummaryConcurrency, 2);
@@ -830,6 +835,46 @@ test("detectGapsFromVideoSnapshot flags only intervals larger than the threshold
   assert.equal(gaps[0].fromPageNo, 2);
   assert.equal(gaps[0].toPageNo, 3);
   assert.equal(gaps[0].gapSeconds, 8);
+});
+
+test("collectRecentUploadsFromUsers includes only-self-visible videos for allowlisted users", async () => {
+  const logMessages: string[] = [];
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  const result = await collectRecentUploadsFromUsers({
+    summaryUsers: "123,456",
+    includeOnlySelfVisibleUsers: "456",
+    findAuthFileForUserImpl(_authFile, userIndex) {
+      return path.resolve(".auth", `bili-auth_${userIndex}.json`);
+    },
+    readCookieStringFromAuthFileImpl: () => "SESSDATA=fake",
+    createClientImpl: (() => ({
+      user: {
+        async getVideos({ mid }) {
+          return {
+            list: {
+              vlist: [{
+                aid: mid,
+                bvid: `BVPRIVATE${mid}`,
+                title: `Private ${mid}`,
+                created: nowUnix,
+                is_self_view: true,
+              }],
+            },
+          };
+        },
+      },
+    })) as any,
+    onLog(message) {
+      logMessages.push(message);
+    },
+  });
+
+  assert.deepEqual(result.uploads.map((item) => item.bvid), ["BVPRIVATE456"]);
+  assert.equal(
+    logMessages.includes("Include only-self-visible video BVPRIVATE456 for allowlisted uid 456"),
+    true,
+  );
 });
 
 test("detectGapsFromVideoSnapshot accepts part titles without seconds", () => {

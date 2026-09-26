@@ -46,6 +46,7 @@ npm run login:bili
 
 ```dotenv
 SUMMARY_USERS=https://space.bilibili.com/123456,https://space.bilibili.com/234567
+SUMMARY_ONLY_SELF_VISIBLE_USERS=234567
 CRON_TIMEZONE=Asia/Shanghai
 ```
 
@@ -53,6 +54,8 @@ CRON_TIMEZONE=Asia/Shanghai
 
 - `SUMMARY_USERS`
   逗号或换行分隔的 Bilibili 用户空间链接，或直接填写 UID。
+- `SUMMARY_ONLY_SELF_VISIBLE_USERS`
+  可选。逗号或换行分隔的 UID 或空间链接。只有同时存在于 `SUMMARY_USERS` 和此名单中的用户，才会处理“仅自己可见”视频；其他用户仍会跳过。
 - `SUMMARY_SINCE_HOURS`
   扫描最近多少小时的投稿，默认 `24`。
 - `PIPELINE_CONCURRENCY`

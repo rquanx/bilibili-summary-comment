@@ -40,6 +40,7 @@ const BILI_RISK_CONTROL_CODE = -352;
 
 interface CollectRecentUploadsOptions {
   summaryUsers?: unknown;
+  includeOnlySelfVisibleUsers?: unknown;
   authFile?: string;
   cookieFile?: string;
   sinceHours?: number;
@@ -78,6 +79,7 @@ interface SyncSummaryUsersRecentVideosOptions extends CollectRecentUploadsOption
 
 export async function collectRecentUploadsFromUsers({
   summaryUsers,
+  includeOnlySelfVisibleUsers = process.env.SUMMARY_ONLY_SELF_VISIBLE_USERS ?? "",
   authFile = DEFAULT_AUTH_FILE,
   cookieFile: _cookieFile = undefined,
   sinceHours = 24,
@@ -86,7 +88,7 @@ export async function collectRecentUploadsFromUsers({
   readCookieStringFromAuthFileImpl = readCookieStringFromAuthFile,
   createClientImpl = createClient,
 }: CollectRecentUploadsOptions = {}): Promise<CollectedUploadsResult> {
-  const targets = parseSummaryUsers(summaryUsers);
+  const targets = parseSummaryUsers(summaryUsers, includeOnlySelfVisibleUsers);
   if (targets.length === 0) {
     return {
       summaryUsers: [],
@@ -141,9 +143,13 @@ export async function collectRecentUploadsFromUsers({
         continue;
       }
 
-      if (isOnlySelfVisibleVideo(video)) {
+      if (isOnlySelfVisibleVideo(video) && !target.includeOnlySelfVisible) {
         onLog(`Skip only-self-visible video ${bvid} (${String(video?.title ?? "").trim() || "untitled"})`);
         continue;
+      }
+
+      if (isOnlySelfVisibleVideo(video)) {
+        onLog(`Include only-self-visible video ${bvid} for allowlisted uid ${target.mid}`);
       }
 
       const existing = uploadMap.get(bvid);
@@ -173,6 +179,7 @@ export async function collectRecentUploadsFromUsers({
 
 export async function syncSummaryUsersRecentVideos({
   summaryUsers,
+  includeOnlySelfVisibleUsers = process.env.SUMMARY_ONLY_SELF_VISIBLE_USERS ?? "",
   authFile = DEFAULT_AUTH_FILE,
   dbPath = "work/pipeline.sqlite3",
   workRoot = "work",
@@ -195,6 +202,7 @@ export async function syncSummaryUsersRecentVideos({
 }: SyncSummaryUsersRecentVideosOptions = {}) {
   const collected = await collectRecentUploadsImpl({
     summaryUsers,
+    includeOnlySelfVisibleUsers,
     authFile,
     sinceHours,
     onLog,

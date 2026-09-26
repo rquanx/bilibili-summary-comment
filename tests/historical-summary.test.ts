@@ -234,6 +234,75 @@ test("historical backfill does not process when the live pinned-summary check fa
   }
 });
 
+test("historical backfill includes only-self-visible videos for allowlisted users", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-private-"));
+  const cursorPath = path.join(tempRoot, "cursor.json");
+  const pipelineBvids: string[] = [];
+
+  try {
+    const result = await runHistoricalSummaryBackfill({
+      summaryUsers: "123",
+      includeOnlySelfVisibleUsers: "123",
+      cursorPath,
+      repoRoot: tempRoot,
+      now: new Date("2026-07-29T04:00:00.000Z"),
+      dailyLimit: 1,
+      maxPipelineStartsPerRun: 1,
+      requestDelayMs: 0,
+      findAuthFileForUserImpl() {
+        return path.join(tempRoot, ".auth", "bili-auth.json");
+      },
+      readCookieStringFromAuthFileImpl() {
+        return "SESSDATA=fake";
+      },
+      createClientImpl: (() => ({
+        user: {
+          async getVideos() {
+            return {
+              list: {
+                vlist: [
+                  {
+                    aid: 301,
+                    bvid: "BVPRIVATE",
+                    title: "Private",
+                    created: Date.parse("2026-07-29T01:00:00+08:00") / 1000,
+                    is_self_view: true,
+                  },
+                  {
+                    aid: 302,
+                    bvid: "BVOLDER",
+                    title: "Older",
+                    created: Date.parse("2026-07-28T23:00:00+08:00") / 1000,
+                  },
+                ],
+              },
+            };
+          },
+        },
+      })) as any,
+      async getGuestTopCommentImpl() {
+        return {
+          hasTopComment: false,
+          topComment: null,
+          raw: {},
+        } as any;
+      },
+      async runPipelineForBvidImpl(options) {
+        pipelineBvids.push(options.bvid);
+        return {
+          ok: true,
+          generatedPages: [1],
+        };
+      },
+    });
+
+    assert.deepEqual(pipelineBvids, ["BVPRIVATE"]);
+    assert.deepEqual(result.runs.map((item) => item.bvid), ["BVPRIVATE"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("historical backfill does not consume quota when the pipeline fails", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "historical-summary-pipeline-failure-"));
   const cursorPath = path.join(tempRoot, "cursor.json");

@@ -26,6 +26,7 @@ const cleanupConfigSchema = z.object({
 
 const summaryUsersConfigSchema = z.object({
   summaryUsers: z.string(),
+  includeOnlySelfVisibleUsers: z.string(),
   authFile: nonEmptyStringSchema,
   cookieFile: optionalTrimmedStringSchema,
   sinceHours: positiveIntegerLikeSchema,
@@ -38,6 +39,7 @@ const schedulerConfigSchema = z.object({
   authFile: nonEmptyStringSchema,
   cookieFile: optionalTrimmedStringSchema,
   summaryUsers: z.string(),
+  includeOnlySelfVisibleUsers: z.string(),
   summarySinceHours: positiveIntegerLikeSchema,
   summaryConcurrency: positiveIntegerLikeSchema,
   historicalSummaryEnabled: booleanLikeSchema,
@@ -71,6 +73,7 @@ interface AppConfigOptions extends Record<string, unknown> {
   ["gap-check-enabled"]?: unknown;
   ["comment-stall-alert-minutes"]?: unknown;
   ["summary-users"]?: unknown;
+  ["include-only-self-visible-users"]?: unknown;
   ["cookie-file"]?: unknown;
   ["summary-since-hours"]?: unknown;
   ["auth-file"]?: unknown;
@@ -88,6 +91,10 @@ export function resolveCleanupConfig(options: AppConfigOptions = {}): CleanupCon
 export function resolveSummaryUsersConfig(options: AppConfigOptions = {}): SummaryUsersConfig {
   return summaryUsersConfigSchema.parse({
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
+    includeOnlySelfVisibleUsers:
+      options["include-only-self-visible-users"]
+      ?? process.env.SUMMARY_ONLY_SELF_VISIBLE_USERS
+      ?? "",
     authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? DEFAULT_AUTH_FILE,
     cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     sinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
@@ -102,6 +109,10 @@ export function resolveSchedulerConfig(options: AppConfigOptions = {}): Schedule
     authFile: options["auth-file"] ?? process.env.BILI_AUTH_FILE ?? DEFAULT_AUTH_FILE,
     cookieFile: options["cookie-file"] ?? process.env.BILI_COOKIE_FILE,
     summaryUsers: options["summary-users"] ?? process.env.SUMMARY_USERS ?? "",
+    includeOnlySelfVisibleUsers:
+      options["include-only-self-visible-users"]
+      ?? process.env.SUMMARY_ONLY_SELF_VISIBLE_USERS
+      ?? "",
     summarySinceHours: options["summary-since-hours"] ?? process.env.SUMMARY_SINCE_HOURS ?? 24,
     summaryConcurrency:
       options["summary-concurrency"]

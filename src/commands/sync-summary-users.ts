@@ -20,6 +20,7 @@ const command = addWorkRootOption(
       .option("--auth-file <path>", "Optional. Auth file path.")
       .option("--cookie-file <path>", "Optional. Cookie file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
+      .option("--include-only-self-visible-users <users>", "Optional. Users whose only-self-visible videos should also be processed.")
       .option("--summary-since-hours <hours>", "Optional. How many recent hours to scan.", parsePositiveIntegerArg)
       .option("--summary-concurrency <count>", "Optional. Max concurrent pipelines. Default: 2", parsePositiveIntegerArg),
   ),
@@ -48,6 +49,7 @@ await runCli({
 
     const result = await syncSummaryUsersRecentVideos({
       summaryUsers: config.summaryUsers,
+      includeOnlySelfVisibleUsers: config.includeOnlySelfVisibleUsers,
       authFile: config.authFile,
       cookieFile: resolvedCookieFile ?? undefined,
       sinceHours: config.sinceHours,

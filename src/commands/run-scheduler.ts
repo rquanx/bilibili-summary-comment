@@ -44,6 +44,7 @@ const command = addWorkRootOption(
       .option("--cookie-file <path>", "Optional. Cookie file path.")
       .option("--auth-file <path>", "Optional. TV auth file path.")
       .option("--summary-users <users>", "Optional. Comma-separated Bilibili space URLs or user ids.")
+      .option("--include-only-self-visible-users <users>", "Optional. Users whose only-self-visible videos should also be processed.")
       .option("--summary-since-hours <hours>", "Optional. Recent upload window in hours.", parsePositiveIntegerArg)
       .option("--pipeline-concurrency <count>", "Legacy alias for --summary-concurrency.", parsePositiveIntegerArg)
       .option("--summary-concurrency <count>", "Optional. Recent summary pipeline concurrency. Default: 2", parsePositiveIntegerArg)
@@ -177,6 +178,7 @@ await runCli({
       writeConsole("Scanning SUMMARY_USERS recent uploads");
       const result = await syncSummaryUsersRecentVideos({
         summaryUsers: config.summaryUsers,
+        includeOnlySelfVisibleUsers: config.includeOnlySelfVisibleUsers,
         authFile: config.authFile,
         cookieFile: resolvedCookieFile ?? undefined,
         sinceHours: config.summarySinceHours,
@@ -324,6 +326,7 @@ await runCli({
       log(`[historical-summary] run log: ${historicalLogger.filePath}`);
       const result = await runHistoricalSummaryBackfill({
         summaryUsers: config.summaryUsers,
+        includeOnlySelfVisibleUsers: config.includeOnlySelfVisibleUsers,
         authFile: config.authFile,
         dbPath: config.dbPath,
         workRoot: config.workRoot,
