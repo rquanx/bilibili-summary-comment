@@ -1,7 +1,6 @@
 {
   "files.exclude": {
     "**/.3.11": true,
-    "**/.auth": true,
     "**/.tmp": true,
     "**/.tmp-tests": true,
     "**/.trending": true,
