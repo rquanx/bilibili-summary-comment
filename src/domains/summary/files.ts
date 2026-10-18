@@ -57,6 +57,7 @@ export function buildPartPromptArtifact({
   promptProfile?: {
     displayName?: string | null;
     preset?: string | null;
+    roomId?: string | null;
     extraRules?: string[] | null;
   } | null;
 }) {
@@ -76,6 +77,7 @@ export function buildPartPromptArtifact({
   const normalizedSubtitlePath = String(subtitlePath ?? "").trim();
   const normalizedPreset = String(promptProfile?.preset ?? "").trim();
   const normalizedDisplayName = String(promptProfile?.displayName ?? "").trim();
+  const normalizedRoomId = String(promptProfile?.roomId ?? "").trim();
 
   const lines = [
     `# Prompt P${String(pageNo).padStart(2, "0")}`,
@@ -97,6 +99,10 @@ export function buildPartPromptArtifact({
 
   if (normalizedPreset) {
     lines.push(`- promptPreset: ${normalizedPreset}`);
+  }
+
+  if (normalizedRoomId) {
+    lines.push(`- promptRoom: ${normalizedRoomId}`);
   }
 
   lines.push(
@@ -144,6 +150,7 @@ export async function writePartPromptArtifact({
   promptProfile?: {
     displayName?: string | null;
     preset?: string | null;
+    roomId?: string | null;
     extraRules?: string[] | null;
   } | null;
   promptConfigPath?: string | null;
@@ -165,6 +172,7 @@ export async function writePartPromptArtifact({
   });
   const resolvedPromptProfile = promptProfile ?? resolveSummaryPromptProfile({
     ownerMid: ownerMid ?? video.owner_mid ?? null,
+    videoTitle: video.title,
     promptConfigPath,
   });
   const partPromptPath = path.join(workDir, `prompt-p${String(pageNo).padStart(2, "0")}.md`);

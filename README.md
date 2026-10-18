@@ -591,7 +591,7 @@ work/pipeline.sqlite3
 
 ## 按用户定制 Summary Prompt
 
-项目现在支持通过独立配置文件按用户定制 summary prompt，默认读取 `config/summary-prompts.json`，并按 `defaults -> preset -> user` 的顺序合并附加规则。
+项目现在支持通过独立配置文件按投稿用户和播间定制 summary prompt，默认读取 `config/summary-prompts.json`。播间根据视频标题匹配，适合一个录像账号上传多个直播间录播的场景。
 
 可通过环境变量或命令行覆盖路径：
 
@@ -627,7 +627,20 @@ npm run pipeline -- --bvid BVxxxxxxxxxx --prompt-config ./config/summary-prompts
       "preset": "live-entertainment"
     },
     "3690976520440286": {
-      "preset": "live-knowledge"
+      "preset": "live-knowledge",
+      "rooms": [
+        {
+          "id": "crypto-sage",
+          "displayName": "币圈大贤者",
+          "match": {
+            "titlePrefixes": ["币圈大贤者", "币圈贤者"],
+            "titleIncludes": [],
+            "titleRegexes": ["^币圈.*贤者"]
+          },
+          "preset": "live-finance",
+          "extraRules": []
+        }
+      ]
     }
   }
 }
@@ -639,4 +652,11 @@ npm run pipeline -- --bvid BVxxxxxxxxxx --prompt-config ./config/summary-prompts
 - `presets` 用来管理一类主播的共用风格
 - `users.<mid>.preset` 负责把具体用户绑定到某个 preset
 - `users.<mid>.extraRules` 可继续追加更细的用户规则
+- `users.<mid>.rooms` 用于同一投稿账号下区分不同播间，按数组顺序使用第一个匹配项
+- `rooms[].match.titlePrefixes` 支持配置多个视频标题前缀，推荐用于主播曾经改名的情况
+- `rooms[].match.titleIncludes` 匹配标题中出现的固定文本，可用于标题前缀不稳定的情况
+- `rooms[].match.titleRegexes` 支持多个正则表达式，使用 Unicode、忽略大小写模式；配置中的非法正则会在加载时直接报错
+- 同一播间内的前缀、包含文本和正则采用“任一匹配即命中”
+- 播间配置存在 `preset` 时会覆盖用户级 `preset`；规则按 `defaults -> 最终 preset -> user -> room` 合并
+- 没有播间匹配时自动回退到用户级配置
 - 附加规则不会替换基础格式约束，仍然保留现有 `<nP>` 和时间点输出规则

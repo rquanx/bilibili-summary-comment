@@ -986,6 +986,136 @@ test("resolveSummaryPromptProfile merges defaults, preset, and user overrides", 
   }
 });
 
+test("resolveSummaryPromptProfile applies the first matching room override by video title", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-room-prompt-config-"));
+  const promptConfigPath = path.join(tempRoot, "summary-prompts.json");
+  fs.writeFileSync(promptConfigPath, JSON.stringify({
+    defaults: {
+      extraRules: ["默认规则"],
+    },
+    presets: {
+      knowledge: {
+        displayName: "知识主播",
+        extraRules: ["知识规则"],
+      },
+      finance: {
+        displayName: "金融主播",
+        extraRules: ["金融规则"],
+      },
+    },
+    users: {
+      "3690976520440286": {
+        preset: "knowledge",
+        extraRules: ["用户规则"],
+        rooms: [
+          {
+            id: "crypto-room",
+            displayName: "币圈大贤者",
+            match: {
+              titlePrefixes: ["币圈大贤者"],
+              titleIncludes: [],
+              titleRegexes: [],
+            },
+            preset: "finance",
+            extraRules: ["播间规则"],
+          },
+          {
+            id: "fallback-mention",
+            match: {
+              titlePrefixes: [],
+              titleIncludes: ["大贤者"],
+              titleRegexes: [],
+            },
+            preset: "knowledge",
+            extraRules: ["后匹配规则"],
+          },
+        ],
+      },
+    },
+  }, null, 2));
+
+  try {
+    const roomProfile = resolveSummaryPromptProfile({
+      ownerMid: 3690976520440286,
+      videoTitle: "币圈大贤者2026.10.18 20.00",
+      promptConfigPath,
+    });
+    assert.equal(roomProfile.roomId, "crypto-room");
+    assert.equal(roomProfile.displayName, "币圈大贤者");
+    assert.equal(roomProfile.preset, "finance");
+    assert.deepEqual(roomProfile.extraRules, ["默认规则", "金融规则", "用户规则", "播间规则"]);
+
+    const fallbackProfile = resolveSummaryPromptProfile({
+      ownerMid: 3690976520440286,
+      videoTitle: "其他直播间2026.10.18 20.00",
+      promptConfigPath,
+    });
+    assert.equal(fallbackProfile.roomId, undefined);
+    assert.equal(fallbackProfile.preset, "knowledge");
+    assert.deepEqual(fallbackProfile.extraRules, ["默认规则", "知识规则", "用户规则"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolveSummaryPromptProfile supports multiple title prefixes and regexes", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "summary-room-regex-config-"));
+  const promptConfigPath = path.join(tempRoot, "summary-prompts.json");
+  fs.writeFileSync(promptConfigPath, JSON.stringify({
+    presets: {
+      entertainment: {
+        displayName: "娱乐主播",
+        extraRules: ["娱乐规则"],
+      },
+    },
+    users: {
+      "3690987547265027": {
+        rooms: [
+          {
+            id: "renamed-room",
+            match: {
+              titlePrefixes: ["旧名字", "新名字"],
+              titleIncludes: [],
+              titleRegexes: [],
+            },
+            preset: "entertainment",
+            extraRules: [],
+          },
+          {
+            id: "regex-room",
+            match: {
+              titlePrefixes: [],
+              titleIncludes: [],
+              titleRegexes: ["^小泽(?:又)?沐[风峰]"],
+            },
+            preset: "entertainment",
+            extraRules: ["正则规则"],
+          },
+        ],
+      },
+    },
+  }, null, 2));
+
+  try {
+    const renamedProfile = resolveSummaryPromptProfile({
+      ownerMid: 3690987547265027,
+      videoTitle: "新名字2026.10.18 20.00",
+      promptConfigPath,
+    });
+    assert.equal(renamedProfile.roomId, "renamed-room");
+
+    const regexProfile = resolveSummaryPromptProfile({
+      ownerMid: 3690987547265027,
+      videoTitle: "小泽又沐峰2026.10.18 20.00",
+      promptConfigPath,
+    });
+    assert.equal(regexProfile.roomId, "regex-room");
+    assert.deepEqual(regexProfile.extraRules, ["娱乐规则", "正则规则"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("buildSummaryPromptInput appends per-user prompt rules", () => {
   const promptInput = buildSummaryPromptInput({
     pageNo: 2,

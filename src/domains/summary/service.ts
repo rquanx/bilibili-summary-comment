@@ -339,10 +339,6 @@ export async function summarizePartFromSubtitle({
       },
     });
 
-    const promptProfile = resolveSummaryPromptProfile({
-      ownerMid,
-      promptConfigPath,
-    });
     const video = await getVideoById(db, videoId) ?? {
       id: videoId,
       bvid,
@@ -352,6 +348,11 @@ export async function summarizePartFromSubtitle({
       owner_dir_name: null,
       work_dir_name: null,
     };
+    const promptProfile = resolveSummaryPromptProfile({
+      ownerMid,
+      videoTitle: video.title,
+      promptConfigPath,
+    });
     promptPath = await writePartPromptArtifact({
       db,
       video,
@@ -468,6 +469,7 @@ export async function summarizePartFromSubtitle({
         summaryPromptOwnerMid: promptProfile.ownerMid,
         summaryPromptOwnerName: ownerName,
         summaryPromptPreset: promptProfile.preset ?? null,
+        summaryPromptRoomId: promptProfile.roomId ?? null,
         summaryPromptExtraRuleCount: promptProfile.extraRules.length,
       },
     });
