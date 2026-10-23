@@ -1,3 +1,4 @@
+import { refreshSchedulerAuth } from "../domains/scheduler/auth-refresh";
 import cron from "node-cron";
 import { resolveSchedulerConfig } from "../infra/config/app-config";
 import {
@@ -8,9 +9,6 @@ import {
   runCli,
 } from "../shared/cli/tools";
 import {
-  getLastAuthUpdateAt,
-  loadBiliAuthBundle,
-  refreshBiliCookie,
   resolveBiliAuthFile,
   resolveBiliCookieFile,
 } from "../domains/bili/auth";
@@ -125,36 +123,14 @@ await runCli({
     }
 
     async function runRefreshTask({ force = false } = {}) {
-      const bundle = loadBiliAuthBundle(config.authFile);
-      if (!bundle) {
-        log(`Skip cookie refresh: auth file not found at ${config.authFile}`);
-        return {
-          action: "skip-refresh",
-          reason: "auth-file-missing",
-        };
-      }
-
-      const lastUpdatedAt = getLastAuthUpdateAt(bundle);
-      const refreshDue = force || isOlderThanDays(lastUpdatedAt, config.refreshDays);
-      if (!refreshDue) {
-        log(`Skip cookie refresh: auth bundle is newer than ${config.refreshDays} days`);
-        return {
-          action: "skip-refresh",
-          reason: "not-due",
-          lastUpdatedAt,
-        };
-      }
-
-      log("Refreshing Bilibili cookie via TV refresh token");
-      const result = await refreshBiliCookie({
+      return refreshSchedulerAuth({
         authFile: config.authFile,
+        summaryUsers: config.summaryUsers,
         cookieFile: resolvedCookieFile,
+        refreshDays: config.refreshDays,
+        force,
+        log,
       });
-      log(`Cookie refresh completed: ${result.bundle.updatedAt}`);
-      return {
-        action: "refresh",
-        updatedAt: result.bundle.updatedAt,
-      };
     }
 
     async function runSummaryTask() {
@@ -650,19 +626,6 @@ await runCli({
 
 function buildCronOptions(timezone) {
   return timezone ? { timezone } : undefined;
-}
-
-function isOlderThanDays(timestamp, days) {
-  if (!timestamp) {
-    return true;
-  }
-
-  const createdAt = new Date(timestamp);
-  if (Number.isNaN(createdAt.getTime())) {
-    return true;
-  }
-
-  return Date.now() - createdAt.getTime() >= Math.max(1, Number(days) || 30) * 24 * 3600 * 1000;
 }
 
 async function runOnce(target, runners) {
