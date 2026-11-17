@@ -10,7 +10,14 @@ temp
 .trending
 .vscode
 .env
+.env.*
+apikey.json
+resend
+.tmp
 cookie.txt
 npm-debug.log
 __pycache__
 *.pyc
+t.md
+todo.md
+Untitled-2.html

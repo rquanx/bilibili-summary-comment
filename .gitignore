@@ -6,6 +6,12 @@ __pycache__/
 .3.11
 summary.md
 .env
+.env.*
+!.env.example
+apikey.json
+resend
+.tmp/
+.videocaptioner/
 cookie.txt
 bili-auth*.json
 .auth/
