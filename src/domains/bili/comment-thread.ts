@@ -1,3 +1,6 @@
+import { CommentSubmissionStore } from "./comment-submission-store";
+import { getPasteUploadEndpoint, uploadTextToPaste } from "./paste-upload";
+import { isSummaryPasteUrl } from "../summary/paste-links";
 import fs from "node:fs";
 import path from "node:path";
 import { utils } from "@renmu/bili-api";
@@ -33,15 +36,16 @@ const sleep = (timeout) =>
 const ROOT_TOP_DELAY_MS = 5000;
 const ROOT_TOP_RETRY_DELAY_MS = 5000;
 const REPLY_POST_DELAY_MS = 5000;
-const GUEST_VISIBILITY_RETRY_DELAY_MS = 180_000;
-const GUEST_VISIBILITY_RETRY_ATTEMPTS = 3;
+const GUEST_VISIBILITY_RETRY_DELAY_MS = 120_000;
+const GUEST_VISIBILITY_RETRY_ATTEMPTS = 2;
+const COMMENT_SUBMISSION_ATTEMPTS = 3;
 const GUEST_COMMENT_SCAN_PAGE_LIMIT = 5;
 const GUEST_REPLY_PAGE_SIZE = 20;
 const BILIBILI_COMMENT_MAX_LENGTH = 700;
 const TIMESTAMP_UNIT_PATTERN = /^(?<label>\d+#\d{1,2}:\d{2}(?::\d{2})?)\s+(?<rest>.+)$/u;
 const GUEST_COMMENT_WEB_LOCATION = 1315875;
 const GUEST_COMMENT_MODE = 3;
-const PASTE_RS_MIN_INTERVAL_MS = Math.max(0, Number(process.env.PASTE_RS_MIN_INTERVAL_MS) || 5_000);
+const PASTE_RS_MIN_INTERVAL_MS = Math.max(0, Number(process.env.PASTE_RS_MIN_INTERVAL_MS) || 11_000);
 const PASTE_RS_RATE_LIMIT_WAIT_MS = 250;
 const BILIBILI_GUEST_REQUEST_TIMEOUT_MS = Math.max(
   1_000,
@@ -328,7 +332,7 @@ function findReplyNode(response, { targetRpid = null, expectedMessage = null }) 
         return reply;
       }
 
-      if (normalizedExpectedMessage && commentMessageMatches(extractReplyMessage(reply), normalizedExpectedMessage)) {
+      if (!normalizedTargetRpid && normalizedExpectedMessage && commentMessageMatches(extractReplyMessage(reply), normalizedExpectedMessage)) {
         return reply;
       }
     }
@@ -741,31 +745,6 @@ async function assertCommentVisibleAsGuest({
   });
 }
 
-async function uploadTextToPasteRs(text, fetchImpl = fetch) {
-  const response = await fetchImpl("https://paste.rs", {
-    method: "POST",
-    headers: {
-      "content-type": "text/plain; charset=utf-8",
-    },
-    body: String(text ?? ""),
-  });
-
-  if (!response.ok) {
-    throw createCliError("Failed to upload problematic comment content to paste.rs", {
-      status: response.status,
-    });
-  }
-
-  const pasteUrl = String(await response.text()).trim();
-  if (!/^https:\/\/paste\.rs\/\S+$/u.test(pasteUrl)) {
-    throw createCliError("paste.rs returned an invalid URL", {
-      pasteUrl,
-    });
-  }
-
-  return pasteUrl;
-}
-
 export async function waitForGlobalPasteUploadTurn({
   workRoot = "work",
   repoRoot = getRepoRoot(),
@@ -1015,7 +994,7 @@ function extractPasteUrlFromSummaryBlock(blockText: string, marker: string): str
   const body = normalizedText.startsWith(marker)
     ? normalizedText.slice(marker.length).trim()
     : normalizedText;
-  return /^https:\/\/paste\.rs\/\S+$/u.test(body) ? body : null;
+  return isSummaryPasteUrl(body) ? body : null;
 }
 
 function buildPasteArtifactPageLabel(message) {
@@ -1070,18 +1049,11 @@ async function writePasteUploadAttemptArtifacts({
   const recordPath = path.join(workDir, recordFileName);
   const normalizedMessage = String(message ?? "");
   const createdAt = new Date().toISOString();
-  const curlCommand = [
-    `cd ${quoteShellDouble(workDir)}`,
-    [
-      "curl --request POST https://paste.rs",
-      '--header "content-type: text/plain; charset=utf-8"',
-      `--data-binary @${quoteShellDouble(payloadFileName)}`,
-    ].join(" \\\n  "),
-  ].join("\n");
+  const retryCommand = `PRIVATEBIN_URL=${quoteShellDouble(getPasteUploadEndpoint())} node --import tsx src/commands/paste-upload.ts ${quoteShellDouble(payloadPath)}`;
 
   fs.writeFileSync(payloadPath, normalizedMessage ? `${normalizedMessage}\n` : "", "utf8");
   fs.writeFileSync(recordPath, [
-    `# paste.rs Upload ${pageLabel}`,
+    `# PrivateBin Upload ${pageLabel}`,
     "",
     `- createdAt: ${createdAt}`,
     `- pageLabel: ${pageLabel}`,
@@ -1089,10 +1061,10 @@ async function writePasteUploadAttemptArtifacts({
     `- chars: ${normalizedMessage.length}`,
     `- bytesUtf8: ${Buffer.byteLength(normalizedMessage, "utf8")}`,
     "",
-    "## Curl",
+    "## Encrypted upload (run from repository root)",
     "",
     "```bash",
-    curlCommand,
+    retryCommand,
     "```",
     "",
     "## Result",
@@ -1133,6 +1105,9 @@ function finalizePasteUploadAttemptArtifact(
     : [
       `- status: ${status}`,
       `- error: ${String((error as { message?: unknown })?.message ?? error ?? "Unknown error").trim() || "Unknown error"}`,
+      ...((error && typeof error === "object")
+        ? [`- details: ${JSON.stringify(extractErrorDetails(error))}`]
+        : []),
       ...(Number((error as { status?: unknown })?.status) > 0
         ? [`- httpStatus: ${Number((error as { status?: unknown })?.status)}`]
         : []),
@@ -1339,7 +1314,7 @@ function isPasteOnlyPageBlock(block) {
   return (
     Array.isArray(block?.units)
     && block.units.length === 1
-    && /^https:\/\/paste\.rs\/\S+$/u.test(String(block.units[0]?.text ?? "").trim())
+    && isSummaryPasteUrl(String(block.units[0]?.text ?? "").trim())
   );
 }
 
@@ -1457,7 +1432,7 @@ async function diagnoseInvisibleComment({
   videoId,
   message,
   fetchImpl = fetch,
-  uploadToPasteImpl = uploadTextToPasteRs,
+  uploadToPasteImpl = uploadTextToPaste,
 }) {
   const pageBlocks = parseCommentPageBlocks(message);
   if (pageBlocks.length === 0) {
@@ -1704,9 +1679,10 @@ async function publishCommentChunk({
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
-  uploadToPasteImpl = uploadTextToPasteRs,
+  uploadToPasteImpl = uploadTextToPaste,
+  submissionStore,
 }) {
-  const createComment = isRoot
+  const sendComment = isRoot
     ? async (message) => createRootComment({
         client,
       oid,
@@ -1723,199 +1699,96 @@ async function publishCommentChunk({
         message,
       });
 
-  const initialPublish = await createCommentWithDuplicateRecovery({
-    createComment,
-    oid,
-    type,
-    message: chunk.message,
-    isRoot,
-    rootRpid,
-    allowExistingCommentAdoption,
-    sleepImpl,
-    guestReplyListImpl,
-    fetchImpl,
+  const identity = { oid, type, rootRpid, isRoot, message: normalizeMessageForMatch(chunk.message) };
+  const invisibleRpids: number[] = [];
+  const warnings = [];
+  let visibilityError;
+  const createForAttempt = (attempt: number) => (message) => {
+    const base = { ...identity, message: normalizeMessageForMatch(message) };
+    // Preserve the first-attempt key used by the previously deployed receipt store.
+    const key = attempt === 0 ? base : { ...base, attempt };
+    return submissionStore && (allowExistingCommentAdoption || !isRoot)
+      ? submissionStore.submit(key, () => sendComment(message))
+      : sendComment(message);
+  };
+  const publish = (message, attempt) => createCommentWithDuplicateRecovery({
+    createComment: createForAttempt(attempt), oid, type, message, isRoot, rootRpid,
+    allowExistingCommentAdoption, sleepImpl, guestReplyListImpl, fetchImpl,
   });
-  const initialRpid = normalizeCommentRpid(initialPublish.replyRes?.rpid);
-  const visibilityRootRpid = isRoot ? initialRpid : rootRpid;
+  const confirm = (rpid, message) => assertCommentVisibleAsGuest({
+    oid, type, targetRpid: rpid, expectedMessage: message, isRoot,
+    rootRpid: isRoot ? rpid : rootRpid, sleepImpl, guestReplyListImpl, fetchImpl,
+  });
+  const cleanupInvisible = async (keepRpid) => {
+    for (const rpid of invisibleRpids) {
+      if (rpid === keepRpid) continue;
+      // Visibility can change while the replacement is pending. Delete only
+      // receipts still absent to guests, and only after a replacement is visible.
+      const visible = await findVisibleCommentAsGuest({
+        oid, type, rootRpid: isRoot ? rpid : rootRpid, targetRpid: rpid,
+        expectedMessage: chunk.message, isRoot, guestReplyListImpl, fetchImpl,
+      });
+      if (!visible) await deleteCommentSilently({ client, oid, type, rpid });
+    }
+  };
 
-  if (initialPublish.adoptedExistingComment) {
-    return {
-      replyRes: initialPublish.replyRes,
-      rootRpid: isRoot ? initialRpid : rootRpid,
-      finalMessage: chunk.message,
-      warnings: initialPublish.warnings,
-      recoveredByProcessing: false,
-      replacedInvisibleRpid: null,
-      adoptedExistingComment: true,
-    };
-  }
-
-  try {
-    await assertCommentVisibleAsGuest({
-      oid,
-      type,
-      targetRpid: initialRpid,
-      expectedMessage: chunk.message,
-      isRoot,
-      rootRpid: visibilityRootRpid,
-      sleepImpl,
-      guestReplyListImpl,
-      fetchImpl,
-    });
-
-    return {
-      replyRes: initialPublish.replyRes,
-      rootRpid: isRoot ? initialRpid : rootRpid,
-      finalMessage: chunk.message,
-      warnings: initialPublish.warnings,
-      recoveredByProcessing: false,
-      replacedInvisibleRpid: null,
-      adoptedExistingComment: false,
-    };
-  } catch (error) {
-    let diagnosis;
+  for (let attempt = 0; attempt < COMMENT_SUBMISSION_ATTEMPTS; attempt++) {
+    let posted;
     try {
-      diagnosis = await diagnoseInvisibleComment({
-        db,
-        videoId,
-        message: chunk.message,
-        fetchImpl,
-        uploadToPasteImpl,
-      });
-    } catch (diagnosisError) {
-      if (allowExistingCommentAdoption && initialRpid && isDuplicateCommentError(diagnosisError)) {
-        const visibleComment = await findVisibleCommentAsGuest({
-          oid,
-          type,
-          rootRpid: visibilityRootRpid,
-          targetRpid: initialRpid,
-          expectedMessage: chunk.message,
-          isRoot,
-          guestReplyListImpl,
-          fetchImpl,
-        });
-        if (!visibleComment) {
-          throw error;
-        }
-
-        return {
-          replyRes: {
-            ...initialPublish.replyRes,
-            rpid: normalizeCommentRpid(visibleComment?.rpid ?? initialRpid) ?? initialRpid,
-          },
-          rootRpid: isRoot
-            ? normalizeCommentRpid(visibleComment?.rpid ?? initialRpid) ?? initialRpid
-            : rootRpid,
-          finalMessage: chunk.message,
-          warnings: [
-            ...initialPublish.warnings,
-            buildCommentWarning({
-              step: isRoot
-                ? "duplicate-probe-confirmed-visible-root-comment"
-                : "duplicate-probe-confirmed-visible-reply-comment",
-              rpid: initialRpid,
-              error: diagnosisError,
-              details: {
-                confirmedVisibleAfterDuplicateProbe: true,
-                visibleRpid: normalizeCommentRpid(visibleComment?.rpid ?? initialRpid) ?? initialRpid,
-              },
-            }),
-          ],
-          recoveredByProcessing: false,
-          replacedInvisibleRpid: null,
-          adoptedExistingComment: true,
-        };
-      }
-
-      throw diagnosisError;
+      posted = await publish(chunk.message, attempt);
+    } catch (error) {
+      // Duplicate rejection was already checked for guest visibility by the
+      // recovery helper; it consumes this bounded attempt without another POST.
+      if (String(error?.message) !== "Published comment is not visible to guests") throw error;
+      visibilityError = error;
+      continue;
     }
-
-    const processedCommentMessage = normalizeMessageForMatch(diagnosis.processedCommentMessage);
-    const processedMessage = normalizeSummaryMarkers(diagnosis.processedMessage);
-    const normalizedChunkMessage = normalizeSummaryMarkers(chunk.message);
-    if (
-      !processedCommentMessage
-      || !processedMessage
-      || (
-        processedMessage === normalizedChunkMessage
-        && processedCommentMessage === normalizeMessageForMatch(chunk.message)
-      )
-    ) {
-      throw createCliError("Published comment is not visible to guests", {
-        oid,
-        type,
-        rpid: initialRpid,
-        rootRpid: visibilityRootRpid,
-        isRoot,
-        badUnitIds: diagnosis.badUnitIds,
-      });
+    const rpid = normalizeCommentRpid(posted.replyRes?.rpid);
+    warnings.push(...posted.warnings);
+    try {
+      if (!posted.adoptedExistingComment) await confirm(rpid, chunk.message);
+    } catch (error) {
+      if (String(error?.message) !== "Published comment is not visible to guests") throw error;
+      visibilityError = error;
+      invisibleRpids.push(rpid);
+      continue;
     }
-
-    await deleteCommentSilently({
-      client,
-      oid,
-      type,
-      rpid: initialRpid,
-    });
-
-    const retryPublish = await createCommentWithDuplicateRecovery({
-      createComment,
-      oid,
-      type,
-      message: processedCommentMessage,
-      isRoot,
-      rootRpid,
-      allowExistingCommentAdoption,
-      sleepImpl,
-      guestReplyListImpl,
-      fetchImpl,
-    });
-    const retryRpid = normalizeCommentRpid(retryPublish.replyRes?.rpid);
-    const retryVisibilityRootRpid = isRoot ? retryRpid : rootRpid;
-
-    if (!retryPublish.adoptedExistingComment) {
-      await assertCommentVisibleAsGuest({
-        oid,
-        type,
-        targetRpid: retryRpid,
-        expectedMessage: processedCommentMessage,
-        isRoot,
-        rootRpid: retryVisibilityRootRpid,
-        sleepImpl,
-        guestReplyListImpl,
-        fetchImpl,
-      });
-    }
-
-    await persistProcessedChunk({
-      db,
-      videoId,
-      originalMessage: chunk.message,
-      processedMessage,
-    });
-
+    await cleanupInvisible(rpid);
     return {
-      replyRes: retryPublish.replyRes,
-      rootRpid: isRoot ? retryRpid : rootRpid,
-      finalMessage: processedCommentMessage,
-      warnings: [
-        ...initialPublish.warnings,
-        ...retryPublish.warnings,
-        buildCommentWarning({
-          step: isRoot ? "guest-visible-root-comment" : "guest-visible-reply-comment",
-          rpid: initialRpid,
-          error,
-          details: {
-            recoveredByProcessing: true,
-            badUnitIds: diagnosis.badUnitIds,
-          },
-        }),
-      ],
-      recoveredByProcessing: true,
-      replacedInvisibleRpid: initialRpid,
-      adoptedExistingComment: retryPublish.adoptedExistingComment,
+      replyRes: posted.replyRes, rootRpid: isRoot ? rpid : rootRpid,
+      finalMessage: chunk.message, warnings, recoveredByProcessing: false,
+      replacedInvisibleRpid: invisibleRpids[0] ?? null,
+      adoptedExistingComment: posted.adoptedExistingComment,
     };
   }
+
+  const resolveDiagnosis = () => diagnoseInvisibleComment({ db, videoId, message: chunk.message, fetchImpl, uploadToPasteImpl });
+  const diagnosis = submissionStore
+    ? await submissionStore.fallback(identity, resolveDiagnosis)
+    : await resolveDiagnosis();
+  const processedCommentMessage = normalizeMessageForMatch(diagnosis.processedCommentMessage);
+  const processedMessage = normalizeSummaryMarkers(diagnosis.processedMessage);
+  if (!processedCommentMessage || !processedMessage || (
+    processedMessage === normalizeSummaryMarkers(chunk.message)
+    && processedCommentMessage === normalizeMessageForMatch(chunk.message)
+  )) throw visibilityError;
+
+  const replacement = await publish(processedCommentMessage, 0);
+  const replacementRpid = normalizeCommentRpid(replacement.replyRes?.rpid);
+  if (!replacement.adoptedExistingComment) await confirm(replacementRpid, processedCommentMessage);
+  await persistProcessedChunk({ db, videoId, originalMessage: chunk.message, processedMessage });
+  await cleanupInvisible(replacementRpid);
+  return {
+    replyRes: replacement.replyRes, rootRpid: isRoot ? replacementRpid : rootRpid,
+    finalMessage: processedCommentMessage,
+    warnings: [...warnings, ...replacement.warnings, buildCommentWarning({
+      step: isRoot ? "guest-visible-root-comment" : "guest-visible-reply-comment",
+      rpid: invisibleRpids[0], error: visibilityError,
+      details: { recoveredByProcessing: true, badUnitIds: diagnosis.badUnitIds },
+    })],
+    recoveredByProcessing: true, replacedInvisibleRpid: invisibleRpids[0],
+    adoptedExistingComment: replacement.adoptedExistingComment,
+  };
 }
 
 export function isMissingCommentThreadError(error) {
@@ -1939,7 +1812,7 @@ export async function postSummaryThread({
   sleepImpl = sleep,
   guestReplyListImpl = defaultGuestReplyListImpl,
   fetchImpl = fetch,
-  uploadToPasteImpl = uploadTextToPasteRs,
+  uploadToPasteImpl = uploadTextToPaste,
 }) {
   const normalizedMessage = normalizeSummaryMarkers(message);
   if (!normalizedMessage) {
@@ -1997,6 +1870,7 @@ export async function postSummaryThread({
     }).catch(() => null);
   }
 
+  const submissionStore = new CommentSubmissionStore(path.resolve(getRepoRoot(), workRoot, ".comment-submissions", String(oid)));
   const pendingChunks = [...chunks];
   if (
     allowExistingCommentAdoption
@@ -2070,6 +1944,7 @@ export async function postSummaryThread({
         guestReplyListImpl,
         fetchImpl,
         uploadToPasteImpl: uploadToPasteWithArtifacts,
+        submissionStore,
       });
 
       rootRpid = published.rootRpid;
@@ -2114,6 +1989,7 @@ export async function postSummaryThread({
           guestReplyListImpl,
           fetchImpl,
           uploadToPasteImpl: uploadToPasteWithArtifacts,
+        submissionStore,
         });
         rootRpid = retried.rootRpid;
           warnings.push(...retried.warnings);

@@ -1,3 +1,4 @@
+process.env.PRIVATEBIN_URL = "https://privatebin.tool.voxwing.top";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -7,9 +8,28 @@ import { openSqliteDatabase } from "../src/infra/db/database";
 import { getVideoByIdentity, listVideoParts, upsertVideo, upsertVideoPart } from "../src/infra/db/video-storage";
 import {
   inspectVisibleGuestSummaryThread,
-  postSummaryThread,
+  postSummaryThread as actualPostSummaryThread,
   waitForGlobalPasteUploadTurn,
 } from "../src/domains/bili/comment-thread";
+
+function fakePasteUrl(id: string) {
+  return `https://privatebin.tool.voxwing.top/?${Buffer.from(id).toString("hex").slice(0, 16).padEnd(16, "0")}#${"A".repeat(44)}`;
+}
+
+// Keep comment visibility tests independent of encryption and network protocol.
+const attemptTestRoot = `.tmp-tests/comment-submissions-${process.pid}-${Date.now()}`;
+test.after(() => fs.rmSync(attemptTestRoot, { recursive: true, force: true }));
+
+function postSummaryThread(options) {
+  return actualPostSummaryThread({
+    workRoot: attemptTestRoot,
+    uploadToPasteImpl: async (text) => {
+      const id = text.includes("哈哈哈") ? "hahaha" : text.includes("啊啊啊") ? "aaaaaa" : Buffer.from(text).toString("hex").slice(0, 8);
+      return fakePasteUrl(id);
+    },
+    ...options,
+  });
+}
 
 function createJsonFetchResponse(data) {
   return {
@@ -25,7 +45,7 @@ function createJsonFetchResponse(data) {
 }
 
 function expectedPasteUrlForText(text) {
-  return `https://paste.rs/${Buffer.from(String(text ?? "")).toString("hex").slice(0, 8)}`;
+  return fakePasteUrl(Buffer.from(String(text ?? "")).toString("hex").slice(0, 8));
 }
 
 function createTestWorkRoot(tempRoot: string) {
@@ -120,22 +140,7 @@ function createGuestCommentHarness({
 
   async function fetchImpl(url, options: any = {}) {
     const normalizedUrl = new URL(String(url));
-    if (normalizedUrl.hostname === "paste.rs" && String(options.method ?? "GET").toUpperCase() === "POST") {
-      const bodyText = String(options.body ?? "");
-      return {
-        ok: true,
-        status: 200,
-        async text() {
-          if (bodyText.includes("哈哈哈")) {
-            return "https://paste.rs/hahaha";
-          }
-          if (bodyText.includes("啊啊啊")) {
-            return "https://paste.rs/aaaaaa";
-          }
-          return `https://paste.rs/${Buffer.from(bodyText).toString("hex").slice(0, 8)}`;
-        },
-      };
-    }
+
 
     if (normalizedUrl.pathname === "/x/v2/reply") {
       const visibleRoots = [...comments.values()]
@@ -412,7 +417,7 @@ test("inspectVisibleGuestSummaryThread recognizes top.upper wrappers and paste l
           root: rootRpid,
           parent: rootRpid,
           content: {
-            message: "<2P> ~ <3P>\nhttps://paste.rs/test-visible",
+            message: "<2P> ~ <3P>\nhttps://privatebin.tool.voxwing.top/?746573742d766973#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
           },
         },
       ],
@@ -431,7 +436,7 @@ test("inspectVisibleGuestSummaryThread recognizes top.upper wrappers and paste l
   assert.equal(inspection.topCommentRpid, rootRpid);
   assert.equal(inspection.matchesExpectedRoot, true);
   assert.deepEqual(inspection.pastePages, [2, 3]);
-  assert.deepEqual(inspection.pasteUrls, ["https://paste.rs/test-visible"]);
+  assert.deepEqual(inspection.pasteUrls, ["https://privatebin.tool.voxwing.top/?746573742d766973#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]);
 });
 
 test("postSummaryThread keeps scanning guest pages when top-level count is omitted", async () => {
@@ -662,9 +667,9 @@ test.skip("postSummaryThread replaces invisible timepoint lines with paste links
       [
         "<1P>",
         "1#10:53 开场回顾",
-        "1#15:52 https://paste.rs/hahaha",
+        "1#15:52 https://privatebin.tool.voxwing.top/?6861686168610000#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "1#20:59 继续分析",
-        "1#30:58 https://paste.rs/aaaaaa",
+        "1#30:58 https://privatebin.tool.voxwing.top/?6161616161610000#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "1#35:57 结尾总结",
       ].join("\n"),
     );
@@ -1089,7 +1094,7 @@ test("postSummaryThread reuses visible root and reply chunks after a partial fai
       if (phase === 1) {
         phaseOneAddCount += 1;
         if (phaseOneAddCount === 3) {
-          throw new Error("simulated third comment failure");
+          throw Object.assign(new Error("simulated third comment failure"), { rawResponse: { code: -400 } });
         }
       }
       return originalAdd(payload as never);
@@ -1209,7 +1214,7 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
     const harness = createGuestCommentHarness({
       startRpid: 990101,
       visibilityRule(message) {
-        return message.includes("https://paste.rs/");
+        return message.includes("https://privatebin.tool.voxwing.top/?");
       },
     });
 
@@ -1230,24 +1235,24 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
-    assert.equal(result.rootCommentRpid, 990102);
+    assert.equal(result.rootCommentRpid, 990104);
     assert.equal(result.createdComments.length, 1);
-    assert.equal(result.createdComments[0].rpid, 990102);
+    assert.equal(result.createdComments[0].rpid, 990104);
     assert.equal(result.warnings.some((item) => item.step === "guest-visible-root-comment"), true);
 
     const parts = listVideoParts(db, video.id);
     assert.equal(parts[0].summary_text, rawSummary);
-    assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://paste.rs/3c31503e");
+    assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://privatebin.tool.voxwing.top/?3363333135303365#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     assert.equal(parts[0].published, 1);
-    assert.equal(parts[0].published_comment_rpid, 990102);
+    assert.equal(parts[0].published_comment_rpid, 990104);
 
     const pasteDir = path.join(repoWorkRoot, "unknown-user", "Invisible-Comment-Whole-Paste-Test__BVcommentInvisibleWholePaste");
     assert.equal(fs.readFileSync(path.join(pasteDir, "paste-p01.txt"), "utf8").trim(), rawSummary);
     const pasteRecord = fs.readFileSync(path.join(pasteDir, "paste-p01.md"), "utf8");
-    assert.match(pasteRecord, /curl --request POST https:\/\/paste\.rs/u);
-    assert.match(pasteRecord, /--data-binary @"paste-p01\.txt"/u);
+    assert.match(pasteRecord, /PRIVATEBIN_URL="https:\/\/privatebin\.tool\.voxwing\.top\/" node --import tsx/u);
+    assert.match(pasteRecord, /src\/commands\/paste-upload\.ts .*paste-p01\.txt/u);
     assert.match(pasteRecord, /- status: succeeded/u);
-    assert.match(pasteRecord, /- pasteUrl: https:\/\/paste\.rs\/3c31503e/u);
+    assert.ok(pasteRecord.includes(`- pasteUrl: ${fakePasteUrl("3c31503e")}`));
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1255,7 +1260,7 @@ test("postSummaryThread replaces an invisible comment chunk with a paste link an
   }
 });
 
-test("postSummaryThread retries once with a paste link instead of probe comments when the initial comment is invisible", async () => {
+test("postSummaryThread tries the original three times before using a paste link", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-thread-"));
   const dbPath = path.join(tempRoot, "pipeline.sqlite3");
   const db = openSqliteDatabase(dbPath);
@@ -1285,7 +1290,7 @@ test("postSummaryThread retries once with a paste link instead of probe comments
     const harness = createGuestCommentHarness({
       startRpid: 990201,
       visibilityRule(message) {
-        return message.includes("https://paste.rs/");
+        return message.includes("https://privatebin.tool.voxwing.top/?");
       },
     });
     const addCalls = [];
@@ -1312,20 +1317,20 @@ test("postSummaryThread retries once with a paste link instead of probe comments
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
-    assert.equal(result.rootCommentRpid, 990202);
+    assert.equal(result.rootCommentRpid, 990204);
     assert.equal(result.createdComments.length, 1);
-    assert.equal(result.createdComments[0].rpid, 990202);
-    assert.deepEqual(addCalls, [fullMessage, "<1P>\nhttps://paste.rs/3c31503e"]);
+    assert.equal(result.createdComments[0].rpid, 990204);
+    assert.deepEqual(addCalls, [fullMessage, fullMessage, fullMessage, "<1P>\nhttps://privatebin.tool.voxwing.top/?3363333135303365#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]);
     assert.equal(result.warnings.some((item) => item.step === "guest-visible-root-comment"), true);
 
     const persistedVideo = getVideoByIdentity(db, { bvid: "BVcommentPasteRetry" });
-    assert.equal(persistedVideo?.root_comment_rpid, 990202);
-    assert.equal(persistedVideo?.top_comment_rpid, 990202);
+    assert.equal(persistedVideo?.root_comment_rpid, 990204);
+    assert.equal(persistedVideo?.top_comment_rpid, 990204);
 
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [1]);
-    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [990202]);
-    assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://paste.rs/3c31503e");
+    assert.deepEqual(parts.map((part) => part.published_comment_rpid), [990204]);
+    assert.equal(parts[0].summary_text_processed, "<1P>\nhttps://privatebin.tool.voxwing.top/?3363333135303365#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   } finally {
     db.close?.();
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1380,7 +1385,7 @@ test("postSummaryThread merges consecutive raw pages into a single paste fallbac
     const harness = createGuestCommentHarness({
       startRpid: 990401,
       visibilityRule(message) {
-        return message.includes("https://paste.rs/");
+        return message.includes("https://privatebin.tool.voxwing.top/?");
       },
     });
     const addCalls = [];
@@ -1407,11 +1412,13 @@ test("postSummaryThread merges consecutive raw pages into a single paste fallbac
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
-    assert.equal(result.rootCommentRpid, 990402);
+    assert.equal(result.rootCommentRpid, 990404);
     assert.equal(result.createdComments.length, 1);
     assert.deepEqual(result.createdComments[0].pages, [1, 2, 3, 4, 5]);
     const mergedPasteUrl = expectedPasteUrlForText(fullMessage);
     assert.deepEqual(addCalls, [
+      fullMessage,
+      fullMessage,
       fullMessage,
       [
         "<1P> ~ <5P>",
@@ -1447,7 +1454,7 @@ test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retr
     "1#00:00 first page summary",
     "",
     "<2P>",
-    "https://paste.rs/gbLcw",
+    "https://privatebin.tool.voxwing.top/?67624c6377000000#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   ].join("\n");
 
   try {
@@ -1476,7 +1483,7 @@ test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retr
       partTitle: "P2",
       durationSec: 10,
       summaryText: "<2P>\n2#00:00 second page summary",
-      processedSummaryText: "<2P>\nhttps://paste.rs/gbLcw",
+      processedSummaryText: "<2P>\nhttps://privatebin.tool.voxwing.top/?67624c6377000000#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       summaryHash: "hash-2",
       published: false,
       isDeleted: false,
@@ -1512,7 +1519,7 @@ test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retr
       fetchImpl: harness.fetchImpl as typeof fetch,
     });
 
-    assert.equal(result.rootCommentRpid, 990602);
+    assert.equal(result.rootCommentRpid, 990604);
     assert.equal(result.createdComments.length, 1);
     const mergedPasteUrl = expectedPasteUrlForText([
       "<1P>",
@@ -1522,6 +1529,8 @@ test("postSummaryThread rebuilds mixed paste chunks from raw summaries when retr
       "2#00:00 second page summary",
     ].join("\n"));
     assert.deepEqual(addCalls, [
+      fullMessage,
+      fullMessage,
       fullMessage,
       [
         "<1P> ~ <2P>",
@@ -1550,10 +1559,10 @@ test("postSummaryThread marks every page covered by a compacted paste-link range
   const db = openSqliteDatabase(dbPath);
   const compactedRangeMessage = [
     "<10P> ~ <14P>",
-    "https://paste.rs/MfIPi",
+    "https://privatebin.tool.voxwing.top/?4d66495069000000#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "",
     "<24P> ~ <31P>",
-    "https://paste.rs/zfJzj",
+    "https://privatebin.tool.voxwing.top/?7a664a7a6a000000#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   ].join("\n");
 
   try {
@@ -1572,7 +1581,7 @@ test("postSummaryThread marks every page covered by a compacted paste-link range
         partTitle: `P${pageNo}`,
         durationSec: 10,
         summaryText: `<${pageNo}P>\n${pageNo}#00:00 page ${pageNo} summary`,
-        processedSummaryText: `<${pageNo}P>\nhttps://paste.rs/${pageNo <= 14 ? "MfIPi" : "zfJzj"}`,
+        processedSummaryText: `<${pageNo}P>\n${fakePasteUrl(pageNo <= 14 ? "MfIPi" : "zfJzj")}`,
         summaryHash: `hash-${pageNo}`,
         published: false,
         isDeleted: false,
@@ -1683,7 +1692,7 @@ test("postSummaryThread fails when the paste-link retry is still not guest-visib
     const parts = listVideoParts(db, video.id);
     assert.deepEqual(parts.map((part) => part.published), [0]);
     assert.deepEqual(parts.map((part) => part.published_comment_rpid), [null]);
-    assert.deepEqual(addCalls, [fullMessage, "<1P>\nhttps://paste.rs/3c31503e"]);
+    assert.deepEqual(addCalls, [fullMessage, fullMessage, fullMessage, "<1P>\nhttps://privatebin.tool.voxwing.top/?3363333135303365#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]);
     assert.equal(parts[0].summary_text_processed, null);
   } finally {
     db.close?.();
@@ -1888,3 +1897,102 @@ test("postSummaryThread skips top-comment adoption when existing comment reuse i
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("postSummaryThread does not repost a hidden reply when paste upload fails across retries", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-hidden-retry-"));
+  const db = openSqliteDatabase(path.join(tempRoot, "pipeline.sqlite3"));
+  const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
+  try {
+    const message = "<2P>\n2#01:08 hidden summary";
+    const video = upsertVideo(db, { bvid: "BVhiddenReceiptRetry", aid: 123450999, title: "Hidden receipt retry", pageCount: 2 });
+    upsertVideoPart(db, { videoId: video.id, pageNo: 2, cid: 202, partTitle: "P2", durationSec: 60, summaryText: message, summaryHash: "hidden", published: false, isDeleted: false });
+    const harness = createGuestCommentHarness({ startRpid: 999001, visibilityRule: () => false });
+    let adds = 0;
+    const add = harness.client.reply.add;
+    harness.client.reply.add = async (payload) => { adds++; return add(payload); };
+    const options = {
+      client: harness.client, oid: video.aid, type: 1, message, db, videoId: video.id, workRoot,
+      existingRootRpid: 4242,
+      topCommentState: { hasTopComment: true, topComment: { rpid: 4242 } },
+      sleepImpl: async () => {}, guestReplyListImpl: harness.guestReplyListImpl as never,
+      fetchImpl: harness.fetchImpl as typeof fetch,
+      uploadToPasteImpl: async () => { throw Error("paste unavailable"); },
+    };
+    await assert.rejects(postSummaryThread(options), /paste unavailable/);
+    // A later scheduler sweep is beyond the upload throttle interval.
+    fs.rmSync(path.join(repoWorkRoot, ".locks", "paste-rs-rate-limit.json"), { force: true });
+    await assert.rejects(postSummaryThread(options), /paste unavailable/);
+    assert.equal(adds, 3);
+    assert.equal(harness.comments.size, 3);
+    assert.equal(listVideoParts(db, video.id)[0].published, 0);
+  } finally {
+    db.close?.();
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+  }
+});
+
+for (const visibleAttempt of [2, 3, 4, 0]) {
+  test(`bounded retries: visible attempt ${visibleAttempt}, cleanup follows confirmed visibility`, async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comment-bounded-policy-"));
+    const db = openSqliteDatabase(path.join(tempRoot, "pipeline.sqlite3"));
+    const { workRoot, repoWorkRoot } = createTestWorkRoot(tempRoot);
+    try {
+      const message = "<2P>\n2#01:08 bounded retry summary";
+      const video = upsertVideo(db, { bvid: `BVbounded${visibleAttempt}`, aid: 123451000 + visibleAttempt, title: "Bounded policy", pageCount: 2 });
+      upsertVideoPart(db, { videoId: video.id, pageNo: 2, cid: 202, partTitle: "P2", durationSec: 60, summaryText: message, summaryHash: "bounded", published: false, isDeleted: false });
+      let sends = 0;
+      const events: string[] = [];
+      const sleeps: number[] = [];
+      const harness = createGuestCommentHarness({ startRpid: 999101, visibilityRule: () => sends === visibleAttempt });
+      const add = harness.client.reply.add;
+      const remove = harness.client.reply.delete;
+      harness.client.reply.add = async (payload) => {
+        sends++;
+        events.push(payload.message.includes("https:") ? "send-link" : "send-original");
+        return add(payload);
+      };
+      harness.client.reply.delete = async (payload) => {
+        assert.ok([...harness.comments.values()].some((r) => r.visible), "never delete before a replacement is guest-visible");
+        events.push("delete");
+        return remove(payload);
+      };
+      const options = {
+        client: harness.client, oid: video.aid, type: 1, message, db, videoId: video.id, workRoot,
+        existingRootRpid: 4242,
+        topCommentState: { hasTopComment: true, topComment: { rpid: 4242 } },
+        sleepImpl: async (ms) => { sleeps.push(ms); },
+        guestReplyListImpl: harness.guestReplyListImpl as never, fetchImpl: harness.fetchImpl as typeof fetch,
+        uploadToPasteImpl: async () => {
+          assert.equal(sends, 3);
+          assert.equal(harness.comments.size, 3, "original comments must survive until link visibility confirmation");
+          events.push("upload");
+          return fakePasteUrl("bounded");
+        },
+      };
+      if (!visibleAttempt) {
+        await assert.rejects(postSummaryThread(options), /Published comment is not visible to guests/);
+        assert.equal(sends, 4);
+        assert.equal(harness.comments.size, 4);
+        assert.deepEqual(sleeps, Array(8).fill(120000));
+        assert.ok(!events.includes("delete"));
+        // Another scheduler sweep must reuse all three attempts and the link.
+        await assert.rejects(postSummaryThread(options), /Published comment is not visible to guests/);
+        assert.equal(sends, 4);
+        assert.equal(events.filter(e => e === "upload").length, 1);
+      } else {
+        await postSummaryThread(options);
+        assert.equal(sends, visibleAttempt);
+        assert.deepEqual(sleeps, Array((visibleAttempt - 1) * 2 + 1).fill(120000));
+        assert.equal(harness.comments.size, 1);
+        assert.equal(events.filter(e => e === "delete").length, visibleAttempt - 1);
+        if (visibleAttempt < 4) assert.ok(!events.includes("upload"));
+        else assert.deepEqual(events.slice(0, 5), ["send-original", "send-original", "send-original", "upload", "send-link"]);
+      }
+    } finally {
+      db.close?.();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      fs.rmSync(repoWorkRoot, { recursive: true, force: true });
+    }
+  });
+}

@@ -1,3 +1,4 @@
+import { containsSummaryPasteLink } from "../summary/paste-links";
 import {
   getVideoByIdentity,
   listAllVideoParts,
@@ -13,7 +14,6 @@ import {
 } from "../bili/comment-thread";
 import type { RecentUpload } from "./uploads";
 
-const PASTE_RS_URL_PATTERN = /https:\/\/paste\.rs\/\S+/u;
 
 export interface RecentReprocessCandidate extends RecentUpload {
   videoId: number | null;
@@ -200,7 +200,7 @@ export function buildRecentReprocessCandidateKey({
 
 function collectPasteRsPages(parts: Array<Pick<VideoPartRecord, "page_no" | "summary_text_processed">>): number[] {
   return parts
-    .filter((part) => PASTE_RS_URL_PATTERN.test(String(part.summary_text_processed ?? "").trim()))
+    .filter((part) => containsSummaryPasteLink(String(part.summary_text_processed ?? "").trim()))
     .map((part) => Number(part.page_no))
     .filter((pageNo) => Number.isInteger(pageNo) && pageNo > 0)
     .sort((left, right) => left - right);

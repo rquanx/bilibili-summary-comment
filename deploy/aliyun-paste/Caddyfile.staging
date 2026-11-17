@@ -1,0 +1,11 @@
+{
+    admin off
+}
+
+http://privatebin.tool.voxwing.top {
+    reverse_proxy privatebin:8080
+}
+
+http://s.voxwing.top {
+    reverse_proxy kutt:3000
+}

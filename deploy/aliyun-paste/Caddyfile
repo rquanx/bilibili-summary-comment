@@ -1,0 +1,16 @@
+{
+    admin off
+}
+
+privatebin.tool.voxwing.top {
+    encode zstd gzip
+    request_body {
+        max_size 16MB
+    }
+    reverse_proxy privatebin:8080
+}
+
+s.voxwing.top {
+    encode zstd gzip
+    reverse_proxy kutt:3000
+}

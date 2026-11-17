@@ -1,0 +1,12 @@
+{
+  "serviceId": "a2f6187c-cf58-4f86-b9e1-e55c70025ce3",
+  "environmentId": "8772c5e3-983c-471a-ae81-c22cd8152f3b",
+  "input": {
+    "healthcheckPath": "/api/v2/health",
+    "healthcheckTimeout": 90,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5,
+    "numReplicas": 1,
+    "sleepApplication": false
+  }
+}

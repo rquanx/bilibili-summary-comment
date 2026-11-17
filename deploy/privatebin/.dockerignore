@@ -1,0 +1,12 @@
+*
+!Dockerfile
+!conf.php
+!start.sh
+!manifest.json
+!legacy-domain.conf
+!reader/
+!reader/reader.php
+!reader/reader.css
+!reader/reader.js
+!reader/reader-boot.js
+!patch-reader-core.php

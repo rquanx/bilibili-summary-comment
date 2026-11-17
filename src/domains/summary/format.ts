@@ -1,6 +1,7 @@
+import { isSummaryPasteUrl, containsSummaryPasteLink } from "./paste-links";
+
 const PAGE_MARKER_PATTERN = /^(?:<(?<bracketPage>\d+)P>|(?<plainPage>\d+)P)(?:\s*~\s*<(?<rangeEnd>\d+)P>)?\s*(?<rest>.*)$/u;
 const SUMMARY_INDEX_PATTERN = /^\s*\d+#\d{2}:\d{2}(?::\d{2})?\s+\S+/mu;
-const SUMMARY_PASTE_PATTERN = /^https:\/\/paste\.rs\/\S+/miu;
 
 export function normalizeSummaryMarkers(text) {
   const lines = splitLines(text);
@@ -78,7 +79,7 @@ export function isSystemSummaryComment(message) {
 
   return blocks.some((block) =>
     SUMMARY_INDEX_PATTERN.test(block.text)
-    || SUMMARY_PASTE_PATTERN.test(block.text));
+    || containsSummaryPasteLink(block.text));
 }
 
 export function extractCoveredPages(text) {
@@ -251,7 +252,7 @@ function extractBlockBody(blockText, marker) {
 
 function extractPasteLinkOnlyBody(blockText, marker) {
   const body = extractBlockBody(blockText, marker);
-  return /^https:\/\/paste\.rs\/\S+$/u.test(body) ? body : null;
+  return isSummaryPasteUrl(body) ? body : null;
 }
 
 function buildSummaryBlockMarker(startPage, endPage = startPage) {

@@ -1,0 +1,17 @@
+name: privatebin-local-reader
+services:
+  privatebin:
+    image: privatebin/nginx-fpm-alpine@sha256:9f808790567ef99454319cfd0e056a09c3aff1d496033d1d58fa07e5ad8a268e
+    pull_policy: never
+    ports:
+      - "127.0.0.1:4319:8080"
+    volumes:
+      - ./conf.php:/srv/cfg/conf.php:ro
+      - ../reader/reader.php:/srv/tpl/reader.php:ro
+      - ../reader/reader.css:/var/www/css/reader.css:ro
+      - ../reader/reader.js:/var/www/js/reader.js:ro
+      - ../reader/reader-boot.js:/var/www/js/reader-boot.js:ro
+      - ./.runtime/privatebin-reader-core.js:/var/www/js/privatebin-reader-core.js:ro
+      - privatebin-reader-data:/srv/data
+volumes:
+  privatebin-reader-data:
