@@ -43,9 +43,14 @@ export async function sendServerChanNotification({
       "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
     },
     body: body.toString(),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
     throw new Error(`ServerChan responded with ${response.status} ${response.statusText}`);
+  }
+  const result = await response.json() as { code?: number; errno?: number };
+  if ((result.code ?? result.errno) !== 0) {
+    throw new Error("ServerChan did not accept the notification");
   }
 
   return {
