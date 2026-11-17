@@ -13,7 +13,7 @@
 | `tools/maintenance/` | 构建、清理、事件巡检及 prompt 验证工具 |
 | `tools/setup/` | 环境安装脚本 |
 | `config/` | 可提交的业务配置，不存放密钥 |
-| `deploy/` | 独立服务配置，见[部署索引](../deploy/README.md) |
+| `deploy/` | 当前 Railway 的 PrivateBin、Chhoto URL 配置，见[部署索引](../deploy/README.md) |
 
 批量本地视频转写工具已归入 `tools/asr/transcribe_videos.py`，从仓库根目录运行：
 
@@ -45,3 +45,5 @@ python tools/asr/transcribe_videos.py <视频目录> --output-dir <字幕目录>
 - `.3.11/`、`node_modules/`、`dist/`、`__pycache__/`、`.videocaptioner/`、`.trending/`：环境、构建或本地工具状态。
 
 根目录散落的 `t.md`、`todo.md`、`Untitled-2.html` 已归档至本机 `temp/project-notes/`，保留原始内容。此次整理不删除视频、数据库、备份、密钥或恢复记录。
+
+2026-11-18 核对 Railway 当前生产部署后，已停用服务配置、一次性迁移脚本和独立阅读页原型移至本机 `temp/retired-deploy-20261118/`，不再保留于部署目录。正式阅读资源与完整服务本地预览继续保留。
