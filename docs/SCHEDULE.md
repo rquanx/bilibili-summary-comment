@@ -84,8 +84,6 @@ CRON_TIMEZONE=Asia/Shanghai
   cron 时区，例如 `Asia/Shanghai`。
 - `SERVER_CHAN_SEND_KEY`
   可选。转写连续失败、缺段巡检发现新的缺段，或评论发布持续停滞时，用于发送 ServerChan 通知。
-- `SYNC_SERVERCHAN_ALERTS_ENABLED`
-  设置为 `true` 后，慎勇者 Windows 定时任务复用上述 SendKey，通知字幕／直播总结、每日观点、月度知识的同步失败和恢复。未配置时关闭。
 - `COMMENT_STALL_ALERT_MINUTES`
   存在待总结、待发布或需要重建评论串的视频时，连续多少分钟没有成功创建新评论后告警，默认 `120`。
 

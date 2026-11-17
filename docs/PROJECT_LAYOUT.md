@@ -31,7 +31,6 @@ python tools/asr/transcribe_videos.py <视频目录> --output-dir <字幕目录>
 - [DOCKER.md](DOCKER.md)：Docker 运行及 GPU 增量构建。
 - [SCHEDULE.md](SCHEDULE.md)：定时调度。
 - [POSTGRES.md](POSTGRES.md)：Postgres 配置与迁移。
-- [SYNC_ALERTS.md](SYNC_ALERTS.md)：外部同步任务失败／恢复告警。
 - `drizzle/`：ORM 迁移及其快照；`postgres/schema.sql`：Postgres 建表文件；`sql/`：运维查询。三者用途不同，分别保留。
 - `skills/`：项目工具的使用说明。
 
